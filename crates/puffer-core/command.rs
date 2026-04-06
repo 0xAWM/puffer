@@ -648,7 +648,7 @@ fn execute_local_command(
         "tasks" => emit_system(
             state,
             session_store,
-            "Background tasks:\nqueued=0\nrunning=0\ncompleted=0".to_string(),
+            render_task_summary(state),
         ),
         "config" => handle_config_command(state, session_store, args),
         "context" => describe_context(state, resources, session_store),
@@ -878,6 +878,26 @@ fn cmd(
         argument_hint,
         kind,
     }
+}
+
+fn render_task_summary(state: &AppState) -> String {
+    if state.tasks().is_empty() {
+        return "Tasks:\nNo recorded shell or tool tasks yet.".to_string();
+    }
+
+    let mut text = String::from("Tasks:\n");
+    for task in state.tasks().iter().rev().take(10) {
+        let status = match task.status {
+            crate::TaskStatus::Completed => "completed",
+            crate::TaskStatus::Failed => "failed",
+        };
+        let _ = writeln!(
+            &mut text,
+            "#{} {} [{}]\n{}",
+            task.id, task.label, status, task.detail
+        );
+    }
+    text.trim_end().to_string()
 }
 
 #[cfg(test)]

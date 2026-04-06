@@ -15,7 +15,7 @@ use puffer_core::{
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
-use puffer_session_store::{SessionStore, TranscriptEvent};
+use puffer_session_store::{SessionStore, SessionSummary, TranscriptEvent};
 use puffer_tools::{ToolInput, ToolRegistry};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -64,6 +64,7 @@ pub fn run_app(
                 tui.cursor,
                 tui.slash_selection,
                 tui.scroll_offset,
+                tui.overlay.as_ref(),
                 &commands,
             )
         })?;
@@ -109,6 +110,19 @@ fn handle_key(
     commands: &[CommandSpec],
     tui: &mut TuiState,
 ) -> Result<bool> {
+    if tui.overlay.is_some() {
+        return handle_overlay_key(
+            key,
+            state,
+            resources,
+            providers,
+            auth_store,
+            session_store,
+            commands,
+            tui,
+        );
+    }
+
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_exit = true;
@@ -144,6 +158,10 @@ fn handle_key(
             if tui.complete_on_enter(commands) {
                 return Ok(false);
             }
+            let current_input = tui.input.clone();
+            if try_open_overlay(providers, session_store, tui, &current_input)? {
+                return Ok(false);
+            }
             let submitted = tui.take_input();
             handle_submit(
                 state,
@@ -159,6 +177,106 @@ fn handle_key(
         }
         _ => {}
     }
+    Ok(false)
+}
+
+fn handle_overlay_key(
+    key: KeyEvent,
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+    session_store: &SessionStore,
+    commands: &[CommandSpec],
+    tui: &mut TuiState,
+) -> Result<bool> {
+    let Some(overlay) = tui.overlay.as_mut() else {
+        return Ok(false);
+    };
+
+    match key.code {
+        KeyCode::Esc => tui.overlay = None,
+        KeyCode::Up => overlay.select_previous(),
+        KeyCode::Down => overlay.select_next(),
+        KeyCode::PageUp => overlay.page_up(),
+        KeyCode::PageDown => overlay.page_down(),
+        KeyCode::Enter => {
+            if let Some(command) = overlay.selected_command() {
+                tui.overlay = None;
+                dispatch_command(
+                    state,
+                    commands,
+                    resources,
+                    providers,
+                    auth_store,
+                    session_store,
+                    &command,
+                )?;
+            } else {
+                tui.overlay = None;
+            }
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.should_exit = true;
+            return Ok(true);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn try_open_overlay(
+    providers: &ProviderRegistry,
+    session_store: &SessionStore,
+    tui: &mut TuiState,
+    submitted: &str,
+) -> Result<bool> {
+    let without_slash = submitted.trim_start_matches('/');
+    let (name, args) = without_slash
+        .split_once(' ')
+        .map(|(name, args)| (name, args.trim()))
+        .unwrap_or((without_slash, ""));
+
+    let overlay = match name {
+        "resume" | "continue" if args.is_empty() => {
+            let sessions = session_store.list_sessions()?;
+            if sessions.is_empty() {
+                None
+            } else {
+                Some(OverlayState::SessionPicker {
+                    sessions,
+                    selection: 0,
+                })
+            }
+        }
+        "model" if args.is_empty() => {
+            let entries = providers
+                .models()
+                .map(|model| ModelPickerEntry {
+                    selector: format!("{}/{}", model.provider, model.id),
+                    description: model.display_name.clone(),
+                })
+                .collect::<Vec<_>>();
+            if entries.is_empty() {
+                None
+            } else {
+                Some(OverlayState::ModelPicker {
+                    entries,
+                    selection: 0,
+                })
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(overlay) = overlay {
+        tui.overlay = Some(overlay);
+        tui.input.clear();
+        tui.cursor = 0;
+        tui.slash_selection = 0;
+        return Ok(true);
+    }
+
     Ok(false)
 }
 
@@ -231,6 +349,11 @@ fn append_tool_messages(
     invocations: &[ToolInvocation],
 ) -> Result<()> {
     for invocation in invocations {
+        state.record_task(
+            invocation.tool_id.clone(),
+            invocation.input.clone(),
+            invocation.success,
+        );
         let rendered = render_tool_invocation(invocation);
         state.push_message(MessageRole::System, rendered.clone());
         session_store.append_event(
@@ -277,6 +400,7 @@ fn execute_shell_shortcut(
             command: shell_command.to_string(),
         },
     )?;
+    state.record_task("bash", shell_command.to_string(), result.success);
 
     let reply = if result.output.stderr.is_empty() {
         result.output.stdout
@@ -316,6 +440,7 @@ struct TuiState {
     cursor: usize,
     slash_selection: usize,
     scroll_offset: u16,
+    overlay: Option<OverlayState>,
 }
 
 impl TuiState {
@@ -449,6 +574,74 @@ impl TuiState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum OverlayState {
+    SessionPicker {
+        sessions: Vec<SessionSummary>,
+        selection: usize,
+    },
+    ModelPicker {
+        entries: Vec<ModelPickerEntry>,
+        selection: usize,
+    },
+}
+
+impl OverlayState {
+    fn select_previous(&mut self) {
+        match self {
+            Self::SessionPicker { selection, .. } | Self::ModelPicker { selection, .. } => {
+                *selection = selection.saturating_sub(1);
+            }
+        }
+    }
+
+    fn select_next(&mut self) {
+        match self {
+            Self::SessionPicker {
+                sessions,
+                selection,
+            } => {
+                *selection = (*selection + 1).min(sessions.len().saturating_sub(1));
+            }
+            Self::ModelPicker { entries, selection } => {
+                *selection = (*selection + 1).min(entries.len().saturating_sub(1));
+            }
+        }
+    }
+
+    fn page_up(&mut self) {
+        for _ in 0..10 {
+            self.select_previous();
+        }
+    }
+
+    fn page_down(&mut self) {
+        for _ in 0..10 {
+            self.select_next();
+        }
+    }
+
+    fn selected_command(&self) -> Option<String> {
+        match self {
+            Self::SessionPicker {
+                sessions,
+                selection,
+            } => sessions
+                .get(*selection)
+                .map(|session| format!("/resume {}", session.id)),
+            Self::ModelPicker { entries, selection } => entries
+                .get(*selection)
+                .map(|entry| format!("/model {}", entry.selector)),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModelPickerEntry {
+    pub selector: String,
+    pub description: String,
+}
+
 fn previous_boundary(input: &str, cursor: usize) -> usize {
     if cursor == 0 {
         return 0;
@@ -508,6 +701,7 @@ mod tests {
                     4,
                     0,
                     0,
+                    None,
                     &supported_commands(),
                 )
             })
@@ -579,6 +773,7 @@ mod tests {
                     0,
                     0,
                     0,
+                    None,
                     &supported_commands(),
                 )
             })

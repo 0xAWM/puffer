@@ -18,6 +18,22 @@ pub struct RenderedMessage {
     pub text: String,
 }
 
+/// Describes the completion state of one recorded task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum TaskStatus {
+    Completed,
+    Failed,
+}
+
+/// Represents one recorded shell or tool task in the current session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskRecord {
+    pub id: u64,
+    pub label: String,
+    pub detail: String,
+    pub status: TaskStatus,
+}
+
 /// Stores the mutable session and UI state for one interactive Puffer run.
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -37,6 +53,8 @@ pub struct AppState {
     pub statusline_enabled: bool,
     pub vim_mode: bool,
     pub should_exit: bool,
+    tasks: Vec<TaskRecord>,
+    next_task_id: u64,
 }
 
 impl AppState {
@@ -59,6 +77,8 @@ impl AppState {
             statusline_enabled: true,
             vim_mode: false,
             should_exit: false,
+            tasks: Vec::new(),
+            next_task_id: 1,
         }
     }
 
@@ -120,6 +140,27 @@ impl AppState {
         });
     }
 
+    /// Records one completed or failed task in the current runtime session state.
+    pub fn record_task(
+        &mut self,
+        label: impl Into<String>,
+        detail: impl Into<String>,
+        success: bool,
+    ) {
+        let task = TaskRecord {
+            id: self.next_task_id,
+            label: label.into(),
+            detail: detail.into(),
+            status: if success {
+                TaskStatus::Completed
+            } else {
+                TaskStatus::Failed
+            },
+        };
+        self.next_task_id += 1;
+        self.tasks.push(task);
+    }
+
     /// Builds a persisted snapshot event for the current mutable session state.
     pub fn snapshot_event(&self) -> TranscriptEvent {
         TranscriptEvent::StateSnapshot {
@@ -139,5 +180,9 @@ impl AppState {
                 .map(|path| path.display().to_string())
                 .collect(),
         }
+    }
+
+    pub(crate) fn tasks(&self) -> &[TaskRecord] {
+        &self.tasks
     }
 }

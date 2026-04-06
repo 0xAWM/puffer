@@ -434,6 +434,11 @@ pub(crate) fn append_tool_invocations(
     invocations: &[ToolInvocation],
 ) -> Result<()> {
     for invocation in invocations {
+        state.record_task(
+            invocation.tool_id.clone(),
+            invocation.input.clone(),
+            invocation.success,
+        );
         emit_system(state, session_store, format_tool_invocation(invocation))?;
     }
     Ok(())
