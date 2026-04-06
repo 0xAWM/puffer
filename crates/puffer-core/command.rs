@@ -3,7 +3,7 @@ use crate::command_helpers::{
     emit_system, execute_skill_command, list_ides, list_mcp_servers, list_skills,
     rewind_transcript, run_doctor, terminal_setup_advice,
 };
-use crate::{AppState, MessageRole};
+use crate::{AppState, MessageRole, ToolInvocation};
 use anyhow::Result;
 use puffer_provider_openai::{
     build_authorization_url as build_openai_authorization_url,
@@ -463,11 +463,14 @@ fn execute_prompt_command(
     )?;
 
     match crate::runtime::execute_user_prompt(state, resources, providers, auth_store, &rendered) {
-        Ok(reply) => {
-            state.push_message(MessageRole::Assistant, reply.clone());
+        Ok(turn) => {
+            append_tool_invocations(state, session_store, &turn.tool_invocations)?;
+            state.push_message(MessageRole::Assistant, turn.assistant_text.clone());
             session_store.append_event(
                 state.session.id,
-                TranscriptEvent::AssistantMessage { text: reply },
+                TranscriptEvent::AssistantMessage {
+                    text: turn.assistant_text,
+                },
             )?;
         }
         Err(error) => {
@@ -477,6 +480,30 @@ fn execute_prompt_command(
     }
 
     Ok(())
+}
+
+fn append_tool_invocations(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    invocations: &[ToolInvocation],
+) -> Result<()> {
+    for invocation in invocations {
+        emit_system(state, session_store, format_tool_invocation(invocation))?;
+    }
+    Ok(())
+}
+
+fn format_tool_invocation(invocation: &ToolInvocation) -> String {
+    let status = if invocation.success { "ok" } else { "error" };
+    let output = invocation.output.trim();
+    if output.is_empty() {
+        format!("Tool {} [{}]\ninput: {}", invocation.tool_id, status, invocation.input)
+    } else {
+        format!(
+            "Tool {} [{}]\ninput: {}\n{}",
+            invocation.tool_id, status, invocation.input, output
+        )
+    }
 }
 
 fn execute_local_command(

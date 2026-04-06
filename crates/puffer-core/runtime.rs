@@ -15,6 +15,22 @@ use puffer_transport_anthropic::{
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 
+/// Describes one tool call executed during a model turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolInvocation {
+    pub tool_id: String,
+    pub input: String,
+    pub output: String,
+    pub success: bool,
+}
+
+/// Stores the visible result of one executed model turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnExecution {
+    pub assistant_text: String,
+    pub tool_invocations: Vec<ToolInvocation>,
+}
+
 /// Executes one user prompt against the currently selected provider and model.
 pub fn execute_user_prompt(
     state: &AppState,
@@ -22,7 +38,7 @@ pub fn execute_user_prompt(
     providers: &ProviderRegistry,
     auth_store: &AuthStore,
     input: &str,
-) -> Result<String> {
+) -> Result<TurnExecution> {
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     match provider.id.as_str() {
         "anthropic" => execute_anthropic(state, resources, provider, model_id, auth_store, input),
@@ -75,7 +91,7 @@ fn execute_anthropic(
     model_id: String,
     auth_store: &AuthStore,
     input: &str,
-) -> Result<String> {
+) -> Result<TurnExecution> {
     let auth = anthropic_auth_for_provider(auth_store, &provider.id)?;
     let registry = ToolRegistry::from_resources(resources);
     let request = build_messages_request(
@@ -144,7 +160,7 @@ fn execute_anthropic(
                 },
                 {
                     "role": "user",
-                    "content": tool_results,
+                    "content": tool_results.results,
                 }
             ],
             "system": [
@@ -161,10 +177,16 @@ fn execute_anthropic(
             &follow_up_body.to_string(),
             true,
         )?;
-        return parse_anthropic_text(&follow_up);
+        return Ok(TurnExecution {
+            assistant_text: parse_anthropic_text(&follow_up)?,
+            tool_invocations: tool_results.invocations,
+        });
     }
 
-    parse_anthropic_text(&response)
+    Ok(TurnExecution {
+        assistant_text: parse_anthropic_text(&response)?,
+        tool_invocations: Vec::new(),
+    })
 }
 
 fn execute_openai(
@@ -173,7 +195,7 @@ fn execute_openai(
     model_id: String,
     auth_store: &AuthStore,
     input: &str,
-) -> Result<String> {
+) -> Result<TurnExecution> {
     let auth = openai_auth_for_provider(auth_store, &provider.id)?;
     let request = build_responses_request(
         &OpenAIRequestConfig {
@@ -187,7 +209,12 @@ fn execute_openai(
         },
     )?;
     let response = send_http_request(&request.url, &request.headers, &request.body, false)?;
-    parse_openai_text(&response).or_else(|_| parse_openai_text_fallback(&response, state))
+    let assistant_text =
+        parse_openai_text(&response).or_else(|_| parse_openai_text_fallback(&response, state))?;
+    Ok(TurnExecution {
+        assistant_text,
+        tool_invocations: Vec::new(),
+    })
 }
 
 fn send_http_request(
@@ -330,12 +357,13 @@ fn execute_anthropic_tool_calls(
     response: &Value,
     registry: &ToolRegistry,
     cwd: &std::path::Path,
-) -> Result<Option<Value>> {
+) -> Result<Option<AnthropicToolResults>> {
     let Some(content) = response.get("content").and_then(Value::as_array) else {
         return Ok(None);
     };
 
     let mut results = Vec::new();
+    let mut invocations = Vec::new();
     for item in content {
         if item.get("type").and_then(Value::as_str) != Some("tool_use") {
             continue;
@@ -365,13 +393,27 @@ fn execute_anthropic_tool_calls(
             "content": output_text,
             "is_error": !execution.success,
         }));
+        invocations.push(ToolInvocation {
+            tool_id: tool_id.to_string(),
+            input: serde_json::to_string(input)?,
+            output: output_text,
+            success: execution.success,
+        });
     }
 
     if results.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(Value::Array(results)))
+        Ok(Some(AnthropicToolResults {
+            results: Value::Array(results),
+            invocations,
+        }))
     }
+}
+
+struct AnthropicToolResults {
+    results: Value,
+    invocations: Vec<ToolInvocation>,
 }
 
 fn parse_openai_text(response: &Value) -> Result<String> {

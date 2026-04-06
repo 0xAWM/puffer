@@ -11,6 +11,7 @@ use crossterm::terminal::{
 };
 use puffer_core::{
     dispatch_command, execute_user_turn, supported_commands, AppState, CommandSpec, MessageRole,
+    ToolInvocation,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -201,11 +202,14 @@ fn handle_submit(
     )?;
 
     match execute_user_turn(state, resources, providers, auth_store, &submitted) {
-        Ok(reply) => {
-            state.push_message(MessageRole::Assistant, reply.clone());
+        Ok(turn) => {
+            append_tool_messages(state, session_store, &turn.tool_invocations)?;
+            state.push_message(MessageRole::Assistant, turn.assistant_text.clone());
             session_store.append_event(
                 state.session.id,
-                TranscriptEvent::AssistantMessage { text: reply },
+                TranscriptEvent::AssistantMessage {
+                    text: turn.assistant_text,
+                },
             )?;
         }
         Err(error) => {
@@ -219,6 +223,35 @@ fn handle_submit(
     }
 
     Ok(())
+}
+
+fn append_tool_messages(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    invocations: &[ToolInvocation],
+) -> Result<()> {
+    for invocation in invocations {
+        let rendered = render_tool_invocation(invocation);
+        state.push_message(MessageRole::System, rendered.clone());
+        session_store.append_event(
+            state.session.id,
+            TranscriptEvent::SystemMessage { text: rendered },
+        )?;
+    }
+    Ok(())
+}
+
+fn render_tool_invocation(invocation: &ToolInvocation) -> String {
+    let status = if invocation.success { "ok" } else { "error" };
+    let output = invocation.output.trim();
+    if output.is_empty() {
+        format!("Tool {} [{}]\ninput: {}", invocation.tool_id, status, invocation.input)
+    } else {
+        format!(
+            "Tool {} [{}]\ninput: {}\n{}",
+            invocation.tool_id, status, invocation.input, output
+        )
+    }
 }
 
 fn execute_shell_shortcut(
