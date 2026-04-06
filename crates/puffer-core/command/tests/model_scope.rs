@@ -1,13 +1,45 @@
 use super::*;
 use puffer_provider_registry::AuthMode;
-use std::sync::{Mutex, OnceLock};
+use std::ffi::OsString;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 fn puffer_home_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn provider(id: &str, models: &[&str]) -> puffer_provider_registry::ProviderDescriptor {
+fn lock_puffer_home() -> MutexGuard<'static, ()> {
+    puffer_home_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct ScopedPufferHome {
+    old_home: Option<OsString>,
+}
+
+impl ScopedPufferHome {
+    fn set(path: &std::path::Path) -> Self {
+        let old_home = std::env::var_os("PUFFER_HOME");
+        std::env::set_var("PUFFER_HOME", path);
+        Self { old_home }
+    }
+}
+
+impl Drop for ScopedPufferHome {
+    fn drop(&mut self) {
+        if let Some(value) = self.old_home.take() {
+            std::env::set_var("PUFFER_HOME", value);
+        } else {
+            std::env::remove_var("PUFFER_HOME");
+        }
+    }
+}
+
+fn provider(
+    id: &str,
+    models: &[&str],
+) -> puffer_provider_registry::ProviderDescriptor {
     puffer_provider_registry::ProviderDescriptor {
         id: id.to_string(),
         display_name: id.to_string(),
@@ -35,19 +67,22 @@ fn provider(id: &str, models: &[&str]) -> puffer_provider_registry::ProviderDesc
 #[test]
 fn model_command_lists_only_models_for_selected_provider() {
     let tempdir = tempdir().unwrap();
-    let _lock = puffer_home_lock().lock().unwrap();
-    let old_home = std::env::var_os("PUFFER_HOME");
-    std::env::set_var("PUFFER_HOME", tempdir.path());
-    let paths = ConfigPaths::discover(tempdir.path());
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
     let session = session_store
-        .create_session(tempdir.path().to_path_buf())
+        .create_session(workspace.clone())
         .unwrap();
     let mut config = PufferConfig::default();
     config.default_provider = Some("openai".to_string());
     config.default_model = Some("openai/gpt-5".to_string());
-    let mut state = AppState::new(config, tempdir.path().to_path_buf(), session);
+    let mut state = AppState::new(config, workspace, session);
     state.current_provider = Some("openai".to_string());
     state.current_model = Some("openai/gpt-5".to_string());
     let mut providers = ProviderRegistry::new();
@@ -71,29 +106,27 @@ fn model_command_lists_only_models_for_selected_provider() {
             if text.contains("Available models for openai: gpt-5, gpt-5-mini")
                 && !text.contains("compound")
     ));
-    if let Some(value) = old_home {
-        std::env::set_var("PUFFER_HOME", value);
-    } else {
-        std::env::remove_var("PUFFER_HOME");
-    }
 }
 
 #[test]
 fn model_command_rejects_cross_provider_selection() {
     let tempdir = tempdir().unwrap();
-    let _lock = puffer_home_lock().lock().unwrap();
-    let old_home = std::env::var_os("PUFFER_HOME");
-    std::env::set_var("PUFFER_HOME", tempdir.path());
-    let paths = ConfigPaths::discover(tempdir.path());
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
     let session = session_store
-        .create_session(tempdir.path().to_path_buf())
+        .create_session(workspace.clone())
         .unwrap();
     let mut config = PufferConfig::default();
     config.default_provider = Some("openai".to_string());
     config.default_model = Some("openai/gpt-5".to_string());
-    let mut state = AppState::new(config, tempdir.path().to_path_buf(), session);
+    let mut state = AppState::new(config, workspace, session);
     state.current_provider = Some("openai".to_string());
     state.current_model = Some("openai/gpt-5".to_string());
     let mut providers = ProviderRegistry::new();
@@ -116,29 +149,27 @@ fn model_command_rejects_cross_provider_selection() {
         Some(RenderedMessage { text, .. })
             if text.contains("/model only selects models for the active provider (openai).")
     ));
-    if let Some(value) = old_home {
-        std::env::set_var("PUFFER_HOME", value);
-    } else {
-        std::env::remove_var("PUFFER_HOME");
-    }
 }
 
 #[test]
 fn model_command_persists_selected_model_to_user_config() {
     let tempdir = tempdir().unwrap();
-    let _lock = puffer_home_lock().lock().unwrap();
-    let old_home = std::env::var_os("PUFFER_HOME");
-    std::env::set_var("PUFFER_HOME", tempdir.path());
-    let paths = ConfigPaths::discover(tempdir.path());
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
     let session = session_store
-        .create_session(tempdir.path().to_path_buf())
+        .create_session(workspace.clone())
         .unwrap();
     let mut config = PufferConfig::default();
     config.default_provider = Some("openai".to_string());
     config.default_model = Some("openai/gpt-5".to_string());
-    let mut state = AppState::new(config, tempdir.path().to_path_buf(), session);
+    let mut state = AppState::new(config, workspace, session);
     state.current_provider = Some("openai".to_string());
     state.current_model = Some("openai/gpt-5".to_string());
     let mut providers = ProviderRegistry::new();
@@ -158,9 +189,4 @@ fn model_command_persists_selected_model_to_user_config() {
     let saved = std::fs::read_to_string(paths.user_config_file()).unwrap();
     assert!(saved.contains("default_provider = \"openai\""));
     assert!(saved.contains("default_model = \"openai/gpt-5-mini\""));
-    if let Some(value) = old_home {
-        std::env::set_var("PUFFER_HOME", value);
-    } else {
-        std::env::remove_var("PUFFER_HOME");
-    }
 }
