@@ -6,8 +6,8 @@
 └─────────────────────────────────────────────────────────┘
 ┌Transcript─────────────────────────────┐┌Session─────────┐
 │N┌Login Provider─────────────────────┐ ││Name:           │
-│s│openai  OpenAI                     │ ││session-<id>│
-│ │anthropic  Anthropic               │ ││<id>...      │
+│s│anthropic  Anthropic               │ ││session-<id>│
+│ │openai  OpenAI                     │ ││<id>...      │
 │ └───────────────────────────────────┘ ││Id: <id>    │
 │                                       ││Parent: root    │
 │                                       ││Dir: workspace  │

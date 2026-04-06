@@ -13,7 +13,7 @@ use puffer_provider_openai::{
     generate_pkce as generate_openai_pkce, OpenAIOAuthConfig,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use puffer_resources::{prompt_by_id, LoadedResources};
+use puffer_resources::{mascot_by_id, prompt_by_id, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_transport_anthropic::{
     build_authorization_url as build_anthropic_authorization_url,
@@ -534,14 +534,7 @@ fn execute_local_command(
         "usage" => emit_system(
             state,
             session_store,
-            format!(
-                "messages={} commands={} providers={} skills={} plugins={}",
-                state.transcript.len(),
-                commands.len(),
-                providers.providers().count(),
-                resources.skills.len(),
-                resources.plugins.len()
-            ),
+            render_usage_summary(state, commands, resources, providers, auth_store),
         ),
         "cost" => emit_system(state, session_store, render_cost_summary(state)),
         "clear" => {
@@ -739,12 +732,7 @@ fn execute_local_command(
         "buddy" => emit_system(
             state,
             session_store,
-            format!(
-                "{} is on duty. Mascot id={}, enabled={}.",
-                state.config.mascot.display_name,
-                state.config.mascot.id,
-                state.config.mascot.enabled
-            ),
+            render_buddy_summary(state, resources),
         ),
         "skills" => list_skills(state, resources, session_store),
         "plugin" => handle_plugin_command(state, resources, session_store, args),
@@ -922,6 +910,48 @@ fn render_cost_summary(state: &AppState) -> String {
     format!(
         "Session cost summary:\nelapsed_ms={elapsed_ms}\nuser_messages={user_messages}\nassistant_messages={assistant_messages}\ntool_invocations={tool_invocations}\nrecorded_tasks={}\nestimated_cost_usd=unavailable",
         state.tasks().len()
+    )
+}
+
+fn render_usage_summary(
+    state: &AppState,
+    commands: &[CommandSpec],
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+) -> String {
+    let providers_with_discovery = providers
+        .provider_entries()
+        .filter(|provider| provider.descriptor.discovery.is_some())
+        .count();
+    format!(
+        "Usage summary:\ncommands={}\nmessages={}\nproviders={}\nmodels={}\nauthed_providers={}\nproviders_with_discovery={}\nprompts={}\ntools={}\nskills={}\nplugins={}\nhooks={}\nactive_provider={}\nactive_model={}",
+        commands.len(),
+        state.transcript.len(),
+        providers.providers().count(),
+        providers.models().count(),
+        auth_store.provider_ids().count(),
+        providers_with_discovery,
+        resources.prompts.len(),
+        resources.tools.len(),
+        resources.skills.len(),
+        resources.plugins.len(),
+        resources.hooks.len(),
+        state.current_provider.as_deref().unwrap_or("<unset>"),
+        state.current_model.as_deref().unwrap_or("<unset>"),
+    )
+}
+
+fn render_buddy_summary(state: &AppState, resources: &LoadedResources) -> String {
+    let intro = mascot_by_id(resources, &state.config.mascot.id)
+        .map(|mascot| mascot.introduction.as_str())
+        .unwrap_or("No mascot resource is currently loaded for this session.");
+    format!(
+        "{} is on duty.\nmascot_id={}\nenabled={}\n{}",
+        state.config.mascot.display_name,
+        state.config.mascot.id,
+        state.config.mascot.enabled,
+        intro
     )
 }
 

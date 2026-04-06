@@ -79,6 +79,14 @@ pub struct ToolPolicyHints {
     pub sandbox_policy: Option<String>,
 }
 
+/// Carries optional presentation hints for a tool definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToolDisplayHints {
+    pub group: Option<String>,
+    pub title: Option<String>,
+    pub show_in_status: bool,
+}
+
 /// Identifies one built-in local tool implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -136,10 +144,14 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub handler: String,
+    pub handler_args: Vec<String>,
     pub kind: ToolKind,
     pub input_schema: ToolInputSchema,
     pub metadata: ToolMetadata,
     pub policy: ToolPolicyHints,
+    pub shared_lib: Option<String>,
+    pub enabled_if: Option<String>,
+    pub display: ToolDisplayHints,
 }
 
 impl ToolDefinition {
@@ -352,6 +364,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "bash".to_string(),
             description: "Run a shell command in the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([(
@@ -369,12 +382,16 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: true,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
         ToolKind::ReadFile => ToolDefinition {
             id: "read_file".to_string(),
             name: "read_file".to_string(),
             description: "Read one file from the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([(
@@ -392,12 +409,16 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: false,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
         ToolKind::WriteFile => ToolDefinition {
             id: "write_file".to_string(),
             name: "write_file".to_string(),
             description: "Write one file in the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([
@@ -425,12 +446,16 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: true,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
         ToolKind::ReplaceInFile => ToolDefinition {
             id: "replace_in_file".to_string(),
             name: "replace_in_file".to_string(),
             description: "Replace text inside one workspace file.".to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([
@@ -474,12 +499,16 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: true,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
         ToolKind::MovePath => ToolDefinition {
             id: "move_path".to_string(),
             name: "move_path".to_string(),
             description: "Move or rename one workspace file or directory.".to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([
@@ -507,12 +536,16 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: true,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
         ToolKind::RemovePath => ToolDefinition {
             id: "remove_path".to_string(),
             name: "remove_path".to_string(),
             description: "Remove one workspace file or directory.".to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([
@@ -541,12 +574,16 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: true,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
         ToolKind::ListDir => ToolDefinition {
             id: "list_dir".to_string(),
             name: "list_dir".to_string(),
             description: "List files and directories from the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([(
@@ -564,6 +601,9 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: false,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
         ToolKind::SearchText => ToolDefinition {
             id: "search_text".to_string(),
@@ -571,6 +611,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             description: "Search for text in workspace files with ripgrep-style semantics."
                 .to_string(),
             handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
                 properties: BTreeMap::from([
@@ -598,6 +639,9 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
                 may_write_files: false,
             },
             policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
         },
     }
 }

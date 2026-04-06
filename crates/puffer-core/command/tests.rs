@@ -7,6 +7,8 @@ use puffer_session_store::{SessionMetadata, SessionStore};
 use std::path::PathBuf;
 use tempfile::tempdir;
 
+mod usage_buddy;
+
 #[test]
 fn command_registry_contains_review_usage_and_resume_alias() {
     let commands = supported_commands();

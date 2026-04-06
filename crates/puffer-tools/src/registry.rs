@@ -125,6 +125,14 @@ fn definition_from_spec(spec: &ToolSpec) -> Option<ToolDefinition> {
     definition.name = spec.name.clone();
     definition.description = spec.description.clone();
     definition.handler = spec.handler.clone();
+    if let Some(input_schema) = &spec.input_schema {
+        if let Ok(parsed) = serde_json::from_value(input_schema.clone()) {
+            definition.input_schema = parsed;
+        }
+    }
+    definition.metadata.may_spawn_processes = spec.metadata.may_spawn_processes;
+    definition.metadata.may_read_files = spec.metadata.may_read_files;
+    definition.metadata.may_write_files = spec.metadata.may_write_files;
     definition.policy = ToolPolicyHints {
         approval_policy: spec.approval_policy.clone(),
         sandbox_policy: spec.sandbox_policy.clone(),
@@ -144,8 +152,14 @@ mod tests {
             name: "bash".to_string(),
             description: "Run shell".to_string(),
             handler: "bash".to_string(),
+            handler_args: Vec::new(),
             approval_policy: Some("on-request".to_string()),
             sandbox_policy: Some("workspace-write".to_string()),
+            shared_lib: None,
+            enabled_if: None,
+            input_schema: None,
+            metadata: Default::default(),
+            display: Default::default(),
         }
     }
 
@@ -199,8 +213,14 @@ mod tests {
                     name: "custom".to_string(),
                     description: "Custom".to_string(),
                     handler: "custom_handler".to_string(),
+                    handler_args: Vec::new(),
                     approval_policy: None,
                     sandbox_policy: None,
+                    shared_lib: None,
+                    enabled_if: None,
+                    input_schema: None,
+                    metadata: Default::default(),
+                    display: Default::default(),
                 },
                 source_info: SourceInfo {
                     path: PathBuf::from("custom.yaml"),

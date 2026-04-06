@@ -92,6 +92,14 @@ pub fn prompt_by_id<'a>(
         .find(|prompt| prompt.value.id == id)
 }
 
+/// Looks up a hook specification by id.
+pub fn hook_by_id<'a>(
+    resources: &'a LoadedResources,
+    id: &str,
+) -> Option<&'a LoadedItem<HookSpec>> {
+    resources.hooks.iter().find(|hook| hook.value.id == id)
+}
+
 /// Looks up a skill specification by its stable name.
 pub fn skill_by_name<'a>(
     resources: &'a LoadedResources,
@@ -149,10 +157,7 @@ where
     }
 
     let mut items = Vec::new();
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("failed to read resource dir {}", dir.display()))?
-    {
-        let entry = entry?;
+    for entry in sorted_dir_entries(dir)? {
         let path = entry.path();
         if !matches!(
             path.extension().and_then(|ext| ext.to_str()),
@@ -178,10 +183,7 @@ fn load_skill_dir(dir: &Path, kind: SourceKind) -> Result<Vec<LoadedItem<SkillSp
     }
 
     let mut items = Vec::new();
-    for entry in
-        fs::read_dir(dir).with_context(|| format!("failed to read skills dir {}", dir.display()))?
-    {
-        let entry = entry?;
+    for entry in sorted_dir_entries(dir)? {
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -221,6 +223,15 @@ fn load_skill_dir(dir: &Path, kind: SourceKind) -> Result<Vec<LoadedItem<SkillSp
         });
     }
     Ok(items)
+}
+
+fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read resource dir {}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("failed to list resource dir {}", dir.display()))?;
+    entries.sort_by(|left, right| left.path().cmp(&right.path()));
+    Ok(entries)
 }
 
 fn split_frontmatter(raw: &str) -> (BTreeMap<String, String>, String) {
@@ -278,20 +289,50 @@ where
     }
     for item in incoming {
         let id = key(&item);
-        if let Some(previous) = merged.insert(id.clone(), item.clone()) {
-            diagnostics.push(format!(
-                "{label} `{id}` from {} overrides {}",
-                item.source_info.path.display(),
-                previous.source_info.path.display()
+        if let Some(previous) = merged.get(&id) {
+            diagnostics.push(describe_override(
+                label,
+                &id,
+                &previous.source_info,
+                &item.source_info,
             ));
         }
+        merged.insert(id, item);
     }
     *existing = merged.into_values().collect();
+}
+
+fn describe_override(label: &str, id: &str, previous: &SourceInfo, incoming: &SourceInfo) -> String {
+    if previous.kind == incoming.kind {
+        return format!(
+            "duplicate {label} `{id}` in {} resources: {} overrides {}",
+            source_kind_label(incoming.kind),
+            incoming.path.display(),
+            previous.path.display()
+        );
+    }
+
+    format!(
+        "{} {label} `{id}` from {} overrides {} resource from {}",
+        source_kind_label(incoming.kind),
+        incoming.path.display(),
+        source_kind_label(previous.kind),
+        previous.path.display()
+    )
+}
+
+fn source_kind_label(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Builtin => "builtin",
+        SourceKind::User => "user",
+        SourceKind::Workspace => "workspace",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hooks_for_event;
     use std::fs;
     use tempfile::tempdir;
 
@@ -336,16 +377,23 @@ mod tests {
     }
 
     #[test]
-    fn workspace_resources_override_bundled_resources_by_id() {
+    fn workspace_resources_override_user_and_bundled_resources_by_id() {
         let temp = tempdir().unwrap();
         let root = temp.path().join("workspace");
         let builtin = root.join("resources/prompts");
+        let user = root.join(".home/.puffer/resources/prompts");
         let workspace = root.join(".puffer/resources/prompts");
         fs::create_dir_all(&builtin).unwrap();
+        fs::create_dir_all(&user).unwrap();
         fs::create_dir_all(&workspace).unwrap();
         fs::write(
             builtin.join("review.yaml"),
             "id: review\ndescription: Builtin\ntemplate: builtin\n",
+        )
+        .unwrap();
+        fs::write(
+            user.join("review.yaml"),
+            "id: review\ndescription: User\ntemplate: user\n",
         )
         .unwrap();
         fs::write(
@@ -354,7 +402,12 @@ mod tests {
         )
         .unwrap();
 
-        let paths = ConfigPaths::discover(&root);
+        let paths = ConfigPaths {
+            workspace_root: root.clone(),
+            workspace_config_dir: root.join(".puffer"),
+            user_config_dir: root.join(".home/.puffer"),
+            builtin_resources_dir: root.join("resources"),
+        };
         let loaded = load_resources(&paths).unwrap();
         assert_eq!(loaded.prompts.len(), 1);
         assert_eq!(loaded.prompts[0].value.description, "Workspace");
@@ -366,6 +419,89 @@ mod tests {
         assert!(loaded
             .diagnostics
             .iter()
-            .any(|item| item.contains("prompt `review`")));
+            .any(|item| item.contains("user prompt `review`")));
+        assert!(loaded
+            .diagnostics
+            .iter()
+            .any(|item| item.contains("workspace prompt `review`")));
+    }
+
+    #[test]
+    fn duplicate_ids_in_same_layer_are_deterministic_and_reported() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let builtin = root.join("resources/prompts");
+        fs::create_dir_all(&builtin).unwrap();
+        fs::write(
+            builtin.join("a_review.yaml"),
+            "id: review\ndescription: First\ntemplate: first\n",
+        )
+        .unwrap();
+        fs::write(
+            builtin.join("z_review.yaml"),
+            "id: review\ndescription: Second\ntemplate: second\n",
+        )
+        .unwrap();
+
+        let paths = ConfigPaths {
+            workspace_root: root.clone(),
+            workspace_config_dir: root.join(".puffer"),
+            user_config_dir: root.join(".home/.puffer"),
+            builtin_resources_dir: root.join("resources"),
+        };
+        let loaded = load_resources(&paths).unwrap();
+        assert_eq!(loaded.prompts.len(), 1);
+        assert_eq!(loaded.prompts[0].value.description, "Second");
+        assert!(loaded.diagnostics.iter().any(|item| {
+            item.contains("duplicate prompt `review` in builtin resources")
+                && item.contains("z_review.yaml")
+                && item.contains("a_review.yaml")
+        }));
+    }
+
+    #[test]
+    fn hook_resources_override_by_id_and_filter_by_event() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let builtin = root.join("resources/hooks");
+        let workspace = root.join(".puffer/resources/hooks");
+        fs::create_dir_all(&builtin).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            builtin.join("tool_end.yaml"),
+            "id: tool-end\nevent: tool_end\ncommand: echo builtin\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("tool_end.yaml"),
+            "id: tool-end\nevent: tool_end\ncommand: echo workspace\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("tool_start.yaml"),
+            "id: tool-start\nevent: tool_start\ncommand: echo start\n",
+        )
+        .unwrap();
+
+        let paths = ConfigPaths {
+            workspace_root: root.clone(),
+            workspace_config_dir: root.join(".puffer"),
+            user_config_dir: root.join(".home/.puffer"),
+            builtin_resources_dir: root.join("resources"),
+        };
+        let loaded = load_resources(&paths).unwrap();
+        assert_eq!(loaded.hooks.len(), 2);
+        assert_eq!(
+            hook_by_id(&loaded, "tool-end").unwrap().value.command,
+            "echo workspace"
+        );
+        let tool_end_hooks = hooks_for_event(&loaded, "tool_end");
+        assert_eq!(tool_end_hooks.len(), 1);
+        assert_eq!(tool_end_hooks[0].value.id, "tool-end");
+        assert_eq!(tool_end_hooks[0].value.command, "echo workspace");
+        assert!(loaded
+            .diagnostics
+            .iter()
+            .any(|item| item.contains("workspace hook `tool-end`")));
     }
 }

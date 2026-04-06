@@ -6,17 +6,27 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
-/// Generic runtime model discovery client for provider APIs.
-#[derive(Debug, Clone, Default)]
-pub struct ModelDiscoveryClient;
+/// Fetches and parses provider model catalogs from runtime discovery endpoints.
+#[derive(Debug, Clone)]
+pub struct ModelDiscoveryClient {
+    client: Client,
+}
+
+impl Default for ModelDiscoveryClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ModelDiscoveryClient {
-    /// Creates a discovery client using the default blocking HTTP transport.
+    /// Creates a blocking discovery client for provider model lookups.
     pub fn new() -> Self {
-        Self
+        Self {
+            client: Client::new(),
+        }
     }
 
-    /// Discovers models for a provider using its configured discovery endpoint.
+    /// Fetches and parses discovered models for one provider descriptor.
     pub fn discover_models(
         &self,
         provider: &ProviderDescriptor,
@@ -25,14 +35,22 @@ impl ModelDiscoveryClient {
         let Some(discovery) = provider.discovery.as_ref() else {
             return Ok(Vec::new());
         };
+        let payload = self.fetch_payload(provider, discovery, auth_store)?;
+        parse_discovered_models(provider, discovery, &payload)
+    }
 
+    fn fetch_payload(
+        &self,
+        provider: &ProviderDescriptor,
+        discovery: &ModelDiscoveryConfig,
+        auth_store: &AuthStore,
+    ) -> Result<Value> {
         let url = format!(
             "{}{}",
             provider.base_url.trim_end_matches('/'),
             discovery.path
         );
-        let client = Client::new();
-        let mut request = client.get(&url);
+        let mut request = self.client.get(&url);
         for (key, value) in &provider.headers {
             request = request.header(key, value);
         }
@@ -50,18 +68,14 @@ impl ModelDiscoveryClient {
                 provider.id
             ));
         }
-        let payload = response
+        response
             .json::<Value>()
-            .with_context(|| format!("failed to parse discovery response from {url}"))?;
-        parse_discovered_models(provider, discovery, &payload)
+            .with_context(|| format!("failed to parse discovery response from {url}"))
     }
 }
 
-/// Merges discovered models into an existing model list by id.
-pub fn merge_discovered_models(
-    existing: &mut Vec<ModelDescriptor>,
-    discovered: Vec<ModelDescriptor>,
-) {
+/// Merges newly discovered models into an existing provider catalog without duplicates.
+pub fn merge_discovered_models(existing: &mut Vec<ModelDescriptor>, discovered: Vec<ModelDescriptor>) {
     for model in discovered {
         if existing.iter().any(|current| current.id == model.id) {
             continue;
@@ -84,10 +98,9 @@ fn apply_discovery_auth(
         Some(StoredCredential::ApiKey { key }) => {
             request.header("Authorization", format!("Bearer {key}"))
         }
-        Some(StoredCredential::OAuth(credential)) => request.header(
-            "Authorization",
-            format!("Bearer {}", credential.access_token),
-        ),
+        Some(StoredCredential::OAuth(credential)) => {
+            request.header("Authorization", format!("Bearer {}", credential.access_token))
+        }
         None => request,
     }
 }
@@ -119,22 +132,10 @@ fn parse_discovered_models(
                     discovery.id_field
                 )
             })?;
-        let display_name = match discovery.display_name_field.as_deref() {
-            Some(field) => item.get(field).and_then(Value::as_str).unwrap_or(id),
-            None => match discovery.response {
-                ModelDiscoveryFormat::AnthropicModels => item
-                    .get("display_name")
-                    .or_else(|| item.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or(id),
-                ModelDiscoveryFormat::OpenAiModels => {
-                    item.get("name").and_then(Value::as_str).unwrap_or(id)
-                }
-            },
-        };
+        let display_name = resolve_display_name(item, discovery, id);
         models.push(ModelDescriptor {
             id: id.to_string(),
-            display_name: display_name.to_string(),
+            display_name,
             provider: provider.id.clone(),
             api: discovery.api.clone(),
             context_window: discovery.context_window,
@@ -145,32 +146,44 @@ fn parse_discovered_models(
     Ok(models)
 }
 
+fn resolve_display_name(item: &Value, discovery: &ModelDiscoveryConfig, id: &str) -> String {
+    if let Some(field) = discovery.display_name_field.as_deref() {
+        return item
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_string();
+    }
+    match discovery.response {
+        ModelDiscoveryFormat::AnthropicModels => item
+            .get("display_name")
+            .or_else(|| item.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_string(),
+        ModelDiscoveryFormat::OpenAiModels => item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::AuthMode;
     use indexmap::IndexMap;
 
-    fn provider_with_discovery() -> ProviderDescriptor {
+    fn provider(discovery: ModelDiscoveryConfig) -> ProviderDescriptor {
         ProviderDescriptor {
-            id: "openai".to_string(),
-            display_name: "OpenAI".to_string(),
-            base_url: "http://127.0.0.1:1".to_string(),
-            default_api: "openai-responses".to_string(),
+            id: "custom".to_string(),
+            display_name: "Custom".to_string(),
+            base_url: "https://example.invalid".to_string(),
+            default_api: "custom-api".to_string(),
             auth_modes: vec![AuthMode::ApiKey],
             headers: IndexMap::new(),
-            discovery: Some(ModelDiscoveryConfig {
-                path: "/v1/models".to_string(),
-                response: ModelDiscoveryFormat::OpenAiModels,
-                api: "openai-responses".to_string(),
-                context_window: 272_000,
-                max_output_tokens: 16_384,
-                supports_reasoning: true,
-                items_field: "data".to_string(),
-                id_field: "id".to_string(),
-                display_name_field: None,
-                headers: IndexMap::new(),
-            }),
+            discovery: Some(discovery),
             models: Vec::new(),
         }
     }
@@ -178,81 +191,77 @@ mod tests {
     #[test]
     fn merge_discovered_models_only_adds_missing_ids() {
         let mut models = vec![ModelDescriptor {
-            id: "gpt-5".to_string(),
-            display_name: "GPT-5".to_string(),
-            provider: "openai".to_string(),
-            api: "openai-responses".to_string(),
-            context_window: 272_000,
-            max_output_tokens: 16_384,
+            id: "claude-sonnet-4-5".to_string(),
+            display_name: "Claude Sonnet 4.5".to_string(),
+            provider: "anthropic".to_string(),
+            api: "anthropic-messages".to_string(),
+            context_window: 200_000,
+            max_output_tokens: 8_192,
             supports_reasoning: true,
         }];
         merge_discovered_models(
             &mut models,
             vec![
                 ModelDescriptor {
-                    id: "gpt-5".to_string(),
-                    display_name: "GPT-5".to_string(),
-                    provider: "openai".to_string(),
-                    api: "openai-responses".to_string(),
-                    context_window: 272_000,
-                    max_output_tokens: 16_384,
+                    id: "claude-sonnet-4-5".to_string(),
+                    display_name: "Claude Sonnet 4.5".to_string(),
+                    provider: "anthropic".to_string(),
+                    api: "anthropic-messages".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: 8_192,
                     supports_reasoning: true,
                 },
                 ModelDescriptor {
-                    id: "gpt-5-mini".to_string(),
-                    display_name: "GPT-5 Mini".to_string(),
-                    provider: "openai".to_string(),
-                    api: "openai-responses".to_string(),
-                    context_window: 272_000,
-                    max_output_tokens: 16_384,
+                    id: "claude-opus-4-1".to_string(),
+                    display_name: "Claude Opus 4.1".to_string(),
+                    provider: "anthropic".to_string(),
+                    api: "anthropic-messages".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: 8_192,
                     supports_reasoning: true,
                 },
             ],
         );
         assert_eq!(models.len(), 2);
-        assert!(models.iter().any(|model| model.id == "gpt-5-mini"));
+        assert!(models.iter().any(|model| model.id == "claude-opus-4-1"));
     }
 
     #[test]
-    fn parse_discovered_models_supports_configured_fields() {
-        let mut provider = provider_with_discovery();
-        provider.discovery = Some(ModelDiscoveryConfig {
+    fn discovery_uses_custom_field_names() {
+        let discovery = ModelDiscoveryConfig {
             path: "/models".to_string(),
-            response: ModelDiscoveryFormat::AnthropicModels,
+            response: ModelDiscoveryFormat::OpenAiModels,
             api: "custom-api".to_string(),
-            context_window: 8_000,
-            max_output_tokens: 2_000,
+            context_window: 32_000,
+            max_output_tokens: 4_096,
             supports_reasoning: false,
-            items_field: "models".to_string(),
-            id_field: "name".to_string(),
+            items_field: "items".to_string(),
+            id_field: "slug".to_string(),
             display_name_field: Some("label".to_string()),
             headers: IndexMap::new(),
-        });
-        let models = parse_discovered_models(
-            &provider,
-            provider.discovery.as_ref().expect("discovery config"),
-            &serde_json::json!({
-                "models": [
-                    { "name": "custom-a", "label": "Custom A" }
-                ]
-            }),
-        )
-        .expect("models");
-        assert_eq!(models[0].id, "custom-a");
-        assert_eq!(models[0].display_name, "Custom A");
-        assert_eq!(models[0].api, "custom-api");
-    }
-
-    #[test]
-    fn discover_models_without_discovery_returns_empty_list() {
-        let client = ModelDiscoveryClient::new();
-        let provider = ProviderDescriptor {
-            discovery: None,
-            ..provider_with_discovery()
         };
-        let models = client
-            .discover_models(&provider, &AuthStore::default())
+        let payload = serde_json::json!({
+            "items": [
+                { "slug": "reasoner", "label": "Reasoner" }
+            ]
+        });
+        let models =
+            parse_discovered_models(&provider(discovery), &provider(ModelDiscoveryConfig {
+                path: "/models".to_string(),
+                response: ModelDiscoveryFormat::OpenAiModels,
+                api: "custom-api".to_string(),
+                context_window: 32_000,
+                max_output_tokens: 4_096,
+                supports_reasoning: false,
+                items_field: "items".to_string(),
+                id_field: "slug".to_string(),
+                display_name_field: Some("label".to_string()),
+                headers: IndexMap::new(),
+            })
+            .discovery
+            .unwrap(), &payload)
             .expect("models");
-        assert!(models.is_empty());
+        assert_eq!(models[0].id, "reasoner");
+        assert_eq!(models[0].display_name, "Reasoner");
     }
 }

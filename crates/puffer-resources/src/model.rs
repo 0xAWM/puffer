@@ -3,6 +3,7 @@ use puffer_provider_registry::{
     ProviderSourceKind,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
 
 /// Identifies which layer produced a resource.
@@ -50,9 +51,21 @@ pub struct ToolSpec {
     pub description: String,
     pub handler: String,
     #[serde(default)]
+    pub handler_args: Vec<String>,
+    #[serde(default)]
     pub approval_policy: Option<String>,
     #[serde(default)]
     pub sandbox_policy: Option<String>,
+    #[serde(default)]
+    pub shared_lib: Option<String>,
+    #[serde(default)]
+    pub enabled_if: Option<String>,
+    #[serde(default)]
+    pub input_schema: Option<Value>,
+    #[serde(default)]
+    pub metadata: ToolMetadataSpec,
+    #[serde(default)]
+    pub display: ToolDisplaySpec,
 }
 
 /// Declares a YAML-editable prompt template.
@@ -61,6 +74,70 @@ pub struct PromptTemplate {
     pub id: String,
     pub description: String,
     pub template: String,
+    #[serde(default)]
+    pub variables: Vec<PromptVariableSpec>,
+    #[serde(default)]
+    pub provider_override: Option<String>,
+    #[serde(default)]
+    pub model_override: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub chained_from: Vec<String>,
+}
+
+impl PromptTemplate {
+    /// Renders the prompt template using the provided variables and prompt defaults.
+    pub fn render(&self, variables: &std::collections::BTreeMap<String, String>) -> String {
+        let mut rendered = self.template.clone();
+        for variable in &self.variables {
+            let key = format!("${}", variable.name);
+            let value = variables
+                .get(&variable.name)
+                .cloned()
+                .or_else(|| variable.default.clone())
+                .unwrap_or_default();
+            rendered = rendered.replace(&key, &value);
+        }
+        for (name, value) in variables {
+            rendered = rendered.replace(&format!("${name}"), value);
+        }
+        rendered
+    }
+}
+
+/// Declares one variable accepted by a prompt template.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptVariableSpec {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+/// Carries optional runtime metadata overrides for a declarative tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ToolMetadataSpec {
+    #[serde(default)]
+    pub may_spawn_processes: bool,
+    #[serde(default)]
+    pub may_read_files: bool,
+    #[serde(default)]
+    pub may_write_files: bool,
+}
+
+/// Carries optional display hints for a declarative tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ToolDisplaySpec {
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub show_in_status: bool,
 }
 
 /// Declares a YAML-editable hook specification.

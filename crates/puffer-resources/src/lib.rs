@@ -1,10 +1,15 @@
 mod loader;
 mod model;
 
-pub use loader::{load_resources, plugin_by_id, plugin_mcp_servers, prompt_by_id, skill_by_name};
+use std::collections::BTreeSet;
+
+pub use loader::{
+    hook_by_id, load_resources, plugin_by_id, plugin_mcp_servers, prompt_by_id, skill_by_name,
+};
 pub use model::{
     HookSpec, IdeSpec, LoadedItem, LoadedResources, MascotSpec, McpServerSpec, PluginCommandSpec,
-    PluginSpec, PromptTemplate, ProviderPack, SkillSpec, SourceInfo, SourceKind, ToolSpec,
+    PluginSpec, PromptTemplate, PromptVariableSpec, ProviderPack, SkillSpec, SourceInfo,
+    SourceKind, ToolDisplaySpec, ToolMetadataSpec, ToolSpec,
 };
 
 /// Looks up a mascot by id.
@@ -26,4 +31,35 @@ pub fn hooks_for_event<'a>(
         .iter()
         .filter(|hook| hook.value.event == event)
         .collect()
+}
+
+/// Renders a prompt template by id, including any chained parent prompts.
+pub fn render_prompt_by_id(
+    resources: &LoadedResources,
+    id: &str,
+    variables: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let mut visited = BTreeSet::new();
+    let mut sections = Vec::new();
+    append_prompt_sections(resources, id, variables, &mut visited, &mut sections);
+    (!sections.is_empty()).then(|| sections.join("\n\n"))
+}
+
+fn append_prompt_sections(
+    resources: &LoadedResources,
+    id: &str,
+    variables: &std::collections::BTreeMap<String, String>,
+    visited: &mut BTreeSet<String>,
+    sections: &mut Vec<String>,
+) {
+    if !visited.insert(id.to_string()) {
+        return;
+    }
+    let Some(prompt) = prompt_by_id(resources, id) else {
+        return;
+    };
+    for chained in &prompt.value.chained_from {
+        append_prompt_sections(resources, chained, variables, visited, sections);
+    }
+    sections.push(prompt.value.render(variables));
 }
