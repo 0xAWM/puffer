@@ -10,7 +10,8 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, size as terminal_size, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
@@ -22,8 +23,10 @@ use puffer_resources::LoadedResources;
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_tools::{ToolInput, ToolRegistry};
 use ratatui::backend::CrosstermBackend;
+use ratatui::{TerminalOptions, Viewport};
 use ratatui::Terminal;
 use std::io;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -42,16 +45,43 @@ pub fn run_app(
     initial_prompt: Option<String>,
     no_alt_screen: bool,
 ) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        if let Some(prompt) = initial_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+            handle_submit(
+                state,
+                resources,
+                providers,
+                auth_store,
+                auth_path,
+                session_store,
+                prompt,
+                no_alt_screen,
+            )?;
+            return Ok(());
+        }
+        anyhow::bail!("interactive TUI requires stdin and stdout to be terminals");
+    }
+
     let bypass_onboarding = initial_prompt
         .as_deref()
         .map(allow_prompt_before_onboarding)
         .unwrap_or(false);
+    enable_raw_mode()?;
     if !no_alt_screen {
-        enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
     }
 
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut terminal = if no_alt_screen {
+        let (_, height) = terminal_size()?;
+        Terminal::with_options(
+            CrosstermBackend::new(io::stdout()),
+            TerminalOptions {
+                viewport: Viewport::Inline(height.max(1)),
+            },
+        )?
+    } else {
+        Terminal::new(CrosstermBackend::new(io::stdout()))?
+    };
     let mut tui = TuiState::default();
     tui.defer_prompt(
         initial_prompt
@@ -128,8 +158,8 @@ pub fn run_app(
         }
     }
 
+    disable_raw_mode()?;
     if !no_alt_screen {
-        disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
     Ok(())
