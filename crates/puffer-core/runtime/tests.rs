@@ -14,6 +14,7 @@ fn provider() -> ProviderDescriptor {
         default_api: "anthropic-messages".to_string(),
         auth_modes: vec![AuthMode::ApiKey],
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![puffer_provider_registry::ModelDescriptor {
             id: "claude-sonnet-4-5".to_string(),
@@ -35,6 +36,7 @@ fn openai_provider() -> ProviderDescriptor {
         default_api: "openai-responses".to_string(),
         auth_modes: vec![AuthMode::ApiKey],
         headers: Default::default(),
+        query_params: Default::default(),
         discovery: None,
         models: vec![puffer_provider_registry::ModelDescriptor {
             id: "gpt-5".to_string(),
@@ -91,6 +93,11 @@ fn openai_request_config() -> OpenAIRequestConfig {
         base_url: "https://api.openai.com".to_string(),
         version: "0.1.0".to_string(),
         auth: OpenAIAuth::ApiKey("sk-openai".to_string()),
+        originator: "codex_cli_rs".to_string(),
+        session_id: None,
+        account_id: None,
+        custom_headers: Vec::new(),
+        query_params: Vec::new(),
     }
 }
 

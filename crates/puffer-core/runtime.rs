@@ -36,6 +36,7 @@ use tool_support::{
 use web_search::{execute_anthropic_web_search, execute_openai_web_search};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
 /// Describes one tool call executed during a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolInvocation {
@@ -241,6 +242,19 @@ fn execute_openai(
         base_url: provider.base_url.clone(),
         version: APP_VERSION.to_string(),
         auth,
+        originator: OPENAI_CODEX_ORIGINATOR.to_string(),
+        session_id: None,
+        account_id: None,
+        custom_headers: provider
+            .headers
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        query_params: provider
+            .query_params
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
     };
     let registry = ToolRegistry::from_resources(resources);
     let tools = openai_tool_definitions(&registry, provider, &model_id);
@@ -326,6 +340,19 @@ fn execute_openai_completions(
         base_url: provider.base_url.clone(),
         version: APP_VERSION.to_string(),
         auth,
+        originator: OPENAI_CODEX_ORIGINATOR.to_string(),
+        session_id: None,
+        account_id: None,
+        custom_headers: provider
+            .headers
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        query_params: provider
+            .query_params
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
     };
     let registry = ToolRegistry::from_resources(resources);
     let tools = openai_chat_completion_tools(&registry, provider, &model_id);

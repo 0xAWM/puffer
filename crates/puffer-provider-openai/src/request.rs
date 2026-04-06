@@ -337,7 +337,11 @@ mod tests {
                         },
                         "required": ["path"]
                     }),
+                    filters: None,
+                    user_location: None,
+                    external_web_access: None,
                 }],
+                include: Vec::new(),
                 tool_choice: Some(OpenAIResponsesToolChoice::Mode(
                     OpenAIResponsesToolChoiceMode::Auto,
                 )),

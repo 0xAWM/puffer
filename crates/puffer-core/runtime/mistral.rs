@@ -80,6 +80,11 @@ pub(super) fn execute_turn(
                 base_url: provider.base_url.clone(),
                 version: APP_VERSION.to_string(),
                 auth: OpenAIAuth::None,
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
             },
             &model_id,
         )?;
