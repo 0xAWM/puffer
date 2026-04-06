@@ -20,6 +20,7 @@ pub(crate) fn render(
     auth_store: &AuthStore,
     input: &str,
     slash_selection: usize,
+    scroll_offset: u16,
     commands: &[CommandSpec],
 ) {
     let tool_registry = ToolRegistry::from_resources(resources);
@@ -58,6 +59,7 @@ pub(crate) fn render(
     frame.render_widget(header, layout[0]);
 
     let transcript_widget = Paragraph::new(transcript_text(state))
+        .scroll((scroll_offset, 0))
         .wrap(Wrap { trim: false })
         .block(Block::default().title("Transcript").borders(Borders::ALL));
     frame.render_widget(transcript_widget, body[0]);
@@ -122,6 +124,10 @@ fn transcript_text(state: &AppState) -> Text<'static> {
             .flat_map(render_transcript_message)
             .collect::<Vec<_>>(),
     )
+}
+
+pub(crate) fn transcript_line_count(state: &AppState) -> u16 {
+    transcript_text(state).lines.len().min(u16::MAX as usize) as u16
 }
 
 fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
@@ -713,6 +719,7 @@ slash=/re matches=2 best=/review  Enter submits  Esc clears
                     &providers,
                     &auth_store,
                     "/re",
+                    0,
                     0,
                     &sample_commands(),
                 )

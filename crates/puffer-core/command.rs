@@ -1162,4 +1162,59 @@ mod tests {
         assert_eq!(state.session.parent_session_id, Some(original_id));
         assert_eq!(state.session.display_name.as_deref(), Some("drydock"));
     }
+
+    #[test]
+    fn memory_command_updates_session_metadata() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let session = session_store
+            .create_session(tempdir.path().to_path_buf())
+            .unwrap();
+        let mut state = AppState::new(
+            PufferConfig::default(),
+            tempdir.path().to_path_buf(),
+            session,
+        );
+
+        dispatch_command(
+            &mut state,
+            &supported_commands(),
+            &LoadedResources::default(),
+            &ProviderRegistry::new(),
+            &AuthStore::default(),
+            &session_store,
+            "/memory note keep shipping",
+        )
+        .unwrap();
+        dispatch_command(
+            &mut state,
+            &supported_commands(),
+            &LoadedResources::default(),
+            &ProviderRegistry::new(),
+            &AuthStore::default(),
+            &session_store,
+            "/memory tag add parity",
+        )
+        .unwrap();
+        dispatch_command(
+            &mut state,
+            &supported_commands(),
+            &LoadedResources::default(),
+            &ProviderRegistry::new(),
+            &AuthStore::default(),
+            &session_store,
+            "/memory slug shipyard",
+        )
+        .unwrap();
+
+        let record = session_store.load_session(state.session.id).unwrap();
+        assert_eq!(state.session.note.as_deref(), Some("keep shipping"));
+        assert_eq!(state.session.slug.as_deref(), Some("shipyard"));
+        assert!(state.session.tags.iter().any(|tag| tag == "parity"));
+        assert_eq!(record.metadata.note.as_deref(), Some("keep shipping"));
+        assert_eq!(record.metadata.slug.as_deref(), Some("shipyard"));
+        assert!(record.metadata.tags.iter().any(|tag| tag == "parity"));
+    }
 }

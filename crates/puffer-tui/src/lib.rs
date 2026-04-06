@@ -61,6 +61,7 @@ pub fn run_app(
                 auth_store,
                 &tui.input,
                 tui.slash_selection,
+                tui.scroll_offset,
                 &commands,
             )
         })?;
@@ -116,8 +117,22 @@ fn handle_key(
         KeyCode::Right => tui.move_right(),
         KeyCode::Home => tui.move_home(),
         KeyCode::End => tui.move_end(),
-        KeyCode::Up => tui.select_previous(commands),
-        KeyCode::Down => tui.select_next(commands),
+        KeyCode::Up => {
+            if tui.input.starts_with('/') {
+                tui.select_previous(commands)
+            } else {
+                tui.scroll_up(1);
+            }
+        }
+        KeyCode::Down => {
+            if tui.input.starts_with('/') {
+                tui.select_next(commands)
+            } else {
+                tui.scroll_down(1, render::transcript_line_count(state));
+            }
+        }
+        KeyCode::PageUp => tui.scroll_up(10),
+        KeyCode::PageDown => tui.scroll_down(10, render::transcript_line_count(state)),
         KeyCode::Backspace => tui.backspace(commands),
         KeyCode::Delete => tui.delete(commands),
         KeyCode::Tab => {
@@ -266,6 +281,7 @@ struct TuiState {
     input: String,
     cursor: usize,
     slash_selection: usize,
+    scroll_offset: u16,
 }
 
 impl TuiState {
@@ -388,6 +404,15 @@ impl TuiState {
             self.slash_selection = self.slash_selection.min(count - 1);
         }
     }
+
+    fn scroll_up(&mut self, amount: u16) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(amount);
+    }
+
+    fn scroll_down(&mut self, amount: u16, line_count: u16) {
+        let max_offset = line_count.saturating_sub(1);
+        self.scroll_offset = (self.scroll_offset + amount).min(max_offset);
+    }
 }
 
 fn previous_boundary(input: &str, cursor: usize) -> usize {
@@ -447,6 +472,7 @@ mod tests {
                     &auth_store,
                     "/rev",
                     0,
+                    0,
                     &supported_commands(),
                 )
             })
@@ -490,6 +516,15 @@ mod tests {
     }
 
     #[test]
+    fn transcript_scroll_clamps_to_available_lines() {
+        let mut tui = TuiState::default();
+        tui.scroll_down(5, 3);
+        assert_eq!(tui.scroll_offset, 2);
+        tui.scroll_up(1);
+        assert_eq!(tui.scroll_offset, 1);
+    }
+
+    #[test]
     fn render_shows_status_line_when_enabled() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -506,6 +541,7 @@ mod tests {
                     &providers,
                     &auth_store,
                     "",
+                    0,
                     0,
                     &supported_commands(),
                 )
