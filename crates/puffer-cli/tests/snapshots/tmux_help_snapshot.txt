@@ -1,4 +1,3 @@
-
 Puffer Code · session-<id>... · anthropic/claude-sonnet-
 · Supported commands:
   /add-dir          Add a new working directory
@@ -9,15 +8,15 @@ conversation at this point
 context note
   /buddy            Show or interact with Clawd
   /clear            Clear conversation history and free up
-contextuffer Code ────────────────────────────────────╮
+context
   /color            Set the prompt bar color for this
-session           Welcome to Puffer Code
+session
   /compact          Summarize the conversation to preserve
-context budget         Clawd on duty
-  /config       anthOpen configepanelet-4-5
-  /context          Show current c  t xt usage
+context budget
+  /config           Open config panel
+  /context          Show current context usage
   /copy             Copy the latest assistant output
-  /cost─────────────Show─the─total─cost─and─duration─of the
+  /cost             Show the total cost and duration of the
 current session
   /diff             View uncommitted changes and per-turn
 diffs
@@ -40,8 +39,8 @@ configuration file
   /logout           Sign out from a provider
   /mcp              Manage MCP servers
   /memory           Edit memory files
-──/model            Select the active model              ──
-an───────────────────────────────────────────────────────to
-wothropic · anthropic/claude-sonnet-4-5 · auth api-key · rk
-? /helphortcuts · /help · /review · !pwd
+  /model            Select the active model
+───────────────────────────────────────────────────────────
+anthropic · anthropic/claude-sonnet-4-5 · auth api-key · to
+workspace · shell 0 · prompts 7 · 0 workdirs · sandbox work
 ? for shortcuts · /help · /review · !pwd

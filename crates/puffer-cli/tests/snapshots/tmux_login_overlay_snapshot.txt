@@ -32,7 +32,6 @@
 
 
 
-
   ╭─────────────────────────────────────────────────────╮
   │/add-dir          Add a new working directory  <path>│
   │/agents           Manage agent configurations        │
@@ -40,8 +39,8 @@
   │/btw              Capture a quick side question or co│
   │/buddy            Show or interact with Clawd        │
   │/clear            Clear conversation history and free│
-──│/color────────────Set─the─prompt─bar─color─for─this─s│──
-an│/compact          Summarize the conversation to prese│to
-wo╰─────────────────────────────────────────────────────╯rk
-? /loginortcuts · /help · /review · !pwd
+  │/color            Set the prompt bar color for this s│
+──│/compact          Summarize the conversation to prese│──
+an╰─────────────────────────────────────────────────────╯to
+workspace · shell 0 · prompts 7 · 0 workdirs · sandbox work
 slash / · 8 matches · best /add-dir · Enter submits · Esc c
