@@ -23,6 +23,8 @@ use puffer_transport_anthropic::{
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 
+mod mistral;
+
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Describes one tool call executed during a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,8 +56,11 @@ pub fn execute_user_prompt(
         "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
             execute_openai(state, resources, provider, model_id, auth_store, input)
         }
-        "openai-completions" | "mistral-conversations" => {
+        "openai-completions" => {
             execute_openai_completions(state, resources, provider, model_id, auth_store, input)
+        }
+        "mistral-conversations" => {
+            mistral::execute_turn(state, resources, provider, model_id, auth_store, input)
         }
         other => bail!(
             "provider {} with api {other} is not executable yet",
