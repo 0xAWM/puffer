@@ -8,6 +8,7 @@ mod auth;
 mod fingerprint;
 mod request;
 mod response;
+mod usage;
 
 pub use auth::{
     build_authorization_url, exchange_authorization_code, generate_pkce, get_session_ingress_auth,
@@ -24,4 +25,7 @@ pub use request::{
 pub use response::{
     AnthropicContentBlock, AnthropicMessageResponse, AnthropicTextBlock, AnthropicToolUseBlock,
     AnthropicUnknownBlock,
+};
+pub use usage::{
+    fetch_oauth_usage, AnthropicExtraUsage, AnthropicRateLimit, AnthropicUtilization,
 };

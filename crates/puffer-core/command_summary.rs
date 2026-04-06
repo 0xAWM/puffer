@@ -3,6 +3,7 @@ use puffer_provider_registry::{
     AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
 };
 use puffer_resources::{mascot_by_id, LoadedResources};
+use puffer_transport_anthropic::{fetch_oauth_usage, AnthropicExtraUsage, AnthropicRateLimit};
 use std::fmt::Write as _;
 
 /// Renders the most recent recorded tool and shell tasks.
@@ -169,13 +170,16 @@ fn provider_usage_lines(
     credential: Option<&StoredCredential>,
 ) -> Vec<String> {
     match provider_family(provider, provider.map(|provider| provider.id.as_str())) {
-        ProviderSummaryFamily::Anthropic => anthropic_usage_lines(credential),
+        ProviderSummaryFamily::Anthropic => anthropic_usage_lines(provider, credential),
         ProviderSummaryFamily::OpenAi => openai_usage_lines(credential),
         ProviderSummaryFamily::Other => generic_usage_lines(credential),
     }
 }
 
-fn anthropic_usage_lines(credential: Option<&StoredCredential>) -> Vec<String> {
+fn anthropic_usage_lines(
+    provider: Option<&ProviderDescriptor>,
+    credential: Option<&StoredCredential>,
+) -> Vec<String> {
     let mut lines = vec![String::from("Claude subscription usage")];
     let Some(StoredCredential::OAuth(credential)) = credential else {
         lines.push(String::from(
@@ -184,6 +188,34 @@ fn anthropic_usage_lines(credential: Option<&StoredCredential>) -> Vec<String> {
         return lines;
     };
 
+    if should_attempt_live_anthropic_usage(credential) {
+        if let Some(provider) = provider {
+            match fetch_oauth_usage(&provider.base_url, &credential.access_token) {
+                Ok(usage) => {
+                    lines.push(format_rate_limit_line("Current session", usage.five_hour.as_ref()));
+                    lines.push(format_rate_limit_line(
+                        "Current week (all models)",
+                        usage.seven_day.as_ref(),
+                    ));
+                    if shows_anthropic_sonnet_limit(credential) {
+                        lines.push(format_rate_limit_line(
+                            "Current week (Sonnet only)",
+                            usage.seven_day_sonnet.as_ref(),
+                        ));
+                    }
+                    if supports_extra_usage(credential) {
+                        lines.push(format_extra_usage_line(usage.extra_usage.as_ref()));
+                    }
+                    return lines;
+                }
+                Err(error) => {
+                    lines.push(format!(
+                        "Live Claude usage fetch failed: {error}"
+                    ));
+                }
+            }
+        }
+    }
     lines.push(String::from(
         "Current session: unavailable in local summary",
     ));
@@ -198,9 +230,6 @@ fn anthropic_usage_lines(credential: Option<&StoredCredential>) -> Vec<String> {
     if supports_extra_usage(credential) {
         lines.push(String::from("Extra usage: unavailable in local summary"));
     }
-    lines.push(String::from(
-        "Live Claude usage fetch is not wired into this command yet.",
-    ));
     lines
 }
 
@@ -286,6 +315,44 @@ fn shows_anthropic_sonnet_limit(credential: &OAuthCredential) -> bool {
 
 fn supports_extra_usage(credential: &OAuthCredential) -> bool {
     matches!(credential.plan_type.as_deref(), Some("pro" | "max"))
+}
+
+fn should_attempt_live_anthropic_usage(credential: &OAuthCredential) -> bool {
+    credential.access_token.len() >= 20
+}
+
+fn format_rate_limit_line(title: &str, bucket: Option<&AnthropicRateLimit>) -> String {
+    let Some(bucket) = bucket else {
+        return format!("{title}: unavailable");
+    };
+    let utilization = bucket
+        .utilization
+        .map(|value| format!("{}% used", value.floor() as i64))
+        .unwrap_or_else(|| "unavailable".to_string());
+    let reset = bucket
+        .resets_at
+        .as_deref()
+        .map(|value| format!(" · resets {value}"))
+        .unwrap_or_default();
+    format!("{title}: {utilization}{reset}")
+}
+
+fn format_extra_usage_line(extra_usage: Option<&AnthropicExtraUsage>) -> String {
+    let Some(extra_usage) = extra_usage else {
+        return String::from("Extra usage: unavailable");
+    };
+    if !extra_usage.is_enabled {
+        return String::from("Extra usage: disabled");
+    }
+    let utilization = extra_usage
+        .utilization
+        .map(|value| format!("{}% used", value.floor() as i64))
+        .unwrap_or_else(|| "enabled".to_string());
+    let limit = extra_usage
+        .monthly_limit
+        .map(|value| format!(" · monthly limit {}", value.floor() as i64))
+        .unwrap_or_default();
+    format!("Extra usage: {utilization}{limit}")
 }
 
 fn format_metadata_value(value: &str) -> String {
