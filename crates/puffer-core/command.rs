@@ -1,9 +1,9 @@
 use crate::command_helpers::{
     append_tool_invocations, copy_last_message, describe_context, describe_git_diff,
-    describe_permissions, emit_system, execute_skill_command, handle_agents_command,
+    emit_system, execute_skill_command, handle_agents_command,
     handle_config_command, handle_hooks_command, handle_ide_command,
     handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_plugin_command, handle_session_command, list_skills, reload_plugins_summary,
+    handle_permissions_command, handle_plugin_command, handle_session_command, list_skills, reload_plugins_summary,
     rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::{AppState, MessageRole};
@@ -619,7 +619,7 @@ fn execute_local_command(
                 emit_system(state, session_store, format!("Unknown model {args}."))
             }
         }
-        "permissions" => describe_permissions(state, resources, session_store),
+        "permissions" => handle_permissions_command(state, resources, session_store, args),
         "hooks" => handle_hooks_command(state, resources, session_store, args),
         "statusline" => {
             if args.is_empty() {
@@ -710,7 +710,7 @@ fn execute_local_command(
         }
         "copy" => copy_last_message(state, session_store),
         "diff" => describe_git_diff(state, session_store),
-        "doctor" => run_doctor(state, resources, providers, session_store),
+        "doctor" => run_doctor(state, resources, providers, auth_store, session_store),
         "buddy" => emit_system(
             state,
             session_store,

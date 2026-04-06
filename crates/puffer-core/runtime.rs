@@ -13,8 +13,8 @@ use puffer_provider_registry::{
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
-    build_messages_request, AnthropicAuth, AnthropicMessage, AnthropicModelRequest,
-    AnthropicRequestConfig,
+    build_messages_request, get_session_ingress_auth, AnthropicAuth, AnthropicMessage,
+    AnthropicModelRequest, AnthropicRequestConfig,
 };
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -286,9 +286,11 @@ fn anthropic_auth_for_provider(auth_store: &AuthStore, provider_id: &str) -> Res
         Some(StoredCredential::OAuth(OAuthCredential { access_token, .. })) => {
             Ok(AnthropicAuth::OAuthBearer(access_token.clone()))
         }
-        None => bail!(
-            "no credentials configured for provider {provider_id}; use `puffer auth set-api-key {provider_id}` first"
-        ),
+        None => get_session_ingress_auth().ok_or_else(|| {
+            anyhow!(
+                "no credentials configured for provider {provider_id}; use `puffer auth set-api-key {provider_id}` first"
+            )
+        }),
     }
 }
 

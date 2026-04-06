@@ -1,0 +1,46 @@
+┌Header───────────────────────────────────────────────────┐
+│Puffer Code  session=session-79bc437d7c3b4...            │
+│cwd=workspace  msgs=0                                    │
+│provider=anthropic  model=<unset>  auth=api-key          │
+│remote=local                                             │
+└─────────────────────────────────────────────────────────┘
+┌Transcript─────────────────────────────┐┌Session─────────┐
+│N┌Login Provider─────────────────────┐ ││Name:           │
+│s│openai  OpenAI                     │ ││session-79bc437d│
+│ │anthropic  Anthropic               │ ││7c3b453...      │
+│ └───────────────────────────────────┘ ││Id: b3b1617a    │
+│                                       ││Parent: root    │
+│                                       ││Dir: workspace  │
+│                                       ││Transcript: 0   │
+│                                       │└────────────────┘
+│                                       │┌Tools───────────┐
+│                                       ││Configured: 8   │
+│                                       ││Executable: 8   │
+│                                       ││Kinds: bash=on  │
+│                                       ││read=on write=on│
+│                                       ││replace=on      │
+│                                       ││move=on         │
+│                                       ││remove=on       │
+│                                       ││list=on         │
+│                                       │└────────────────┘
+│                                       │┌Inspector───────┐
+│                                       ││Provider:       │
+│                                       ││anthropic       │
+│                                       ││Model: <unset>  │
+│                                       ││Auth: api-key   │
+│                                       ││Auth providers: │
+│                                       ││anthropic       │
+│                                       ││Theme: puffer   │
+│                                       ││Effort: medium  │
+│                                       ││Fast mode: off  │
+│                                       ││Vim mode: off   │
+│                                       ││Status line: on │
+└───────────────────────────────────────┘└────────────────┘
+┌Composer─────────────────────────────────────────────────┐
+│<type /help, /review, or !pwd>                           │
+└─────────────────────────────────────────────────────────┘
+┌Status Line──────────────────────────────────────────────┐
+│auth=api-key  provider=anthropic  model=<unset>          │
+│transcript=0                                             │
+│tools=8/8 ready  shell-runs=0  fast=off  vim=off         │
+└─────────────────────────────────────────────────────────┘

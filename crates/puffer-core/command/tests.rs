@@ -1,7 +1,7 @@
 use super::*;
 use crate::RenderedMessage;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths, MascotConfig, PufferConfig, UiConfig};
-use puffer_provider_registry::{AuthStore, ProviderRegistry};
+use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry};
 use puffer_resources::{LoadedItem, LoadedResources};
 use puffer_session_store::{SessionMetadata, SessionStore};
 use std::path::PathBuf;
@@ -292,6 +292,53 @@ fn keybindings_command_creates_workspace_file() {
 }
 
 #[test]
+fn permissions_command_creates_workspace_permissions_file() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let mut resources = LoadedResources::default();
+    resources.tools.push(LoadedItem {
+        value: puffer_resources::ToolSpec {
+            id: "bash".to_string(),
+            name: "bash".to_string(),
+            description: "Run shell".to_string(),
+            handler: "bash".to_string(),
+            approval_policy: Some("on-request".to_string()),
+            sandbox_policy: Some("workspace-write".to_string()),
+        },
+        source_info: puffer_resources::SourceInfo {
+            path: "tools/bash.yaml".into(),
+            kind: puffer_resources::SourceKind::Builtin,
+        },
+    });
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/permissions",
+    )
+    .unwrap();
+
+    let permissions_path = paths.workspace_config_dir.join("permissions.toml");
+    let contents = std::fs::read_to_string(permissions_path).unwrap();
+    assert!(contents.contains("[tools]"));
+    assert!(contents.contains("bash = \"ask\""));
+}
+
+#[test]
 fn hooks_command_creates_workspace_file() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
@@ -370,6 +417,67 @@ fn plugin_command_creates_workspace_plugin_file() {
 
     let plugin_path = paths.workspace_config_dir.join("resources/plugins/workspace.yaml");
     assert!(plugin_path.exists());
+}
+
+#[test]
+fn doctor_reports_discovery_and_diagnostics() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    state.record_task("bash", "printf hi", true);
+    let mut resources = LoadedResources::default();
+    resources.diagnostics.push("prompt `review` overrides builtin".to_string());
+    let mut providers = ProviderRegistry::new();
+    providers.register(ProviderDescriptor {
+        id: "anthropic".to_string(),
+        display_name: "Anthropic".to_string(),
+        base_url: "https://api.anthropic.com".to_string(),
+        default_api: "anthropic-messages".to_string(),
+        auth_modes: vec![puffer_provider_registry::AuthMode::ApiKey],
+        headers: Default::default(),
+        discovery: Some(puffer_provider_registry::ModelDiscoveryConfig {
+            path: "/v1/models".to_string(),
+            response: puffer_provider_registry::ModelDiscoveryFormat::AnthropicModels,
+            api: "anthropic-messages".to_string(),
+            context_window: 200_000,
+            max_output_tokens: 8_192,
+            supports_reasoning: true,
+        }),
+        models: Vec::new(),
+    });
+    let mut auth_store = AuthStore::default();
+    auth_store.set_api_key("anthropic", "sk-ant");
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &providers,
+        &auth_store,
+        &session_store,
+        "/doctor",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("providers_with_discovery=1")
+            && text.contains("stored_auth_providers=1")
+            && text.contains("resource_diagnostics=1")
+            && text.contains("recorded_tasks=1")
+    ));
 }
 
 #[test]

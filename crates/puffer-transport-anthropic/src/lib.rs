@@ -10,10 +10,11 @@ mod request;
 mod response;
 
 pub use auth::{
-    build_authorization_url, exchange_authorization_code, generate_pkce, parse_authorization_input,
-    refresh_oauth_token, AnthropicAuth, AnthropicOAuthConfig, AnthropicOAuthCredentials,
-    AnthropicPkce, ANTHROPIC_ALL_SCOPES, ANTHROPIC_MANUAL_REDIRECT_URL, ANTHROPIC_TOKEN_URL,
-    CLAUDE_AI_AUTHORIZE_URL, CONSOLE_AUTHORIZE_URL, OAUTH_BETA_HEADER,
+    build_authorization_url, exchange_authorization_code, generate_pkce, get_session_ingress_auth,
+    parse_authorization_input, refresh_oauth_token, AnthropicAuth, AnthropicOAuthConfig,
+    AnthropicOAuthCredentials, AnthropicPkce, ANTHROPIC_ALL_SCOPES,
+    ANTHROPIC_MANUAL_REDIRECT_URL, ANTHROPIC_TOKEN_URL, CLAUDE_AI_AUTHORIZE_URL,
+    CONSOLE_AUTHORIZE_URL, OAUTH_BETA_HEADER,
 };
 pub use fingerprint::compute_fingerprint;
 pub use request::{

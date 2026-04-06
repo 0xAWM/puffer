@@ -343,4 +343,124 @@ mod tests {
         assert_eq!(body["tool_choice"]["type"], "tool");
         assert_eq!(body["tool_choice"]["name"], "bash");
     }
+
+    #[test]
+    fn remote_and_custom_headers_preserve_expected_order() {
+        let mut custom_headers = IndexMap::new();
+        custom_headers.insert("x-custom-a".to_string(), "one".to_string());
+        custom_headers.insert("x-custom-b".to_string(), "two".to_string());
+        let request = build_messages_request(
+            &AnthropicRequestConfig {
+                custom_headers,
+                remote_container_id: Some("container-1".to_string()),
+                remote_session_id: Some("remote-1".to_string()),
+                client_app: Some("sdk-app/1.0".to_string()),
+                additional_protection: true,
+                auth: AnthropicAuth::ApiKey("sk-ant".to_string()),
+                ..base_config(AnthropicAuth::ApiKey("unused".to_string()))
+            },
+            &AnthropicModelRequest {
+                model: "claude-sonnet-4-5".to_string(),
+                max_tokens: 16,
+                messages: vec![AnthropicMessage {
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+
+        let keys = request
+            .headers
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "x-app",
+                "User-Agent",
+                "X-Claude-Code-Session-Id",
+                "x-custom-a",
+                "x-custom-b",
+                "x-claude-remote-container-id",
+                "x-claude-remote-session-id",
+                "x-client-app",
+                "x-anthropic-additional-protection",
+                "x-api-key",
+                "x-client-request-id",
+            ]
+        );
+    }
+
+    #[test]
+    fn non_sid_session_ingress_uses_bearer_auth() {
+        let request = build_messages_request(
+            &AnthropicRequestConfig {
+                auth: AnthropicAuth::SessionIngress {
+                    token: "session-token".to_string(),
+                    organization_uuid: Some("org-1".to_string()),
+                },
+                ..base_config(AnthropicAuth::ApiKey("unused".to_string()))
+            },
+            &AnthropicModelRequest {
+                model: "claude-sonnet-4-5".to_string(),
+                max_tokens: 1,
+                messages: vec![],
+            },
+        )
+        .unwrap();
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "Authorization" && value == "Bearer session-token"));
+        assert!(!request.headers.iter().any(|(key, _)| key == "Cookie"));
+    }
+
+    #[test]
+    fn attribution_header_omits_cch_when_disabled_and_includes_workload() {
+        let config = AnthropicRequestConfig {
+            cch_enabled: false,
+            workload: Some("batch".to_string()),
+            ..base_config(AnthropicAuth::ApiKey("sk-ant".to_string()))
+        };
+        let header = attribution_header(&config, "abc");
+        assert!(header.contains("cc_workload=batch"));
+        assert!(!header.contains("cch=00000"));
+    }
+
+    #[test]
+    fn oauth_beta_header_can_be_overridden() {
+        let request = build_messages_request(
+            &AnthropicRequestConfig {
+                beta_header: Some("custom-beta".to_string()),
+                auth: AnthropicAuth::OAuthBearer("token-1".to_string()),
+                ..base_config(AnthropicAuth::ApiKey("unused".to_string()))
+            },
+            &AnthropicModelRequest {
+                model: "claude-sonnet-4-5".to_string(),
+                max_tokens: 8,
+                messages: vec![AnthropicMessage {
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+        assert!(request
+            .headers
+            .iter()
+            .any(|(key, value)| key == "anthropic-beta" && value == "custom-beta"));
+    }
+
+    #[test]
+    fn user_agent_includes_client_app_and_workload() {
+        let user_agent = anthropic_user_agent(&AnthropicRequestConfig {
+            client_app: Some("sdk-app/1.0".to_string()),
+            workload: Some("cron".to_string()),
+            ..base_config(AnthropicAuth::ApiKey("sk-ant".to_string()))
+        });
+        assert!(user_agent.contains("client-app/sdk-app/1.0"));
+        assert!(user_agent.contains("workload/cron"));
+    }
 }

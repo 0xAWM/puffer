@@ -4,6 +4,7 @@ use base64::Engine as _;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fs;
 use uuid::Uuid;
 
 /// The OAuth beta header used by Anthropic subscriber requests.
@@ -24,6 +25,22 @@ pub const ANTHROPIC_MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oau
 /// The full OAuth scope set used by Claude Code.
 pub const ANTHROPIC_ALL_SCOPES: &str =
     "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+
+/// Env var containing a session-ingress access token.
+pub const SESSION_ACCESS_TOKEN_ENV: &str = "CLAUDE_CODE_SESSION_ACCESS_TOKEN";
+
+/// Env var containing a file descriptor number for session-ingress auth.
+pub const SESSION_ACCESS_TOKEN_FD_ENV: &str = "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR";
+
+/// Env var pointing to a session-ingress token file.
+pub const SESSION_ACCESS_TOKEN_FILE_ENV: &str = "CLAUDE_SESSION_INGRESS_TOKEN_FILE";
+
+/// Default file path for session-ingress tokens shared with subprocesses.
+pub const DEFAULT_SESSION_ACCESS_TOKEN_PATH: &str =
+    "/home/claude/.claude/remote/.session_ingress_token";
+
+/// Env var containing the active Claude organization UUID for session-ingress auth.
+pub const ORGANIZATION_UUID_ENV: &str = "CLAUDE_CODE_ORGANIZATION_UUID";
 
 /// Authentication modes supported by Anthropic-facing requests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +228,47 @@ pub fn refresh_oauth_token(refresh_token: &str) -> Result<AnthropicOAuthCredenti
     token_response_to_credentials(payload)
 }
 
+/// Loads a session-ingress auth token from env, fd, or token file when available.
+pub fn get_session_ingress_auth() -> Option<AnthropicAuth> {
+    let token = std::env::var(SESSION_ACCESS_TOKEN_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(read_session_ingress_token_from_fd)
+        .or_else(read_session_ingress_token_from_file)?;
+    let organization_uuid = std::env::var(ORGANIZATION_UUID_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    Some(AnthropicAuth::SessionIngress {
+        token,
+        organization_uuid,
+    })
+}
+
+fn read_session_ingress_token_from_fd() -> Option<String> {
+    let fd = std::env::var(SESSION_ACCESS_TOKEN_FD_ENV).ok()?;
+    let fd = fd.parse::<i32>().ok()?;
+    let fd_path = if cfg!(target_os = "macos") || cfg!(target_os = "freebsd") {
+        format!("/dev/fd/{fd}")
+    } else {
+        format!("/proc/self/fd/{fd}")
+    };
+    fs::read_to_string(fd_path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn read_session_ingress_token_from_file() -> Option<String> {
+    let path = std::env::var(SESSION_ACCESS_TOKEN_FILE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_SESSION_ACCESS_TOKEN_PATH.to_string());
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn token_response_to_credentials(
     payload: AnthropicTokenResponse,
 ) -> Result<AnthropicOAuthCredentials> {
@@ -285,5 +343,25 @@ mod tests {
         let pkce = generate_pkce();
         assert_eq!(pkce.state, pkce.verifier);
         assert!(!pkce.challenge.is_empty());
+    }
+
+    #[test]
+    fn session_ingress_auth_prefers_env_token() {
+        unsafe {
+            std::env::set_var(SESSION_ACCESS_TOKEN_ENV, "sk-ant-sid-123");
+            std::env::set_var(ORGANIZATION_UUID_ENV, "org-1");
+        }
+        let auth = get_session_ingress_auth();
+        unsafe {
+            std::env::remove_var(SESSION_ACCESS_TOKEN_ENV);
+            std::env::remove_var(ORGANIZATION_UUID_ENV);
+        }
+        assert!(matches!(
+            auth,
+            Some(AnthropicAuth::SessionIngress {
+                token,
+                organization_uuid
+            }) if token == "sk-ant-sid-123" && organization_uuid.as_deref() == Some("org-1")
+        ));
     }
 }

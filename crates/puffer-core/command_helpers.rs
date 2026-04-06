@@ -2,7 +2,7 @@ use crate::{AppState, MessageRole, ToolInvocation};
 use anyhow::Result;
 use arboard::Clipboard;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
-use puffer_provider_registry::ProviderRegistry;
+use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::{plugin_by_id, plugin_mcp_servers, skill_by_name, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_tools::ToolRegistry;
@@ -67,10 +67,42 @@ pub(crate) fn describe_permissions(
     emit_system(state, session_store, text)
 }
 
+pub(crate) fn handle_permissions_command(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<()> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let permissions_path = paths.workspace_config_dir.join("permissions.toml");
+    if !permissions_path.exists() {
+        fs::write(&permissions_path, default_permissions_contents(resources))?;
+    }
+    match args.trim() {
+        "path" => emit_system(
+            state,
+            session_store,
+            format!("Permissions file: {}", permissions_path.display()),
+        ),
+        "" | "show" => emit_system(
+            state,
+            session_store,
+            format!(
+                "Permissions file: {}\n{}",
+                permissions_path.display(),
+                fs::read_to_string(&permissions_path)?
+            ),
+        ),
+        _ => describe_permissions(state, resources, session_store),
+    }
+}
+
 pub(crate) fn run_doctor(
     state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
+    auth_store: &AuthStore,
     session_store: &SessionStore,
 ) -> Result<()> {
     let registry = ToolRegistry::from_resources(resources);
@@ -87,8 +119,23 @@ pub(crate) fn run_doctor(
         "provider_count={}",
         providers.providers().count()
     );
+    let discovery_count = providers
+        .provider_entries()
+        .filter(|provider| provider.descriptor.discovery.is_some())
+        .count();
+    let _ = writeln!(&mut text, "providers_with_discovery={discovery_count}");
+    let _ = writeln!(&mut text, "stored_auth_providers={}", auth_store.provider_ids().count());
+    let _ = writeln!(&mut text, "hooks={}", resources.hooks.len());
+    let _ = writeln!(&mut text, "resource_diagnostics={}", resources.diagnostics.len());
+    let _ = writeln!(&mut text, "recorded_tasks={}", state.tasks().len());
     let _ = writeln!(&mut text, "working_dirs={}", state.working_dirs.len());
     let _ = writeln!(&mut text, "transcript_messages={}", state.transcript.len());
+    if !resources.diagnostics.is_empty() {
+        let _ = writeln!(&mut text, "Diagnostics:");
+        for diagnostic in &resources.diagnostics {
+            let _ = writeln!(&mut text, "- {diagnostic}");
+        }
+    }
     emit_system(state, session_store, text)
 }
 
@@ -990,6 +1037,18 @@ fn write_workspace_config(state: &AppState, path: &PathBuf) -> Result<()> {
 
 fn default_keybindings_contents() -> &'static str {
     "submit = \"enter\"\nclear_input = \"esc\"\nexit = \"ctrl+c\"\n"
+}
+
+fn default_permissions_contents(resources: &LoadedResources) -> String {
+    let mut text = String::from("[tools]\n");
+    for tool in &resources.tools {
+        let key = tool.value.id.replace('-', "_");
+        let _ = writeln!(&mut text, "{key} = \"ask\"");
+    }
+    if resources.tools.is_empty() {
+        text.push_str("bash = \"ask\"\n");
+    }
+    text
 }
 
 fn default_hooks_contents() -> &'static str {
