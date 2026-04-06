@@ -1,8 +1,8 @@
 use crate::model::TypedToolInput;
 use crate::{
     BashToolInput, ListDirToolInput, ReadFileToolInput, SearchTextToolInput,
-    ReplaceInFileToolInput, ToolExecutionResult, ToolInput, ToolKind, ToolOutput,
-    WriteFileToolInput,
+    MovePathToolInput, RemovePathToolInput, ReplaceInFileToolInput, ToolExecutionResult,
+    ToolInput, ToolKind, ToolOutput, WriteFileToolInput,
 };
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
@@ -17,6 +17,8 @@ pub fn builtin_tool_kind(handler: &str) -> Option<ToolKind> {
         "read_file" => Some(ToolKind::ReadFile),
         "write_file" => Some(ToolKind::WriteFile),
         "replace_in_file" => Some(ToolKind::ReplaceInFile),
+        "move_path" => Some(ToolKind::MovePath),
+        "remove_path" => Some(ToolKind::RemovePath),
         "list_dir" => Some(ToolKind::ListDir),
         "search_text" => Some(ToolKind::SearchText),
         _ => None,
@@ -50,6 +52,20 @@ pub fn parse_builtin_input(kind: ToolKind, input: Value) -> Result<ToolInput> {
                 old: input.old,
                 new: input.new,
                 replace_all: input.replace_all,
+            })
+        }
+        ToolKind::MovePath => {
+            let input = serde_json::from_value::<MovePathToolInput>(input)?;
+            Ok(ToolInput::MovePath {
+                from: input.from,
+                to: input.to,
+            })
+        }
+        ToolKind::RemovePath => {
+            let input = serde_json::from_value::<RemovePathToolInput>(input)?;
+            Ok(ToolInput::RemovePath {
+                path: input.path,
+                recursive: input.recursive,
             })
         }
         ToolKind::ListDir => {
@@ -87,6 +103,8 @@ pub fn execute_builtin_tool(
         TypedToolInput::ReadFile(input) => execute_read_file_tool(tool_id, cwd, input),
         TypedToolInput::WriteFile(input) => execute_write_file_tool(tool_id, cwd, input),
         TypedToolInput::ReplaceInFile(input) => execute_replace_in_file_tool(tool_id, cwd, input),
+        TypedToolInput::MovePath(input) => execute_move_path_tool(tool_id, cwd, input),
+        TypedToolInput::RemovePath(input) => execute_remove_path_tool(tool_id, cwd, input),
         TypedToolInput::ListDir(input) => execute_list_dir_tool(tool_id, cwd, input),
         TypedToolInput::SearchText(input) => execute_search_text_tool(tool_id, cwd, input),
     }
@@ -198,6 +216,67 @@ pub fn execute_replace_in_file_tool(
             metadata: serde_json::json!({
                 "path": path,
                 "replace_all": input.replace_all,
+            }),
+        },
+    })
+}
+
+/// Executes the built-in `move_path` tool.
+pub fn execute_move_path_tool(
+    tool_id: &str,
+    cwd: &Path,
+    input: MovePathToolInput,
+) -> Result<ToolExecutionResult> {
+    let from = absolutize(cwd, &input.from);
+    let to = absolutize(cwd, &input.to);
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent dir {}", parent.display()))?;
+    }
+    fs::rename(&from, &to)
+        .with_context(|| format!("failed to move {} to {}", from.display(), to.display()))?;
+    Ok(ToolExecutionResult {
+        tool_id: tool_id.to_string(),
+        success: true,
+        output: ToolOutput {
+            stdout: format!("moved {} -> {}", from.display(), to.display()),
+            stderr: String::new(),
+            metadata: serde_json::json!({
+                "from": from,
+                "to": to,
+            }),
+        },
+    })
+}
+
+/// Executes the built-in `remove_path` tool.
+pub fn execute_remove_path_tool(
+    tool_id: &str,
+    cwd: &Path,
+    input: RemovePathToolInput,
+) -> Result<ToolExecutionResult> {
+    let path = absolutize(cwd, &input.path);
+    if path.is_dir() {
+        if input.recursive {
+            fs::remove_dir_all(&path)
+                .with_context(|| format!("failed to remove directory {}", path.display()))?;
+        } else {
+            fs::remove_dir(&path)
+                .with_context(|| format!("failed to remove directory {}", path.display()))?;
+        }
+    } else {
+        fs::remove_file(&path)
+            .with_context(|| format!("failed to remove file {}", path.display()))?;
+    }
+    Ok(ToolExecutionResult {
+        tool_id: tool_id.to_string(),
+        success: true,
+        output: ToolOutput {
+            stdout: format!("removed {}", path.display()),
+            stderr: String::new(),
+            metadata: serde_json::json!({
+                "path": path,
+                "recursive": input.recursive,
             }),
         },
     })
@@ -351,6 +430,8 @@ mod tests {
             builtin_tool_kind("replace_in_file"),
             Some(ToolKind::ReplaceInFile)
         );
+        assert_eq!(builtin_tool_kind("move_path"), Some(ToolKind::MovePath));
+        assert_eq!(builtin_tool_kind("remove_path"), Some(ToolKind::RemovePath));
         assert_eq!(builtin_tool_kind("list_dir"), Some(ToolKind::ListDir));
         assert_eq!(builtin_tool_kind("search_text"), Some(ToolKind::SearchText));
         assert_eq!(builtin_tool_kind("unknown"), None);
@@ -409,6 +490,44 @@ mod tests {
         assert!(result.output.stdout.contains("updated"));
         let updated = fs::read_to_string(path).unwrap();
         assert_eq!(updated, "omega beta alpha");
+    }
+
+    #[test]
+    fn move_path_tool_moves_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let from = temp.path().join("from.txt");
+        let to = temp.path().join("nested/to.txt");
+        fs::write(&from, "hello").unwrap();
+        let result = execute_move_path_tool(
+            "move_path",
+            temp.path(),
+            MovePathToolInput {
+                from: "from.txt".into(),
+                to: "nested/to.txt".into(),
+            },
+        )
+        .unwrap();
+        assert!(result.output.stdout.contains("moved"));
+        assert!(!from.exists());
+        assert_eq!(fs::read_to_string(to).unwrap(), "hello");
+    }
+
+    #[test]
+    fn remove_path_tool_removes_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("dead.txt");
+        fs::write(&path, "hello").unwrap();
+        let result = execute_remove_path_tool(
+            "remove_path",
+            temp.path(),
+            RemovePathToolInput {
+                path: "dead.txt".into(),
+                recursive: false,
+            },
+        )
+        .unwrap();
+        assert!(result.output.stdout.contains("removed"));
+        assert!(!path.exists());
     }
 
     #[test]

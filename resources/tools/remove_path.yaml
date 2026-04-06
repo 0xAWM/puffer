@@ -1,0 +1,6 @@
+id: remove_path
+name: remove_path
+description: Remove a workspace file or directory.
+handler: remove_path
+approval_policy: on-request
+sandbox_policy: workspace-write

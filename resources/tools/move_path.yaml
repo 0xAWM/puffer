@@ -1,0 +1,6 @@
+id: move_path
+name: move_path
+description: Move or rename a workspace file or directory.
+handler: move_path
+approval_policy: on-request
+sandbox_policy: workspace-write

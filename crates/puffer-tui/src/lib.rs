@@ -89,6 +89,7 @@ pub fn run_app(
                         session_store,
                         &commands,
                         &mut tui,
+                        no_alt_screen,
                     )? {
                         break;
                     }

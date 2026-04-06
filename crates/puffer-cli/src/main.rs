@@ -189,6 +189,21 @@ enum ToolCommand {
         #[arg(long = "all", default_value_t = false)]
         replace_all: bool,
     },
+    /// Run the built-in move-path tool.
+    Move {
+        /// Source path to move.
+        from: String,
+        /// Destination path.
+        to: String,
+    },
+    /// Run the built-in remove-path tool.
+    Remove {
+        /// Path to remove.
+        path: String,
+        /// Remove directories recursively.
+        #[arg(long = "recursive", default_value_t = false)]
+        recursive: bool,
+    },
     /// Run the built-in directory listing tool.
     ListDir {
         /// Optional directory path to list. Defaults to the current working directory.
@@ -481,6 +496,30 @@ fn run_tool_command(
                     old,
                     new,
                     replace_all,
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        ToolCommand::Move { from, to } => {
+            let registry = ToolRegistry::from_resources(resources);
+            let result = registry.execute(
+                "move_path",
+                cwd,
+                puffer_tools::ToolInput::MovePath {
+                    from: from.into(),
+                    to: to.into(),
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        ToolCommand::Remove { path, recursive } => {
+            let registry = ToolRegistry::from_resources(resources);
+            let result = registry.execute(
+                "remove_path",
+                cwd,
+                puffer_tools::ToolInput::RemovePath {
+                    path: path.into(),
+                    recursive,
                 },
             )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
