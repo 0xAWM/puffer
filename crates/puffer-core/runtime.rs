@@ -271,12 +271,15 @@ fn anthropic_tool_definitions(registry: &ToolRegistry) -> Vec<Value> {
             json!({
                 "name": tool.spec.id,
                 "description": tool.spec.description,
-                "input_schema": anthropic_tool_schema(tool.spec.handler.as_str()),
+                "input_schema": tool.spec.input_schema.as_json_schema(),
             })
         })
         .collect()
 }
 
+#[cfg(test)]
+#[cfg(test)]
+#[cfg(test)]
 fn anthropic_tool_schema(handler: &str) -> Value {
     match handler {
         "bash" => json!({
@@ -300,6 +303,21 @@ fn anthropic_tool_schema(handler: &str) -> Value {
                 "contents": { "type": "string" }
             },
             "required": ["path", "contents"],
+        }),
+        "list_dir" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": [],
+        }),
+        "search_text" => json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "path": { "type": "string" }
+            },
+            "required": ["query"],
         }),
         _ => json!({
             "type": "object",
