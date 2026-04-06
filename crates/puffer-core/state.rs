@@ -119,4 +119,25 @@ impl AppState {
             text: text.into(),
         });
     }
+
+    /// Builds a persisted snapshot event for the current mutable session state.
+    pub fn snapshot_event(&self) -> TranscriptEvent {
+        TranscriptEvent::StateSnapshot {
+            current_model: self.current_model.clone(),
+            current_provider: self.current_provider.clone(),
+            theme: self.config.theme.clone(),
+            prompt_color: self.prompt_color.clone(),
+            effort_level: self.effort_level.clone(),
+            fast_mode: self.fast_mode,
+            sandbox_mode: self.sandbox_mode.clone(),
+            remote_name: self.remote_name.clone(),
+            remote_environment: self.remote_environment.clone(),
+            statusline_enabled: self.statusline_enabled,
+            working_dirs: self
+                .working_dirs
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+        }
+    }
 }

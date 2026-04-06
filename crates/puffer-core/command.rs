@@ -437,7 +437,7 @@ pub fn dispatch_command(
                 command,
                 args,
             )?;
-            append_state_snapshot(state, session_store)
+            session_store.append_event(state.session.id, state.snapshot_event())
         }
     }
 }
@@ -874,29 +874,6 @@ fn execute_local_command(
             ),
         ),
     }
-}
-
-fn append_state_snapshot(state: &AppState, session_store: &SessionStore) -> Result<()> {
-    session_store.append_event(
-        state.session.id,
-        TranscriptEvent::StateSnapshot {
-            current_model: state.current_model.clone(),
-            current_provider: state.current_provider.clone(),
-            theme: state.config.theme.clone(),
-            prompt_color: state.prompt_color.clone(),
-            effort_level: state.effort_level.clone(),
-            fast_mode: state.fast_mode,
-            sandbox_mode: state.sandbox_mode.clone(),
-            remote_name: state.remote_name.clone(),
-            remote_environment: state.remote_environment.clone(),
-            statusline_enabled: state.statusline_enabled,
-            working_dirs: state
-                .working_dirs
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-        },
-    )
 }
 
 fn handle_memory_command(
