@@ -1,8 +1,10 @@
+mod auth;
 mod common;
 mod config;
 mod ecosystem;
 mod session;
 
+pub(crate) use auth::render_login_guidance;
 pub(crate) use common::{
     copy_last_message, describe_context, describe_git_diff, emit_system, execute_skill_command,
     list_skills, rewind_transcript, run_doctor, terminal_setup_advice,

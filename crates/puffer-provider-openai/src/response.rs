@@ -47,6 +47,54 @@ pub struct OpenAIResponsesContentItem {
     pub text: Option<String>,
 }
 
+/// A minimal OpenAI Chat Completions payload needed by the runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatCompletionsResponse {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub choices: Vec<OpenAIChatChoice>,
+}
+
+/// One completion choice returned by the Chat Completions API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatChoice {
+    #[serde(default)]
+    pub index: Option<u32>,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
+    pub message: OpenAIChatChoiceMessage,
+}
+
+/// An assistant message returned by the Chat Completions API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatChoiceMessage {
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub content: Option<Value>,
+    #[serde(default)]
+    pub tool_calls: Vec<OpenAIChatToolCall>,
+}
+
+/// A tool-call item nested under a Chat Completions assistant message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAIChatToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: OpenAIChatFunctionCall,
+}
+
+/// A function-call payload nested under a Chat Completions tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAIChatFunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
 /// A parsed tool call emitted by the OpenAI Responses API.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenAIResponseToolCall {
@@ -60,6 +108,13 @@ pub struct OpenAIResponseToolCall {
 /// Parses a serialized OpenAI Responses API payload.
 pub(crate) fn parse_responses_response(payload: &str) -> Result<OpenAIResponsesResponse> {
     serde_json::from_str(payload).context("failed to parse OpenAI Responses payload")
+}
+
+/// Parses a serialized OpenAI Chat Completions payload.
+pub(crate) fn parse_chat_completions_response(
+    payload: &str,
+) -> Result<OpenAIChatCompletionsResponse> {
+    serde_json::from_str(payload).context("failed to parse OpenAI Chat Completions payload")
 }
 
 /// Extracts assistant text from a parsed OpenAI Responses payload.
@@ -91,6 +146,61 @@ pub(crate) fn extract_responses_tool_calls(
         .filter(|item| item.kind == "function_call")
         .map(parse_tool_call)
         .collect()
+}
+
+/// Extracts assistant text from a parsed OpenAI Chat Completions payload.
+pub(crate) fn extract_chat_completions_text(response: &OpenAIChatCompletionsResponse) -> String {
+    response
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.as_ref())
+        .map(extract_chat_content_text)
+        .unwrap_or_default()
+}
+
+/// Extracts tool calls from a parsed OpenAI Chat Completions payload.
+pub(crate) fn extract_chat_completions_tool_calls(
+    response: &OpenAIChatCompletionsResponse,
+) -> Result<Vec<OpenAIResponseToolCall>> {
+    response
+        .choices
+        .first()
+        .into_iter()
+        .flat_map(|choice| choice.message.tool_calls.iter())
+        .map(|tool_call| {
+            let arguments =
+                serde_json::from_str(&tool_call.function.arguments).with_context(|| {
+                    format!(
+                        "failed to parse OpenAI Chat Completions tool arguments for call {}",
+                        tool_call.id
+                    )
+                })?;
+            Ok(OpenAIResponseToolCall {
+                item_id: None,
+                status: None,
+                call_id: tool_call.id.clone(),
+                name: tool_call.function.name.clone(),
+                arguments,
+            })
+        })
+        .collect()
+}
+
+fn extract_chat_content_text(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.get("text")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("content").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn parse_tool_call(item: &OpenAIResponsesOutputItem) -> Result<OpenAIResponseToolCall> {
@@ -228,5 +338,42 @@ mod tests {
 
         let error = extract_responses_tool_calls(&response).unwrap_err();
         assert!(error.to_string().contains("call_123"));
+    }
+
+    #[test]
+    fn extracts_text_and_tool_calls_from_chat_completions() {
+        let response = parse_chat_completions_response(
+            r#"{
+                "id": "chatcmpl_123",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Let me inspect that.",
+                            "tool_calls": [
+                                {
+                                    "id": "call_123",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": "{\"path\":\"Cargo.toml\"}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_chat_completions_text(&response),
+            "Let me inspect that."
+        );
+        let calls = extract_chat_completions_tool_calls(&response).unwrap();
+        assert_eq!(calls[0].call_id, "call_123");
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments, json!({ "path": "Cargo.toml" }));
     }
 }

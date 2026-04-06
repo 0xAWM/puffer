@@ -1,0 +1,14 @@
+id: ollama
+display_name: Ollama
+base_url: http://127.0.0.1:11434
+default_api: openai-completions
+auth_modes: []
+discovery:
+  path: /api/tags
+  response: ollama_models
+  api: openai-completions
+  context_window: 32768
+  max_output_tokens: 8192
+  supports_reasoning: false
+  items_field: models
+  id_field: name

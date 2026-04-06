@@ -229,7 +229,9 @@ mod tests {
     fn shared_library_runtime_executes_json_abi() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source = temp.path().join("tool.rs");
-        let library = temp.path().join(format!("libshared_tool.{}", shared_library_extension()));
+        let library = temp
+            .path()
+            .join(format!("libshared_tool.{}", shared_library_extension()));
         std::fs::write(&source, SHARED_TOOL_TEST_SOURCE).expect("write source");
         let status = Command::new("rustc")
             .arg("--crate-type")
@@ -241,7 +243,10 @@ mod tests {
             .arg(&library)
             .status()
             .expect("rustc");
-        assert!(status.success(), "failed to compile shared library test helper");
+        assert!(
+            status.success(),
+            "failed to compile shared library test helper"
+        );
 
         let definition = ToolDefinition {
             id: "shared".to_string(),

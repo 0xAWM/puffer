@@ -24,6 +24,7 @@ pub const OPENAI_SCOPE: &str = "openid profile email offline_access";
 /// Authentication modes supported by the OpenAI provider.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OpenAIAuth {
+    None,
     ApiKey(String),
     OAuthBearer(String),
 }

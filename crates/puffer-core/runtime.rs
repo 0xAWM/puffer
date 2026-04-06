@@ -2,10 +2,14 @@ use crate::hooks::run_resource_hooks;
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
-    build_responses_request, build_tool_responses_request, extract_responses_text,
-    extract_responses_tool_calls, parse_responses_response, OpenAIAuth, OpenAIRequestConfig,
-    OpenAIResponsesFunctionCallOutput, OpenAIResponsesRequest, OpenAIResponsesTool,
-    OpenAIResponsesToolChoice, OpenAIResponsesToolChoiceMode, OpenAIResponsesToolRequest,
+    build_chat_completions_request, build_responses_request, build_tool_responses_request,
+    extract_chat_completions_text, extract_chat_completions_tool_calls, extract_responses_text,
+    extract_responses_tool_calls, parse_chat_completions_response, parse_responses_response,
+    OpenAIAuth, OpenAIChatCompletionTool, OpenAIChatCompletionToolFunction,
+    OpenAIChatCompletionsRequest, OpenAIChatFunctionCall, OpenAIChatMessage, OpenAIChatToolCall,
+    OpenAIRequestConfig, OpenAIResponsesFunctionCallOutput, OpenAIResponsesRequest,
+    OpenAIResponsesTool, OpenAIResponsesToolChoice, OpenAIResponsesToolChoiceMode,
+    OpenAIResponsesToolRequest,
 };
 use puffer_provider_registry::{
     AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
@@ -47,10 +51,16 @@ pub fn execute_user_prompt(
         "anthropic-messages" => {
             execute_anthropic(state, resources, provider, model_id, auth_store, input)
         }
-        "openai-responses" => {
+        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
             execute_openai(state, resources, provider, model_id, auth_store, input)
         }
-        other => bail!("provider {} with api {other} is not executable yet", provider.id),
+        "openai-completions" => {
+            execute_openai_completions(state, resources, provider, model_id, auth_store, input)
+        }
+        other => bail!(
+            "provider {} with api {other} is not executable yet",
+            provider.id
+        ),
     }
 }
 fn resolve_provider_and_model<'a>(
@@ -99,7 +109,11 @@ fn resolve_model_api(
     state
         .current_model
         .as_ref()
-        .and_then(|selected| providers.resolve_model(selected).map(|model| model.api.clone()))
+        .and_then(|selected| {
+            providers
+                .resolve_model(selected)
+                .map(|model| model.api.clone())
+        })
         .or_else(|| {
             provider
                 .models
@@ -117,7 +131,7 @@ fn execute_anthropic(
     auth_store: &AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
-    let auth = anthropic_auth_for_provider(auth_store, &provider.id)?;
+    let auth = anthropic_auth_for_provider(auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
     let mut messages = transcript_to_anthropic_messages(state, input);
     let mut invocations = Vec::new();
@@ -201,7 +215,7 @@ fn execute_openai(
     auth_store: &AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
-    let auth = openai_auth_for_provider(auth_store, &provider.id)?;
+    let auth = openai_auth_for_provider(auth_store, provider)?;
     let request_config = OpenAIRequestConfig {
         base_url: provider.base_url.clone(),
         version: APP_VERSION.to_string(),
@@ -270,6 +284,98 @@ fn execute_openai(
 
     bail!("openai tool loop exceeded iteration limit")
 }
+
+fn execute_openai_completions(
+    state: &AppState,
+    resources: &LoadedResources,
+    provider: &ProviderDescriptor,
+    model_id: String,
+    auth_store: &AuthStore,
+    input: &str,
+) -> Result<TurnExecution> {
+    let auth = openai_auth_for_provider(auth_store, provider)?;
+    let request_config = OpenAIRequestConfig {
+        base_url: provider.base_url.clone(),
+        version: APP_VERSION.to_string(),
+        auth,
+    };
+    let registry = ToolRegistry::from_resources(resources);
+    let tools = openai_chat_completion_tools(&registry);
+    let mut messages = transcript_to_openai_chat_messages(state, input);
+    let mut invocations = Vec::new();
+
+    for _ in 0..8 {
+        let request = build_chat_completions_request(
+            &request_config,
+            &OpenAIChatCompletionsRequest {
+                model: model_id.clone(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+                tool_choice: if tools.is_empty() {
+                    None
+                } else {
+                    Some(OpenAIResponsesToolChoiceMode::Auto)
+                },
+            },
+        )?;
+        let response = send_http_request(&request.url, &request.headers, &request.body, false)?;
+        let parsed = parse_chat_completions_response(&serde_json::to_string(&response)?)?;
+        let tool_calls = extract_chat_completions_tool_calls(&parsed)?;
+        let choice = parsed
+            .choices
+            .first()
+            .ok_or_else(|| anyhow!("OpenAI Chat Completions response did not contain choices"))?;
+        if tool_calls.is_empty() {
+            let text = extract_chat_completions_text(&parsed);
+            let assistant_text = if text.trim().is_empty() {
+                parse_openai_text(&response)
+                    .or_else(|_| parse_openai_text_fallback(&response, state))?
+            } else {
+                text
+            };
+            run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
+            return Ok(TurnExecution {
+                assistant_text,
+                tool_invocations: invocations,
+            });
+        }
+
+        let tool_results =
+            execute_openai_tool_calls(resources, &tool_calls, &registry, &state.cwd)?;
+        invocations.extend(tool_results.invocations);
+        messages.push(OpenAIChatMessage {
+            role: choice
+                .message
+                .role
+                .clone()
+                .unwrap_or_else(|| "assistant".to_string()),
+            content: choice.message.content.clone(),
+            tool_call_id: None,
+            tool_calls: tool_calls
+                .iter()
+                .map(|tool_call| OpenAIChatToolCall {
+                    id: tool_call.call_id.clone(),
+                    kind: "function".to_string(),
+                    function: OpenAIChatFunctionCall {
+                        name: tool_call.name.clone(),
+                        arguments: serde_json::to_string(&tool_call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                })
+                .collect(),
+        });
+        for output in tool_results.outputs {
+            messages.push(OpenAIChatMessage {
+                role: "tool".to_string(),
+                content: Some(json!(output.output)),
+                tool_call_id: Some(output.call_id),
+                tool_calls: Vec::new(),
+            });
+        }
+    }
+
+    bail!("openai chat completions tool loop exceeded iteration limit")
+}
 fn send_http_request(
     url: &str,
     headers: &[(String, String)],
@@ -307,27 +413,39 @@ fn send_http_request(
         .with_context(|| format!("response from {url} was not valid JSON"))?;
     Ok(json)
 }
-fn anthropic_auth_for_provider(auth_store: &AuthStore, provider_id: &str) -> Result<AnthropicAuth> {
-    match auth_store.get(provider_id) {
+fn anthropic_auth_for_provider(
+    auth_store: &AuthStore,
+    provider: &ProviderDescriptor,
+) -> Result<AnthropicAuth> {
+    match auth_store.get(&provider.id) {
         Some(StoredCredential::ApiKey { key }) => Ok(AnthropicAuth::ApiKey(key.clone())),
         Some(StoredCredential::OAuth(OAuthCredential { access_token, .. })) => {
             Ok(AnthropicAuth::OAuthBearer(access_token.clone()))
         }
+        None if provider.auth_modes.is_empty() => Ok(AnthropicAuth::None),
         None => get_session_ingress_auth().ok_or_else(|| {
             anyhow!(
-                "no credentials configured for provider {provider_id}; use `puffer auth set-api-key {provider_id}` first"
+                "no credentials configured for provider {}; use `puffer auth set-api-key {}` first",
+                provider.id,
+                provider.id
             )
         }),
     }
 }
-fn openai_auth_for_provider(auth_store: &AuthStore, provider_id: &str) -> Result<OpenAIAuth> {
-    match auth_store.get(provider_id) {
+fn openai_auth_for_provider(
+    auth_store: &AuthStore,
+    provider: &ProviderDescriptor,
+) -> Result<OpenAIAuth> {
+    match auth_store.get(&provider.id) {
         Some(StoredCredential::ApiKey { key }) => Ok(OpenAIAuth::ApiKey(key.clone())),
         Some(StoredCredential::OAuth(OAuthCredential { access_token, .. })) => {
             Ok(OpenAIAuth::OAuthBearer(access_token.clone()))
         }
+        None if provider.auth_modes.is_empty() => Ok(OpenAIAuth::None),
         None => bail!(
-            "no credentials configured for provider {provider_id}; use `puffer auth set-api-key {provider_id}` first"
+            "no credentials configured for provider {}; use `puffer auth set-api-key {}` first",
+            provider.id,
+            provider.id
         ),
     }
 }
@@ -508,6 +626,21 @@ fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResponsesTool> 
         })
         .collect()
 }
+
+fn openai_chat_completion_tools(registry: &ToolRegistry) -> Vec<OpenAIChatCompletionTool> {
+    registry
+        .definitions()
+        .map(|definition| OpenAIChatCompletionTool {
+            kind: "function".to_string(),
+            function: OpenAIChatCompletionToolFunction {
+                name: definition.id.clone(),
+                description: definition.description.clone(),
+                parameters: definition.input_schema.as_json_schema(),
+            },
+        })
+        .collect()
+}
+
 fn execute_openai_tool_calls(
     resources: &LoadedResources,
     tool_calls: &[puffer_provider_openai::OpenAIResponseToolCall],
@@ -716,6 +849,33 @@ fn transcript_to_openai_input(state: &AppState, input: &str) -> Value {
             .collect(),
     )
 }
+
+fn transcript_to_openai_chat_messages(state: &AppState, input: &str) -> Vec<OpenAIChatMessage> {
+    let mut messages = state
+        .transcript
+        .iter()
+        .map(|message| OpenAIChatMessage {
+            role: match message.role {
+                crate::MessageRole::User => "user".to_string(),
+                crate::MessageRole::Assistant => "assistant".to_string(),
+                crate::MessageRole::System => "system".to_string(),
+            },
+            content: Some(json!(message.text)),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    if messages.is_empty() {
+        messages.push(OpenAIChatMessage {
+            role: "user".to_string(),
+            content: Some(json!(input)),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        });
+    }
+    messages
+}
+
 fn parse_openai_assistant_text(
     parsed: &puffer_provider_openai::OpenAIResponsesResponse,
     response: &Value,

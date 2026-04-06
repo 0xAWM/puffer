@@ -1,3 +1,4 @@
+mod auth_provider;
 mod authflow;
 
 use anyhow::Result;
@@ -5,27 +6,28 @@ use clap::{Parser, Subcommand};
 use puffer_config::{ensure_workspace_dirs, load_config, ConfigPaths};
 use puffer_core::{supported_commands, AppState};
 use puffer_provider_openai::{
-    build_authorization_url as build_openai_authorization_url,
-    exchange_authorization_code as exchange_openai_code, generate_pkce as generate_openai_pkce,
+    exchange_authorization_code as exchange_openai_code,
     parse_authorization_input as parse_openai_authorization_input,
-    refresh_oauth_token as refresh_openai_oauth_token, OpenAIOAuthConfig,
+    refresh_oauth_token as refresh_openai_oauth_token,
 };
 use puffer_provider_registry::{AuthStore, OAuthCredential, ProviderRegistry, StoredCredential};
 use puffer_resources::load_resources;
 use puffer_session_store::SessionStore;
 use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
-    build_authorization_url as build_anthropic_authorization_url, build_messages_request,
-    exchange_authorization_code as exchange_anthropic_code,
-    generate_pkce as generate_anthropic_pkce,
+    build_messages_request, exchange_authorization_code as exchange_anthropic_code,
     parse_authorization_input as parse_anthropic_authorization_input,
     refresh_oauth_token as refresh_anthropic_oauth_token, AnthropicAuth, AnthropicMessage,
-    AnthropicModelRequest, AnthropicOAuthConfig, AnthropicRequestConfig,
+    AnthropicModelRequest, AnthropicRequestConfig,
 };
 use std::io::Read as _;
 use std::io::Write as _;
 use std::time::Duration;
 use uuid::Uuid;
+
+use crate::auth_provider::{
+    oauth_family_for_provider, oauth_start_bundle_for_provider, OauthFamily,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -268,7 +270,9 @@ fn main() -> Result<()> {
     let _ = providers.discover_and_merge_all(&auth_store);
 
     match cli.subcommand {
-        Some(Command::Auth { command }) => run_auth_command(command, &mut auth_store, &auth_path),
+        Some(Command::Auth { command }) => {
+            run_auth_command(command, &mut auth_store, &auth_path, &providers)
+        }
         Some(Command::Commands) => {
             println!("{}", serde_json::to_string_pretty(&supported_commands())?);
             Ok(())
@@ -603,6 +607,7 @@ fn run_auth_command(
     command: AuthCommand,
     auth_store: &mut AuthStore,
     auth_path: &std::path::Path,
+    providers: &ProviderRegistry,
 ) -> Result<()> {
     match command {
         AuthCommand::Status => {
@@ -652,65 +657,28 @@ fn run_auth_command(
             }
         }
         AuthCommand::OauthUrl { provider } => {
-            if provider == "openai" {
-                println!(
-                    "{}",
-                    build_openai_authorization_url(&OpenAIOAuthConfig::default())
-                );
-            } else if provider == "anthropic" {
-                println!(
-                    "{}",
-                    build_anthropic_authorization_url(&AnthropicOAuthConfig::default())
-                );
-            } else {
-                println!("oauth url generation for {provider} is not implemented yet");
-            }
+            let bundle = oauth_start_bundle_for_provider(providers, &provider)?;
+            println!("{}", bundle.authorization_url);
         }
         AuthCommand::Login {
             provider,
             value,
             stdin,
         } => {
-            run_login_flow(&provider, value, stdin, auth_store, auth_path)?;
+            run_login_flow(&provider, value, stdin, auth_store, auth_path, providers)?;
         }
         AuthCommand::OauthStart { provider } => {
-            if provider == "openai" {
-                let pkce = generate_openai_pkce();
-                let config = OpenAIOAuthConfig {
-                    state: pkce.state.clone(),
-                    code_challenge: pkce.challenge.clone(),
-                    ..OpenAIOAuthConfig::default()
-                };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "provider": provider,
-                        "authorization_url": build_openai_authorization_url(&config),
-                        "code_verifier": pkce.verifier,
-                        "state": pkce.state,
-                        "redirect_uri": config.redirect_uri,
-                    }))?
-                );
-            } else if provider == "anthropic" {
-                let pkce = generate_anthropic_pkce();
-                let config = AnthropicOAuthConfig {
-                    state: pkce.state.clone(),
-                    code_challenge: pkce.challenge.clone(),
-                    ..AnthropicOAuthConfig::default()
-                };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "provider": provider,
-                        "authorization_url": build_anthropic_authorization_url(&config),
-                        "code_verifier": pkce.verifier,
-                        "state": pkce.state,
-                        "redirect_uri": config.redirect_uri,
-                    }))?
-                );
-            } else {
-                anyhow::bail!("oauth start is not implemented for {provider}");
-            }
+            let bundle = oauth_start_bundle_for_provider(providers, &provider)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "provider": provider,
+                    "authorization_url": bundle.authorization_url,
+                    "code_verifier": bundle.verifier,
+                    "state": bundle.state,
+                    "redirect_uri": bundle.redirect_uri,
+                }))?
+            );
         }
         AuthCommand::OauthExchange {
             provider,
@@ -728,37 +696,40 @@ fn run_auth_command(
                     )
                 })?
             };
-            if provider == "openai" {
-                let (code, parsed_state) = parse_openai_authorization_input(&input);
-                let code = code.ok_or_else(|| {
-                    anyhow::anyhow!("could not extract an OpenAI authorization code")
-                })?;
-                if let Some(expected_state) = state.as_deref() {
-                    if parsed_state.as_deref().unwrap_or_default() != expected_state {
-                        anyhow::bail!("oauth state mismatch for openai");
+            match oauth_family_for_provider(providers, &provider) {
+                Some(OauthFamily::OpenAi) => {
+                    let (code, parsed_state) = parse_openai_authorization_input(&input);
+                    let code = code.ok_or_else(|| {
+                        anyhow::anyhow!("could not extract an OpenAI authorization code")
+                    })?;
+                    if let Some(expected_state) = state.as_deref() {
+                        if parsed_state.as_deref().unwrap_or_default() != expected_state {
+                            anyhow::bail!("oauth state mismatch for openai");
+                        }
                     }
+                    let credential = exchange_openai_code(&code, &verifier, None)?;
+                    auth_store.set_oauth(
+                        provider.clone(),
+                        to_registry_oauth_credential_openai(credential),
+                    );
                 }
-                let credential = exchange_openai_code(&code, &verifier, None)?;
-                auth_store.set_oauth(
-                    provider.clone(),
-                    to_registry_oauth_credential_openai(credential),
-                );
-            } else if provider == "anthropic" {
-                let (code, parsed_state) = parse_anthropic_authorization_input(&input);
-                let code = code.ok_or_else(|| {
-                    anyhow::anyhow!("could not extract an Anthropic authorization code")
-                })?;
-                let expected_state = state.clone().unwrap_or_else(|| verifier.clone());
-                if parsed_state.as_deref().unwrap_or_default() != expected_state {
-                    anyhow::bail!("oauth state mismatch for anthropic");
+                Some(OauthFamily::Anthropic) => {
+                    let (code, parsed_state) = parse_anthropic_authorization_input(&input);
+                    let code = code.ok_or_else(|| {
+                        anyhow::anyhow!("could not extract an Anthropic authorization code")
+                    })?;
+                    let expected_state = state.clone().unwrap_or_else(|| verifier.clone());
+                    if parsed_state.as_deref().unwrap_or_default() != expected_state {
+                        anyhow::bail!("oauth state mismatch for anthropic");
+                    }
+                    let credential =
+                        exchange_anthropic_code(&code, &verifier, &expected_state, None)?;
+                    auth_store.set_oauth(
+                        provider.clone(),
+                        to_registry_oauth_credential_anthropic(credential),
+                    );
                 }
-                let credential = exchange_anthropic_code(&code, &verifier, &expected_state, None)?;
-                auth_store.set_oauth(
-                    provider.clone(),
-                    to_registry_oauth_credential_anthropic(credential),
-                );
-            } else {
-                anyhow::bail!("oauth exchange is not implemented for {provider}");
+                None => anyhow::bail!("oauth exchange is not implemented for {provider}"),
             }
             auth_store.save(auth_path)?;
             println!("stored oauth credentials for {provider}");
@@ -770,16 +741,14 @@ fn run_auth_command(
             let StoredCredential::OAuth(existing) = credential else {
                 anyhow::bail!("stored credential for {provider} is not oauth");
             };
-            let refreshed = if provider == "openai" {
-                to_registry_oauth_credential_openai(refresh_openai_oauth_token(
-                    &existing.refresh_token,
-                )?)
-            } else if provider == "anthropic" {
-                to_registry_oauth_credential_anthropic(refresh_anthropic_oauth_token(
-                    &existing.refresh_token,
-                )?)
-            } else {
-                anyhow::bail!("oauth refresh is not implemented for {provider}");
+            let refreshed = match oauth_family_for_provider(providers, &provider) {
+                Some(OauthFamily::OpenAi) => to_registry_oauth_credential_openai(
+                    refresh_openai_oauth_token(&existing.refresh_token)?,
+                ),
+                Some(OauthFamily::Anthropic) => to_registry_oauth_credential_anthropic(
+                    refresh_anthropic_oauth_token(&existing.refresh_token)?,
+                ),
+                None => anyhow::bail!("oauth refresh is not implemented for {provider}"),
             };
             auth_store.set_oauth(provider.clone(), refreshed);
             auth_store.save(auth_path)?;
@@ -795,38 +764,9 @@ fn run_login_flow(
     stdin: bool,
     auth_store: &mut AuthStore,
     auth_path: &std::path::Path,
+    providers: &ProviderRegistry,
 ) -> Result<()> {
-    let bundle = match provider {
-        "openai" => {
-            let pkce = generate_openai_pkce();
-            let config = OpenAIOAuthConfig {
-                state: pkce.state.clone(),
-                code_challenge: pkce.challenge.clone(),
-                ..OpenAIOAuthConfig::default()
-            };
-            OauthStartBundle {
-                authorization_url: build_openai_authorization_url(&config),
-                verifier: pkce.verifier,
-                state: pkce.state,
-                redirect_uri: config.redirect_uri,
-            }
-        }
-        "anthropic" => {
-            let pkce = generate_anthropic_pkce();
-            let config = AnthropicOAuthConfig {
-                state: pkce.state.clone(),
-                code_challenge: pkce.challenge.clone(),
-                ..AnthropicOAuthConfig::default()
-            };
-            OauthStartBundle {
-                authorization_url: build_anthropic_authorization_url(&config),
-                verifier: pkce.verifier,
-                state: pkce.state,
-                redirect_uri: config.redirect_uri,
-            }
-        }
-        other => anyhow::bail!("oauth login is not implemented for {other}"),
-    };
+    let bundle = oauth_start_bundle_for_provider(providers, provider)?;
 
     println!(
         "Open this URL in your browser:\n\n{}\n",
@@ -844,33 +784,38 @@ fn run_login_flow(
         read_line_with_prompt("Paste the callback URL or authorization code: ")?
     };
 
-    if provider == "openai" {
-        let (code, parsed_state) = parse_openai_authorization_input(&input);
-        let code =
-            code.ok_or_else(|| anyhow::anyhow!("could not extract an OpenAI authorization code"))?;
-        if let Some(parsed_state) = parsed_state {
-            if parsed_state != bundle.state {
-                anyhow::bail!("oauth state mismatch for openai");
+    match oauth_family_for_provider(providers, provider) {
+        Some(OauthFamily::OpenAi) => {
+            let (code, parsed_state) = parse_openai_authorization_input(&input);
+            let code = code
+                .ok_or_else(|| anyhow::anyhow!("could not extract an OpenAI authorization code"))?;
+            if let Some(parsed_state) = parsed_state {
+                if parsed_state != bundle.state {
+                    anyhow::bail!("oauth state mismatch for openai");
+                }
             }
+            let credential = exchange_openai_code(&code, &bundle.verifier, None)?;
+            auth_store.set_oauth(
+                provider.to_string(),
+                to_registry_oauth_credential_openai(credential),
+            );
         }
-        let credential = exchange_openai_code(&code, &bundle.verifier, None)?;
-        auth_store.set_oauth(
-            provider.to_string(),
-            to_registry_oauth_credential_openai(credential),
-        );
-    } else {
-        let (code, parsed_state) = parse_anthropic_authorization_input(&input);
-        let code = code
-            .ok_or_else(|| anyhow::anyhow!("could not extract an Anthropic authorization code"))?;
-        let parsed_state = parsed_state.unwrap_or_else(|| bundle.state.clone());
-        if parsed_state != bundle.state {
-            anyhow::bail!("oauth state mismatch for anthropic");
+        Some(OauthFamily::Anthropic) => {
+            let (code, parsed_state) = parse_anthropic_authorization_input(&input);
+            let code = code.ok_or_else(|| {
+                anyhow::anyhow!("could not extract an Anthropic authorization code")
+            })?;
+            let parsed_state = parsed_state.unwrap_or_else(|| bundle.state.clone());
+            if parsed_state != bundle.state {
+                anyhow::bail!("oauth state mismatch for anthropic");
+            }
+            let credential = exchange_anthropic_code(&code, &bundle.verifier, &bundle.state, None)?;
+            auth_store.set_oauth(
+                provider.to_string(),
+                to_registry_oauth_credential_anthropic(credential),
+            );
         }
-        let credential = exchange_anthropic_code(&code, &bundle.verifier, &bundle.state, None)?;
-        auth_store.set_oauth(
-            provider.to_string(),
-            to_registry_oauth_credential_anthropic(credential),
-        );
+        None => anyhow::bail!("oauth login is not implemented for {provider}"),
     }
 
     auth_store.save(auth_path)?;
@@ -898,13 +843,6 @@ fn read_line_with_prompt(prompt: &str) -> Result<String> {
         anyhow::bail!("no input received");
     }
     Ok(trimmed)
-}
-
-struct OauthStartBundle {
-    authorization_url: String,
-    verifier: String,
-    state: String,
-    redirect_uri: String,
 }
 
 fn to_registry_oauth_credential_openai(

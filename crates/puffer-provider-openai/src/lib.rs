@@ -18,6 +18,12 @@ pub use auth::OPENAI_REDIRECT_URI;
 pub use auth::OPENAI_SCOPE;
 pub use auth::OPENAI_TOKEN_URL;
 pub use request::BuiltOpenAIRequest;
+pub use request::OpenAIChatCompletionTool;
+pub use request::OpenAIChatCompletionToolFunction;
+pub use request::OpenAIChatCompletionsRequest;
+pub use request::OpenAIChatFunctionCall;
+pub use request::OpenAIChatMessage;
+pub use request::OpenAIChatToolCall;
 pub use request::OpenAIRequestConfig;
 pub use request::OpenAIResponsesFunctionCallOutput;
 pub use request::OpenAIResponsesNamedToolChoice;
@@ -26,6 +32,9 @@ pub use request::OpenAIResponsesTool;
 pub use request::OpenAIResponsesToolChoice;
 pub use request::OpenAIResponsesToolChoiceMode;
 pub use request::OpenAIResponsesToolRequest;
+pub use response::OpenAIChatChoice;
+pub use response::OpenAIChatChoiceMessage;
+pub use response::OpenAIChatCompletionsResponse;
 pub use response::OpenAIResponseToolCall;
 pub use response::OpenAIResponsesContentItem;
 pub use response::OpenAIResponsesOutputItem;
@@ -76,9 +85,24 @@ pub fn build_tool_responses_request(
     request::build_tool_responses_request(config, request)
 }
 
+/// Builds an ordered OpenAI-compatible Chat Completions request.
+pub fn build_chat_completions_request(
+    config: &OpenAIRequestConfig,
+    request: &OpenAIChatCompletionsRequest,
+) -> anyhow::Result<BuiltOpenAIRequest> {
+    request::build_chat_completions_request(config, request)
+}
+
 /// Parses a serialized OpenAI Responses API payload into typed response data.
 pub fn parse_responses_response(payload: &str) -> anyhow::Result<OpenAIResponsesResponse> {
     response::parse_responses_response(payload)
+}
+
+/// Parses a serialized OpenAI-compatible Chat Completions payload.
+pub fn parse_chat_completions_response(
+    payload: &str,
+) -> anyhow::Result<OpenAIChatCompletionsResponse> {
+    response::parse_chat_completions_response(payload)
 }
 
 /// Extracts assistant text from a parsed OpenAI Responses API payload.
@@ -86,11 +110,23 @@ pub fn extract_responses_text(response: &OpenAIResponsesResponse) -> String {
     response::extract_responses_text(response)
 }
 
+/// Extracts assistant text from a parsed OpenAI-compatible Chat Completions payload.
+pub fn extract_chat_completions_text(response: &OpenAIChatCompletionsResponse) -> String {
+    response::extract_chat_completions_text(response)
+}
+
 /// Extracts tool calls from a parsed OpenAI Responses API payload.
 pub fn extract_responses_tool_calls(
     response: &OpenAIResponsesResponse,
 ) -> anyhow::Result<Vec<OpenAIResponseToolCall>> {
     response::extract_responses_tool_calls(response)
+}
+
+/// Extracts tool calls from a parsed OpenAI-compatible Chat Completions payload.
+pub fn extract_chat_completions_tool_calls(
+    response: &OpenAIChatCompletionsResponse,
+) -> anyhow::Result<Vec<OpenAIResponseToolCall>> {
+    response::extract_chat_completions_tool_calls(response)
 }
 
 #[cfg(test)]
@@ -164,6 +200,30 @@ mod tests {
     }
 
     #[test]
+    fn crate_root_builds_chat_completions_request() {
+        let request = build_chat_completions_request(
+            &OpenAIRequestConfig {
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+            },
+            &OpenAIChatCompletionsRequest {
+                model: "auto".to_string(),
+                messages: vec![OpenAIChatMessage {
+                    role: "user".to_string(),
+                    content: Some(json!("hello")),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                }],
+                tools: Vec::new(),
+                tool_choice: None,
+            },
+        )
+        .expect("request should build");
+        assert_eq!(request.url, "https://openrouter.ai/api/v1/chat/completions");
+    }
+
+    #[test]
     fn crate_root_parses_tool_calls() {
         let response = parse_responses_response(
             r#"{
@@ -182,5 +242,36 @@ mod tests {
         let calls = extract_responses_tool_calls(&response).expect("tool calls should parse");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "read_file");
+    }
+
+    #[test]
+    fn crate_root_parses_chat_completions_tool_calls() {
+        let response = parse_chat_completions_response(
+            r#"{
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Inspecting",
+                            "tool_calls": [
+                                {
+                                    "id": "call_123",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": "{\"path\":\"Cargo.toml\"}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .expect("response should parse");
+        let calls =
+            extract_chat_completions_tool_calls(&response).expect("tool calls should parse");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "call_123");
     }
 }

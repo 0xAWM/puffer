@@ -218,6 +218,7 @@ pub fn attribution_header(config: &AnthropicRequestConfig, fingerprint: &str) ->
 
 fn append_auth_headers(headers: &mut Vec<(String, String)>, config: &AnthropicRequestConfig) {
     match &config.auth {
+        AnthropicAuth::None => {}
         AnthropicAuth::ApiKey(key) => {
             headers.push(("x-api-key".to_string(), key.clone()));
         }

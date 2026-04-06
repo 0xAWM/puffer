@@ -1,0 +1,28 @@
+id: cerebras
+display_name: Cerebras
+base_url: https://api.cerebras.ai/v1
+default_api: openai-completions
+auth_modes:
+  - api_key
+discovery:
+  path: /models
+  response: open_ai_models
+  api: openai-completions
+  context_window: 131072
+  max_output_tokens: 32768
+  supports_reasoning: true
+models:
+  - id: gpt-oss-120b
+    display_name: GPT OSS 120B
+    provider: cerebras
+    api: openai-completions
+    context_window: 131072
+    max_output_tokens: 32768
+    supports_reasoning: true
+  - id: qwen-3-235b-a22b-instruct-2507
+    display_name: Qwen 3 235B Instruct
+    provider: cerebras
+    api: openai-completions
+    context_window: 131000
+    max_output_tokens: 32000
+    supports_reasoning: false

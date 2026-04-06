@@ -41,7 +41,7 @@ impl ModelDiscoveryClient {
         for (key, value) in &discovery.headers {
             request = request.header(key, value);
         }
-        request = apply_discovery_auth(request, provider.id.as_str(), auth_store);
+        request = apply_discovery_auth(request, provider, auth_store);
         let response = request
             .send()
             .with_context(|| format!("failed to fetch models from {url}"))?;
@@ -74,11 +74,12 @@ pub fn merge_discovered_models(
 
 fn apply_discovery_auth(
     mut request: reqwest::blocking::RequestBuilder,
-    provider_id: &str,
+    provider: &ProviderDescriptor,
     auth_store: &AuthStore,
 ) -> reqwest::blocking::RequestBuilder {
-    match auth_store.get(provider_id) {
-        Some(StoredCredential::ApiKey { key }) if provider_id == "anthropic" => {
+    let auth_family = provider_auth_family(provider);
+    match auth_store.get(provider.id.as_str()) {
+        Some(StoredCredential::ApiKey { key }) if auth_family == "anthropic" => {
             request = request.header("x-api-key", key);
             request.header("anthropic-version", "2023-06-01")
         }
@@ -90,6 +91,20 @@ fn apply_discovery_auth(
             format!("Bearer {}", credential.access_token),
         ),
         None => request,
+    }
+}
+
+fn provider_auth_family(provider: &ProviderDescriptor) -> &'static str {
+    if provider.default_api == "anthropic-messages"
+        || provider
+            .discovery
+            .as_ref()
+            .map(|discovery| discovery.api.as_str() == "anthropic-messages")
+            .unwrap_or(false)
+    {
+        "anthropic"
+    } else {
+        "bearer"
     }
 }
 
@@ -147,6 +162,10 @@ fn default_display_name<'a>(item: &'a Value, format: &ModelDiscoveryFormat) -> O
             .or_else(|| item.get("name"))
             .and_then(Value::as_str),
         ModelDiscoveryFormat::OpenAiModels => item.get("name").and_then(Value::as_str),
+        ModelDiscoveryFormat::OllamaModels => item
+            .get("name")
+            .or_else(|| item.get("model"))
+            .and_then(Value::as_str),
     }
 }
 
@@ -234,5 +253,90 @@ mod tests {
                 .expect("models");
         assert_eq!(models[0].id, "reasoner");
         assert_eq!(models[0].display_name, "Reasoner");
+    }
+
+    #[test]
+    fn discovery_parses_ollama_model_lists() {
+        let discovery = ModelDiscoveryConfig {
+            path: "/api/tags".to_string(),
+            response: ModelDiscoveryFormat::OllamaModels,
+            api: "openai-completions".to_string(),
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            supports_reasoning: false,
+            items_field: "models".to_string(),
+            id_field: "name".to_string(),
+            display_name_field: None,
+            headers: IndexMap::new(),
+        };
+        let payload = serde_json::json!({
+            "models": [
+                { "name": "qwen3:14b", "model": "qwen3:14b" }
+            ]
+        });
+        let provider = provider(discovery);
+        let models =
+            parse_discovered_models(&provider, provider.discovery.as_ref().unwrap(), &payload)
+                .expect("models");
+        assert_eq!(models[0].id, "qwen3:14b");
+        assert_eq!(models[0].display_name, "qwen3:14b");
+        assert_eq!(models[0].api, "openai-completions");
+    }
+
+    #[test]
+    fn anthropic_family_discovery_uses_api_key_header_for_custom_provider() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || -> String {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut buffer = [0_u8; 4096];
+            let size = std::io::Read::read(&mut stream, &mut buffer).expect("request");
+            let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+            let body = serde_json::json!({
+                "data": [
+                    { "id": "claude-compatible" }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            std::io::Write::write_all(&mut stream, response.as_bytes()).expect("response");
+            request
+        });
+        let provider = ProviderDescriptor {
+            id: "custom-anthropic".to_string(),
+            display_name: "Custom Anthropic".to_string(),
+            base_url: format!("http://{address}"),
+            default_api: "anthropic-messages".to_string(),
+            auth_modes: vec![crate::auth::AuthMode::ApiKey],
+            headers: IndexMap::new(),
+            discovery: Some(ModelDiscoveryConfig {
+                path: "/v1/models".to_string(),
+                response: ModelDiscoveryFormat::AnthropicModels,
+                api: "anthropic-messages".to_string(),
+                context_window: 200_000,
+                max_output_tokens: 8_192,
+                supports_reasoning: true,
+                items_field: "data".to_string(),
+                id_field: "id".to_string(),
+                display_name_field: None,
+                headers: IndexMap::new(),
+            }),
+            models: Vec::new(),
+        };
+        let mut auth = AuthStore::default();
+        auth.set_api_key("custom-anthropic", "sk-ant-custom");
+        let client = ModelDiscoveryClient::new();
+        let discovered = client
+            .discover_models(&provider, &auth)
+            .expect("discovered");
+        let request = server.join().expect("server");
+        assert_eq!(discovered[0].id, "claude-compatible");
+        assert!(request.contains("x-api-key: sk-ant-custom"));
+        assert!(request.contains("anthropic-version: 2023-06-01"));
+        assert!(!request.contains("authorization: Bearer"));
     }
 }

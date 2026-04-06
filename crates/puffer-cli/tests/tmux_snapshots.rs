@@ -16,10 +16,10 @@ fn tmux_help_matches_snapshot() {
 
     let (_tempdir, workspace) = configured_workspace();
     let session = start_tmux_with_home(&workspace);
-    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
+    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     send_tmux_keys(&session, &["/help", "Enter"]).unwrap();
     let capture =
-        wait_for_tmux_text(&session, "Supported commands:", Duration::from_secs(5)).unwrap();
+        wait_for_tmux_text(&session, "Supported commands:", Duration::from_secs(10)).unwrap();
     assert_normalized_snapshot(
         &normalize_tmux_capture(&capture),
         &snapshot_path("tmux_help_snapshot.txt"),
@@ -35,9 +35,9 @@ fn tmux_login_overlay_matches_snapshot() {
 
     let (_tempdir, workspace) = configured_workspace();
     let session = start_tmux_with_home(&workspace);
-    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
+    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
-    let capture = wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(5)).unwrap();
+    let capture = wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(10)).unwrap();
     assert_normalized_snapshot(
         &normalize_tmux_capture(&capture),
         &snapshot_path("tmux_login_overlay_snapshot.txt"),

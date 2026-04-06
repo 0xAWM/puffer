@@ -107,6 +107,61 @@ fn resolve_model_api_supports_custom_provider_families() {
 }
 
 #[test]
+fn execute_user_prompt_accepts_openai_family_aliases() {
+    let mut descriptor = provider();
+    descriptor.id = "azure-openai".to_string();
+    descriptor.display_name = "Azure OpenAI".to_string();
+    descriptor.base_url = "https://example.invalid".to_string();
+    descriptor.default_api = "azure-openai-responses".to_string();
+    descriptor.models[0].provider = "azure-openai".to_string();
+    descriptor.models[0].api = "azure-openai-responses".to_string();
+    let mut registry = ProviderRegistry::new();
+    registry.register(descriptor);
+    let mut azure_state = state();
+    azure_state.current_provider = Some("azure-openai".to_string());
+    azure_state.current_model = Some("azure-openai/claude-sonnet-4-5".to_string());
+    let mut auth = AuthStore::default();
+    auth.set_api_key("azure-openai", "sk-test");
+    let error = execute_user_prompt(
+        &azure_state,
+        &LoadedResources::default(),
+        &registry,
+        &auth,
+        "hello",
+    )
+    .unwrap_err();
+    assert!(!error
+        .to_string()
+        .contains("provider azure-openai with api azure-openai-responses is not executable yet"));
+
+    let mut descriptor = provider();
+    descriptor.id = "openrouter".to_string();
+    descriptor.display_name = "OpenRouter".to_string();
+    descriptor.base_url = "https://example.invalid".to_string();
+    descriptor.default_api = "openai-completions".to_string();
+    descriptor.models[0].provider = "openrouter".to_string();
+    descriptor.models[0].api = "openai-completions".to_string();
+    let mut registry = ProviderRegistry::new();
+    registry.register(descriptor);
+    let mut openrouter_state = state();
+    openrouter_state.current_provider = Some("openrouter".to_string());
+    openrouter_state.current_model = Some("openrouter/claude-sonnet-4-5".to_string());
+    let mut auth = AuthStore::default();
+    auth.set_api_key("openrouter", "sk-test");
+    let error = execute_user_prompt(
+        &openrouter_state,
+        &LoadedResources::default(),
+        &registry,
+        &auth,
+        "hello",
+    )
+    .unwrap_err();
+    assert!(!error
+        .to_string()
+        .contains("provider openrouter with api openai-completions is not executable yet"));
+}
+
+#[test]
 fn execute_anthropic_tool_calls_runs_registered_tools() {
     let resources = LoadedResources {
         tools: vec![loaded_tool("bash", "Run shell", "bash")],
@@ -162,9 +217,13 @@ fn execute_openai_tool_calls_serializes_outputs() {
         name: "bash".to_string(),
         arguments: json!({ "command": "printf hi" }),
     }];
-    let result =
-        execute_openai_tool_calls(&resources, &tool_calls, &registry, std::env::current_dir().unwrap().as_path())
-            .unwrap();
+    let result = execute_openai_tool_calls(
+        &resources,
+        &tool_calls,
+        &registry,
+        std::env::current_dir().unwrap().as_path(),
+    )
+    .unwrap();
     assert_eq!(result.outputs[0].kind, "function_call_output");
     assert_eq!(result.outputs[0].call_id, "call_1");
     assert!(result.outputs[0].output.contains("hi"));
@@ -233,4 +292,31 @@ fn transcript_to_openai_input_replays_transcript_items() {
     assert_eq!(items[0]["role"], "user");
     assert_eq!(items[1]["type"], "message");
     assert_eq!(items[1]["role"], "assistant");
+}
+
+#[test]
+fn transcript_to_openai_chat_messages_replays_transcript_items() {
+    let mut state = state();
+    state.push_message(crate::MessageRole::User, "hello");
+    state.push_message(crate::MessageRole::Assistant, "hi");
+
+    let messages = transcript_to_openai_chat_messages(&state, "fallback");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[1].role, "assistant");
+    assert_eq!(messages[0].content, Some(json!("hello")));
+}
+
+#[test]
+fn transcript_to_openai_chat_messages_preserves_system_role() {
+    let mut state = state();
+    state.push_message(crate::MessageRole::System, "rules");
+    state.push_message(crate::MessageRole::User, "hello");
+    state.push_message(crate::MessageRole::Assistant, "hi");
+
+    let messages = transcript_to_openai_chat_messages(&state, "fallback");
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].role, "system");
+    assert_eq!(messages[1].role, "user");
+    assert_eq!(messages[2].role, "assistant");
 }

@@ -3,24 +3,17 @@ use crate::command_helpers::{
     execute_skill_command, handle_agents_command, handle_config_command, handle_hooks_command,
     handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
     handle_permissions_command, handle_plugin_command, handle_session_command, list_skills,
-    reload_plugins_summary, rewind_transcript, run_doctor, terminal_setup_advice,
+    reload_plugins_summary, render_login_guidance, rewind_transcript, run_doctor,
+    terminal_setup_advice,
 };
 use crate::{
-    render_buddy_summary, render_cost_summary, render_task_summary, render_usage_summary,
-    AppState, MessageRole,
+    render_buddy_summary, render_cost_summary, render_task_summary, render_usage_summary, AppState,
+    MessageRole,
 };
 use anyhow::Result;
-use puffer_provider_openai::{
-    build_authorization_url as build_openai_authorization_url,
-    generate_pkce as generate_openai_pkce, OpenAIOAuthConfig,
-};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::{prompt_by_id, render_prompt_by_id, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
-use puffer_transport_anthropic::{
-    build_authorization_url as build_anthropic_authorization_url,
-    generate_pkce as generate_anthropic_pkce, AnthropicOAuthConfig,
-};
 use serde::Serialize;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -778,52 +771,26 @@ fn execute_local_command(
             } else {
                 args
             };
-            let status = if auth_store.has_auth(provider) {
-                "Credentials are already stored."
-            } else {
-                "No credentials are currently stored."
-            };
-            let oauth_hint = match provider {
-                "openai" => {
-                    let pkce = generate_openai_pkce();
-                    let config = OpenAIOAuthConfig {
-                        state: pkce.state.clone(),
-                        code_challenge: pkce.challenge.clone(),
-                        ..OpenAIOAuthConfig::default()
-                    };
-                    format!(
-                        "OAuth start bundle:\nurl={}\nverifier={}\nstate={}",
-                        build_openai_authorization_url(&config),
-                        pkce.verifier,
-                        pkce.state
-                    )
-                }
-                "anthropic" => {
-                    let pkce = generate_anthropic_pkce();
-                    let config = AnthropicOAuthConfig {
-                        state: pkce.state.clone(),
-                        code_challenge: pkce.challenge.clone(),
-                        ..AnthropicOAuthConfig::default()
-                    };
-                    format!(
-                        "OAuth start bundle:\nurl={}\nverifier={}\nstate={}",
-                        build_anthropic_authorization_url(&config),
-                        pkce.verifier,
-                        pkce.state
-                    )
-                }
-                _ => format!("No built-in OAuth URL generator for {provider}."),
-            };
+            let descriptor = providers.provider(provider);
             emit_system(
                 state,
                 session_store,
-                format!(
-                    "{status}\nRun `puffer auth login {provider}` for a guided OAuth flow or `puffer auth set-api-key {provider} --stdin` for API-key auth.\n{oauth_hint}"
-                ),
+                render_login_guidance(provider, descriptor, auth_store.has_auth(provider)),
             )
         }
         "logout" => {
             let provider = if args.is_empty() { "anthropic" } else { args };
+            if providers
+                .provider(provider)
+                .map(|descriptor| descriptor.auth_modes.is_empty())
+                .unwrap_or(false)
+            {
+                return emit_system(
+                    state,
+                    session_store,
+                    format!("{provider} does not use stored credentials."),
+                );
+            }
             emit_system(
                 state,
                 session_store,

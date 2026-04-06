@@ -7,6 +7,7 @@ use puffer_session_store::{SessionMetadata, SessionStore};
 use std::path::PathBuf;
 use tempfile::tempdir;
 
+mod login_auth;
 mod usage_buddy;
 
 #[test]

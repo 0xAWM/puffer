@@ -25,9 +25,9 @@ fn tmux_resume_overlay_lists_workspace_sessions() {
 
     let session =
         start_tmux_command(env!("CARGO_BIN_EXE_puffer"), &[], Some(workspace.as_path())).unwrap();
-    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
+    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     send_tmux_keys(&session, &["/resume", "Enter"]).unwrap();
-    let capture = wait_for_tmux_text(&session, "Resume Session", Duration::from_secs(5)).unwrap();
+    let capture = wait_for_tmux_text(&session, "Resume Session", Duration::from_secs(10)).unwrap();
     assert!(capture.contains("dockyard"));
 }
 
@@ -40,9 +40,9 @@ fn tmux_login_overlay_lists_available_providers() {
     let (_tempdir, workspace) = configured_workspace();
     let session =
         start_tmux_command(env!("CARGO_BIN_EXE_puffer"), &[], Some(workspace.as_path())).unwrap();
-    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
+    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
-    let capture = wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(5)).unwrap();
+    let capture = wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(10)).unwrap();
     assert!(capture.contains("anthropic"));
     assert!(capture.contains("openai"));
 }

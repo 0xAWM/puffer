@@ -166,6 +166,13 @@ fn try_open_overlay_builds_login_picker() {
         tui.overlay,
         Some(OverlayState::LoginPicker { .. })
     ));
+    let entries = match &tui.overlay {
+        Some(OverlayState::LoginPicker { entries, .. }) => entries,
+        _ => unreachable!("login picker"),
+    };
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().any(|entry| entry.selector == "anthropic"));
+    assert!(entries.iter().any(|entry| entry.selector == "openai"));
 }
 
 #[test]
@@ -477,6 +484,24 @@ fn sample_providers() -> ProviderRegistry {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+        }],
+    });
+    providers.register(ProviderDescriptor {
+        id: "ollama".to_string(),
+        display_name: "Ollama".to_string(),
+        base_url: "http://127.0.0.1:11434".to_string(),
+        default_api: "openai-completions".to_string(),
+        auth_modes: Vec::new(),
+        headers: Default::default(),
+        discovery: None,
+        models: vec![ModelDescriptor {
+            id: "qwen3:14b".to_string(),
+            display_name: "qwen3:14b".to_string(),
+            provider: "ollama".to_string(),
+            api: "openai-completions".to_string(),
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            supports_reasoning: false,
         }],
     });
     providers

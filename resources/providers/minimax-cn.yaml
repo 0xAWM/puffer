@@ -1,0 +1,14 @@
+id: minimax-cn
+display_name: MiniMax CN
+base_url: https://api.minimaxi.com/anthropic
+default_api: anthropic-messages
+auth_modes:
+  - api_key
+models:
+  - id: MiniMax-M2.7
+    display_name: MiniMax-M2.7
+    provider: minimax-cn
+    api: anthropic-messages
+    context_window: 204800
+    max_output_tokens: 131072
+    supports_reasoning: true

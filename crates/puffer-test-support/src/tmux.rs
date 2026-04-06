@@ -56,6 +56,14 @@ pub fn start_tmux_command(program: &str, args: &[&str], cwd: Option<&Path>) -> R
     if !status.success() {
         return Err(anyhow!("failed to start tmux session {}", session.name));
     }
+    let output = run_tmux_command(&["set-option", "-t", &session.name, "remain-on-exit", "on"])?;
+    if output.status_code != 0 {
+        return Err(anyhow!(
+            "failed to set remain-on-exit for {}: {}",
+            session.name,
+            output.stderr.trim()
+        ));
+    }
     Ok(session)
 }
 

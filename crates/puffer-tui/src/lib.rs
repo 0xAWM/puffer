@@ -306,6 +306,7 @@ fn try_open_overlay(
         "login" if args.is_empty() => {
             let entries = providers
                 .providers()
+                .filter(|provider| !provider.auth_modes.is_empty())
                 .map(|provider| ModelPickerEntry {
                     selector: provider.id.clone(),
                     description: provider.display_name.clone(),

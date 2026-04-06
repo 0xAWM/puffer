@@ -45,6 +45,7 @@ pub const ORGANIZATION_UUID_ENV: &str = "CLAUDE_CODE_ORGANIZATION_UUID";
 /// Authentication modes supported by Anthropic-facing requests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnthropicAuth {
+    None,
     ApiKey(String),
     OAuthBearer(String),
     SessionIngress {

@@ -13,8 +13,14 @@ fn puffer_help_renders_in_tmux_no_alt_screen() {
         .canonicalize()
         .unwrap();
     let session = start_tmux_command(
-        env!("CARGO_BIN_EXE_puffer"),
-        &["--no-alt-screen", "/help"],
+        "sh",
+        &[
+            "-lc",
+            &format!(
+                "{} --no-alt-screen /help; sleep 10",
+                env!("CARGO_BIN_EXE_puffer")
+            ),
+        ],
         Some(&workspace_root),
     )
     .unwrap();

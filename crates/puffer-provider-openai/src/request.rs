@@ -9,6 +9,61 @@ pub struct OpenAIResponsesRequest {
     pub input: String,
 }
 
+/// A minimal OpenAI Chat Completions API request payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatCompletionsRequest {
+    pub model: String,
+    pub messages: Vec<OpenAIChatMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<OpenAIChatCompletionTool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<OpenAIResponsesToolChoiceMode>,
+}
+
+/// A message item accepted by the OpenAI Chat Completions API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatMessage {
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<OpenAIChatToolCall>,
+}
+
+/// A tool-call item emitted or replayed through Chat Completions messages.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAIChatToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: OpenAIChatFunctionCall,
+}
+
+/// A function-call payload nested under a Chat Completions tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAIChatFunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// A tool definition accepted by the OpenAI Chat Completions API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatCompletionTool {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: OpenAIChatCompletionToolFunction,
+}
+
+/// A function definition nested under a Chat Completions tool payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatCompletionToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
 /// A tool-enabled OpenAI Responses API request payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAIResponsesToolRequest {
@@ -99,9 +154,25 @@ pub(crate) fn build_tool_responses_request(
     build_request(config, request)
 }
 
+/// Builds an ordered OpenAI Chat Completions API request.
+pub(crate) fn build_chat_completions_request(
+    config: &OpenAIRequestConfig,
+    request: &OpenAIChatCompletionsRequest,
+) -> anyhow::Result<BuiltOpenAIRequest> {
+    build_request_to_path(config, request, "/v1/chat/completions")
+}
+
 fn build_request<T: Serialize>(
     config: &OpenAIRequestConfig,
     request: &T,
+) -> anyhow::Result<BuiltOpenAIRequest> {
+    build_request_to_path(config, request, "/v1/responses")
+}
+
+fn build_request_to_path<T: Serialize>(
+    config: &OpenAIRequestConfig,
+    request: &T,
+    path: &str,
 ) -> anyhow::Result<BuiltOpenAIRequest> {
     let mut headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
@@ -111,16 +182,30 @@ fn build_request<T: Serialize>(
         ),
     ];
     match &config.auth {
+        OpenAIAuth::None => {}
         OpenAIAuth::ApiKey(key) | OpenAIAuth::OAuthBearer(key) => {
             headers.push(("Authorization".to_string(), format!("Bearer {key}")));
         }
     }
+    let normalized_path = normalized_path(&config.base_url, path);
     Ok(BuiltOpenAIRequest {
         method: "POST",
-        url: format!("{}/v1/responses", config.base_url.trim_end_matches('/')),
+        url: format!(
+            "{}{}",
+            config.base_url.trim_end_matches('/'),
+            normalized_path
+        ),
         headers,
         body: serde_json::to_string(request)?,
     })
+}
+
+fn normalized_path(base_url: &str, path: &str) -> String {
+    if base_url.trim_end_matches('/').ends_with("/v1") && path.starts_with("/v1/") {
+        path[3..].to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -145,6 +230,28 @@ mod tests {
         assert_eq!(
             request.headers[2],
             ("Authorization".to_string(), "Bearer sk-test".to_string())
+        );
+    }
+
+    #[test]
+    fn none_auth_omits_authorization_header() {
+        let request = build_responses_request(
+            &OpenAIRequestConfig {
+                base_url: "http://127.0.0.1:11434/v1".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::None,
+            },
+            &OpenAIResponsesRequest {
+                model: "llama3.1:8b".to_string(),
+                input: "hello".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(
+            !request
+                .headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("authorization"))
         );
     }
 
@@ -194,5 +301,41 @@ mod tests {
                 "Bearer oauth-token".to_string()
             )
         );
+    }
+
+    #[test]
+    fn chat_completions_request_uses_chat_endpoint_and_tools() {
+        let request = build_chat_completions_request(
+            &OpenAIRequestConfig {
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+            },
+            &OpenAIChatCompletionsRequest {
+                model: "demo-model".to_string(),
+                messages: vec![OpenAIChatMessage {
+                    role: "user".to_string(),
+                    content: Some(json!("hello")),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                }],
+                tools: vec![OpenAIChatCompletionTool {
+                    kind: "function".to_string(),
+                    function: OpenAIChatCompletionToolFunction {
+                        name: "read_file".to_string(),
+                        description: "Reads a file.".to_string(),
+                        parameters: json!({"type": "object", "properties": {}}),
+                    },
+                }],
+                tool_choice: Some(OpenAIResponsesToolChoiceMode::Auto),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(request.url, "https://openrouter.ai/api/v1/chat/completions");
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(body["messages"][0]["role"], json!("user"));
+        assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
+        assert_eq!(body["tool_choice"], json!("auto"));
     }
 }

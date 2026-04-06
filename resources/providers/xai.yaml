@@ -1,0 +1,21 @@
+id: xai
+display_name: xAI
+base_url: https://api.x.ai/v1
+default_api: openai-completions
+auth_modes:
+  - api_key
+discovery:
+  path: /models
+  response: open_ai_models
+  api: openai-completions
+  context_window: 256000
+  max_output_tokens: 10000
+  supports_reasoning: true
+models:
+  - id: grok-code-fast-1
+    display_name: Grok Code Fast 1
+    provider: xai
+    api: openai-completions
+    context_window: 256000
+    max_output_tokens: 10000
+    supports_reasoning: true
