@@ -573,7 +573,7 @@ fn execute_shell_shortcut(
             ("PUFFER_TOOL_ID", "bash".to_string()),
             (
                 "PUFFER_TOOL_INPUT",
-                serde_json::json!({ "command": shell_command }).to_string(),
+                format!("{{\"command\":\"{}\"}}", shell_command.replace('"', "\\\"")),
             ),
             (
                 "PUFFER_TOOL_SUCCESS",
