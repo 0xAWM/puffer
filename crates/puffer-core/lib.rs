@@ -787,11 +787,10 @@ fn execute_local_command(
             session_store,
             "Agent management:\ninteractive_agent=default\nforkable_sessions=yes\nnamed_presets=not yet implemented".to_string(),
         ),
-        "memory" => emit_system(
-            state,
-            session_store,
-            handle_memory_command(state, session_store, args)?,
-        ),
+        "memory" => {
+            let message = handle_memory_command(state, session_store, args)?;
+            emit_system(state, session_store, message)
+        }
         "keybindings" => emit_system(
             state,
             session_store,
@@ -1172,30 +1171,6 @@ fn terminal_setup_advice(state: &AppState) -> String {
         state.config.ui.no_alt_screen,
         state.config.ui.tmux_golden_mode
     )
-}
-
-fn handle_memory_command(
-    state: &AppState,
-    _session_store: &SessionStore,
-    args: &str,
-) -> Result<String> {
-    if args.is_empty() {
-        return Ok(format!(
-            "Session memory summary:\nslug={}\nnote={}\ntags={}",
-            state.session.slug.as_deref().unwrap_or("<none>"),
-            state.session.note.as_deref().unwrap_or("<none>"),
-            if state.session.tags.is_empty() {
-                "<none>".to_string()
-            } else {
-                state.session.tags.join(", ")
-            },
-        ));
-    }
-
-    Ok(format!(
-        "Memory editing is not yet interactive.\nCurrent args: {}\nUse `puffer sessions note` and `puffer sessions tag-*` from the CLI for now.",
-        args
-    ))
 }
 
 fn describe_plugin(
