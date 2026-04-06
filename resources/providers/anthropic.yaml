@@ -5,6 +5,13 @@ default_api: anthropic-messages
 auth_modes:
   - api_key
   - oauth
+discovery:
+  path: /v1/models
+  response: anthropic_models
+  api: anthropic-messages
+  context_window: 200000
+  max_output_tokens: 8192
+  supports_reasoning: true
 models:
   - id: claude-sonnet-4-5
     display_name: Claude Sonnet 4.5
@@ -20,4 +27,3 @@ models:
     context_window: 200000
     max_output_tokens: 32000
     supports_reasoning: true
-

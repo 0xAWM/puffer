@@ -1581,6 +1581,7 @@ dependencies = [
  "anyhow",
  "indexmap",
  "puffer-config",
+ "reqwest",
  "serde",
  "serde_json",
  "uuid",

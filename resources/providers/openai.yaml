@@ -5,6 +5,13 @@ default_api: openai-responses
 auth_modes:
   - api_key
   - oauth
+discovery:
+  path: /v1/models
+  response: open_ai_models
+  api: openai-responses
+  context_window: 272000
+  max_output_tokens: 16384
+  supports_reasoning: true
 models:
   - id: gpt-5
     display_name: GPT-5
@@ -20,4 +27,3 @@ models:
     context_window: 272000
     max_output_tokens: 16384
     supports_reasoning: true
-

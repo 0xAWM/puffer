@@ -20,6 +20,7 @@ use puffer_tools::{ToolInput, ToolRegistry};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
+use std::path::Path;
 use std::time::Duration;
 
 /// Runs the interactive Puffer TUI until the user exits.
@@ -27,7 +28,8 @@ pub fn run_app(
     state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
     session_store: &SessionStore,
     initial_prompt: Option<String>,
     no_alt_screen: bool,
@@ -38,6 +40,7 @@ pub fn run_app(
             resources,
             providers,
             auth_store,
+            auth_path,
             session_store,
             prompt,
         )?;
@@ -80,6 +83,7 @@ pub fn run_app(
                         resources,
                         providers,
                         auth_store,
+                        auth_path,
                         session_store,
                         &commands,
                         &mut tui,
@@ -105,7 +109,8 @@ fn handle_key(
     state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
     session_store: &SessionStore,
     commands: &[CommandSpec],
     tui: &mut TuiState,
@@ -117,6 +122,7 @@ fn handle_key(
             resources,
             providers,
             auth_store,
+            auth_path,
             session_store,
             commands,
             tui,
@@ -168,6 +174,7 @@ fn handle_key(
                 resources,
                 providers,
                 auth_store,
+                auth_path,
                 session_store,
                 submitted,
             )?;
@@ -185,7 +192,8 @@ fn handle_overlay_key(
     state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
     session_store: &SessionStore,
     commands: &[CommandSpec],
     tui: &mut TuiState,
@@ -209,6 +217,7 @@ fn handle_overlay_key(
                     resources,
                     providers,
                     auth_store,
+                    auth_path,
                     session_store,
                     &command,
                 )?;
@@ -339,12 +348,17 @@ fn handle_submit(
     state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
     session_store: &SessionStore,
     submitted: String,
 ) -> Result<()> {
     let submitted = submitted.trim().to_string();
     if submitted.is_empty() {
+        return Ok(());
+    }
+
+    if handle_auth_command(state, auth_store, auth_path, session_store, &submitted)? {
         return Ok(());
     }
 
@@ -396,6 +410,41 @@ fn handle_submit(
     }
 
     Ok(())
+}
+
+fn handle_auth_command(
+    state: &mut AppState,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
+    session_store: &SessionStore,
+    submitted: &str,
+) -> Result<bool> {
+    let without_slash = submitted.trim_start_matches('/');
+    let (name, args) = without_slash
+        .split_once(' ')
+        .map(|(name, args)| (name, args.trim()))
+        .unwrap_or((without_slash, ""));
+    if name != "logout" {
+        return Ok(false);
+    }
+
+    let provider = if args.is_empty() {
+        state.current_provider.as_deref().unwrap_or("anthropic")
+    } else {
+        args
+    };
+    let message = if auth_store.remove(provider).is_some() {
+        auth_store.save(auth_path)?;
+        format!("Removed stored credentials for {provider}.")
+    } else {
+        format!("No stored credentials exist for {provider}.")
+    };
+    state.push_message(MessageRole::System, message.clone());
+    session_store.append_event(
+        state.session.id,
+        TranscriptEvent::SystemMessage { text: message },
+    )?;
+    Ok(true)
 }
 
 fn append_tool_messages(

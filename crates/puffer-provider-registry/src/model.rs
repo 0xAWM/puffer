@@ -2,6 +2,26 @@ use crate::auth::AuthMode;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+/// Describes the response format used by a provider's model discovery endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelDiscoveryFormat {
+    OpenAiModels,
+    AnthropicModels,
+}
+
+/// Configures runtime discovery for provider-reported models.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelDiscoveryConfig {
+    pub path: String,
+    pub response: ModelDiscoveryFormat,
+    pub api: String,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    #[serde(default)]
+    pub supports_reasoning: bool,
+}
+
 /// Describes the origin of a registered provider.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +64,8 @@ pub struct ProviderDescriptor {
     pub auth_modes: Vec<AuthMode>,
     #[serde(default)]
     pub headers: IndexMap<String, String>,
+    #[serde(default)]
+    pub discovery: Option<ModelDiscoveryConfig>,
     #[serde(default)]
     pub models: Vec<ModelDescriptor>,
 }

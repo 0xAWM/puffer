@@ -1,5 +1,6 @@
 use puffer_provider_registry::{
-    AuthMode, ModelDescriptor, ProviderDescriptor, ProviderSource, ProviderSourceKind,
+    AuthMode, ModelDescriptor, ModelDiscoveryConfig, ProviderDescriptor, ProviderSource,
+    ProviderSourceKind,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -147,6 +148,8 @@ pub struct ProviderPack {
     #[serde(default)]
     pub headers: indexmap::IndexMap<String, String>,
     #[serde(default)]
+    pub discovery: Option<ModelDiscoveryConfig>,
+    #[serde(default)]
     pub models: Vec<ModelDescriptor>,
 }
 
@@ -160,6 +163,7 @@ impl ProviderPack {
             default_api: self.default_api,
             auth_modes: self.auth_modes,
             headers: self.headers,
+            discovery: self.discovery,
             models: self.models,
         }
     }

@@ -239,6 +239,8 @@ fn main() -> Result<()> {
     let paths = ConfigPaths::discover(&cwd);
     ensure_workspace_dirs(&paths)?;
     let config = load_config(&paths)?;
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = AuthStore::load(&auth_path)?;
     let resources = load_resources(&paths)?;
 
     let mut providers = ProviderRegistry::new();
@@ -248,9 +250,7 @@ fn main() -> Result<()> {
             provider.source_info.as_provider_source(),
         );
     }
-
-    let auth_path = paths.user_config_dir.join("auth.json");
-    let mut auth_store = AuthStore::load(&auth_path)?;
+    let _ = providers.discover_and_merge_all(&auth_store);
 
     match cli.subcommand {
         Some(Command::Auth { command }) => run_auth_command(command, &mut auth_store, &auth_path),
@@ -347,7 +347,8 @@ fn main() -> Result<()> {
                 &mut state,
                 &resources,
                 &providers,
-                &auth_store,
+                &mut auth_store,
+                &auth_path,
                 &session_store,
                 None,
                 cli.no_alt_screen || config.ui.no_alt_screen,
@@ -363,7 +364,8 @@ fn main() -> Result<()> {
                 &mut state,
                 &resources,
                 &providers,
-                &auth_store,
+                &mut auth_store,
+                &auth_path,
                 &session_store,
                 None,
                 cli.no_alt_screen || config.ui.no_alt_screen,
@@ -377,7 +379,8 @@ fn main() -> Result<()> {
                 &mut state,
                 &resources,
                 &providers,
-                &auth_store,
+                &mut auth_store,
+                &auth_path,
                 &session_store,
                 cli.prompt,
                 cli.no_alt_screen || config.ui.no_alt_screen,
