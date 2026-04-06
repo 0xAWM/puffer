@@ -1,12 +1,20 @@
 mod command;
+mod snapshot;
 mod terminal;
 mod tmux;
 mod workspace;
 
 pub use command::run_command_capture;
 pub use command::CommandOutput;
+pub use snapshot::assert_normalized_snapshot;
+pub use snapshot::read_normalized_snapshot;
+pub use snapshot::write_normalized_snapshot;
 pub use terminal::assert_contains;
+pub use terminal::capture_command_vt;
 pub use terminal::normalize_snapshot_text;
+pub use terminal::render_vt_text;
+pub use terminal::TerminalSize;
+pub use terminal::VtCapture;
 pub use tmux::detect_tmux;
 pub use tmux::tmux_available;
 pub use tmux::TmuxInfo;
