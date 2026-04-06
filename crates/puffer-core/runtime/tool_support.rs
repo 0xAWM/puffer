@@ -133,7 +133,7 @@ fn tool_permission_denied_reason(definition: &ToolDefinition) -> Option<&'static
 fn policy_value_disables_tool(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "disabled" | "deny" | "never"
+        "disabled" | "deny"
     )
 }
 

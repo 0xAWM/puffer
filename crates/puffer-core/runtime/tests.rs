@@ -368,7 +368,7 @@ fn openai_tool_definitions_use_registry_schema() {
 #[test]
 fn tool_definitions_filter_disabled_tools() {
     let mut denied = loaded_tool("deny_bash", "Denied", "bash");
-    denied.value.approval_policy = Some("never".to_string());
+    denied.value.approval_policy = Some("disabled".to_string());
     let mut gated = loaded_tool("off_bash", "Off", "bash");
     gated.value.enabled_if = Some("false".to_string());
     let resources = LoadedResources {
@@ -385,6 +385,22 @@ fn tool_definitions_filter_disabled_tools() {
         anthropic_tool_definitions(&registry, &anthropic_provider, "claude-sonnet-4-5");
     assert_eq!(anthropic_tools.len(), 1);
     assert_eq!(anthropic_tools[0]["name"], "bash");
+}
+
+#[test]
+fn tool_definitions_keep_never_approval_tools_enabled() {
+    let mut always_allowed = loaded_tool("read_file", "Read", "read_file");
+    always_allowed.value.approval_policy = Some("never".to_string());
+    let resources = LoadedResources {
+        tools: vec![always_allowed],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let openai_provider_descriptor = openai_provider();
+    let openai_tools =
+        openai_tool_definitions(&registry, &openai_provider_descriptor, "gpt-5");
+    assert_eq!(openai_tools.len(), 1);
+    assert_eq!(openai_tools[0].name, "read_file");
 }
 
 #[test]
@@ -419,7 +435,7 @@ fn execute_openai_tool_calls_serializes_outputs() {
 #[test]
 fn execute_openai_tool_calls_blocks_policy_disabled_tools() {
     let mut denied = loaded_tool("bash", "Run shell", "bash");
-    denied.value.approval_policy = Some("never".to_string());
+    denied.value.approval_policy = Some("disabled".to_string());
     let resources = LoadedResources {
         tools: vec![denied],
         ..LoadedResources::default()
@@ -450,7 +466,7 @@ fn execute_openai_tool_calls_blocks_policy_disabled_tools() {
 #[test]
 fn execute_anthropic_tool_calls_blocks_policy_disabled_tools() {
     let mut denied = loaded_tool("bash", "Run shell", "bash");
-    denied.value.approval_policy = Some("never".to_string());
+    denied.value.approval_policy = Some("disabled".to_string());
     let resources = LoadedResources {
         tools: vec![denied],
         ..LoadedResources::default()
