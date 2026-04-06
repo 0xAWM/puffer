@@ -448,6 +448,34 @@ mod tests {
     }
 
     #[test]
+    fn none_auth_omits_auth_headers() {
+        let request = build_messages_request(
+            &base_config(AnthropicAuth::None),
+            &AnthropicModelRequest {
+                model: "claude-sonnet-4-5".to_string(),
+                max_tokens: 256,
+                messages: vec![AnthropicMessage {
+                    role: "user".to_string(),
+                    content: "inspect the repo".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+        assert!(
+            !request
+                .headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("authorization"))
+        );
+        assert!(
+            !request
+                .headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("x-api-key"))
+        );
+    }
+
+    #[test]
     fn remote_and_custom_headers_preserve_expected_order() {
         let mut custom_headers = IndexMap::new();
         custom_headers.insert("x-custom-a".to_string(), "one".to_string());
