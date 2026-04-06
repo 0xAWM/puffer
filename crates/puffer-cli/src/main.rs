@@ -423,8 +423,13 @@ fn run_tool_command(
                                 "name": tool.spec.name,
                                 "description": tool.spec.description,
                                 "handler": tool.spec.handler,
+                                "handler_args": tool.spec.handler_args,
                                 "approval_policy": tool.spec.policy.approval_policy,
                                 "sandbox_policy": tool.spec.policy.sandbox_policy,
+                                "shared_lib": tool.spec.shared_lib,
+                                "enabled_if": tool.spec.enabled_if,
+                                "display": tool.spec.display,
+                                "input_schema": tool.spec.input_schema.as_json_schema(),
                             })
                         })
                         .collect::<Vec<_>>(),
@@ -443,15 +448,20 @@ fn run_tool_command(
                     "name": tool.spec.name,
                     "description": tool.spec.description,
                     "handler": tool.spec.handler,
+                    "handler_args": tool.spec.handler_args,
                     "approval_policy": tool.spec.policy.approval_policy,
                     "sandbox_policy": tool.spec.policy.sandbox_policy,
+                    "shared_lib": tool.spec.shared_lib,
+                    "enabled_if": tool.spec.enabled_if,
+                    "display": tool.spec.display,
+                    "input_schema": tool.spec.input_schema.as_json_schema(),
                 }))?
             );
         }
         ToolCommand::Run { tool_id, args } => {
             let registry = ToolRegistry::from_resources(resources);
-            let payload: puffer_tools::ToolInput = serde_json::from_str(&args)?;
-            let result = registry.execute(&tool_id, cwd, payload)?;
+            let payload: serde_json::Value = serde_json::from_str(&args)?;
+            let result = registry.execute_json(&tool_id, cwd, payload)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         ToolCommand::Bash { command } => {

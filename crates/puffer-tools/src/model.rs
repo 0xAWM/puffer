@@ -91,6 +91,7 @@ pub struct ToolDisplayHints {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
+    Custom,
     Bash,
     ReadFile,
     WriteFile,
@@ -120,6 +121,7 @@ impl ToolKind {
     /// Returns the canonical built-in handler id for the tool kind.
     pub fn handler(self) -> &'static str {
         match self {
+            Self::Custom => "custom",
             Self::Bash => "bash",
             Self::ReadFile => "read_file",
             Self::WriteFile => "write_file",
@@ -228,9 +230,16 @@ pub struct SearchTextToolInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
 pub enum ToolInput {
-    Bash { command: String },
-    ReadFile { path: PathBuf },
-    WriteFile { path: PathBuf, contents: String },
+    Bash {
+        command: String,
+    },
+    ReadFile {
+        path: PathBuf,
+    },
+    WriteFile {
+        path: PathBuf,
+        contents: String,
+    },
     ReplaceInFile {
         path: PathBuf,
         old: String,
@@ -245,8 +254,13 @@ pub enum ToolInput {
         path: PathBuf,
         recursive: bool,
     },
-    ListDir { path: Option<PathBuf> },
-    SearchText { query: String, path: Option<PathBuf> },
+    ListDir {
+        path: Option<PathBuf>,
+    },
+    SearchText {
+        query: String,
+        path: Option<PathBuf>,
+    },
 }
 
 impl ToolInput {
@@ -359,6 +373,20 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
 /// Returns the built-in tool definition for the given tool kind.
 pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
     match kind {
+        ToolKind::Custom => ToolDefinition {
+            id: "custom".to_string(),
+            name: "custom".to_string(),
+            description: "Run a custom declarative tool.".to_string(),
+            handler: kind.handler().to_string(),
+            handler_args: Vec::new(),
+            kind,
+            input_schema: ToolInputSchema::default(),
+            metadata: ToolMetadata::default(),
+            policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
+        },
         ToolKind::Bash => ToolDefinition {
             id: "bash".to_string(),
             name: "bash".to_string(),

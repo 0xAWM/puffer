@@ -1,10 +1,9 @@
 use crate::command_helpers::{
-    append_tool_invocations, copy_last_message, describe_context, describe_git_diff,
-    emit_system, execute_skill_command, handle_agents_command,
-    handle_config_command, handle_hooks_command, handle_ide_command,
-    handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_permissions_command, handle_plugin_command, handle_session_command, list_skills, reload_plugins_summary,
-    rewind_transcript, run_doctor, terminal_setup_advice,
+    append_tool_invocations, copy_last_message, describe_context, describe_git_diff, emit_system,
+    execute_skill_command, handle_agents_command, handle_config_command, handle_hooks_command,
+    handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
+    handle_permissions_command, handle_plugin_command, handle_session_command, list_skills,
+    reload_plugins_summary, rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::{AppState, MessageRole};
 use anyhow::Result;
@@ -13,7 +12,7 @@ use puffer_provider_openai::{
     generate_pkce as generate_openai_pkce, OpenAIOAuthConfig,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use puffer_resources::{mascot_by_id, prompt_by_id, LoadedResources};
+use puffer_resources::{mascot_by_id, prompt_by_id, render_prompt_by_id, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_transport_anthropic::{
     build_authorization_url as build_anthropic_authorization_url,
@@ -454,8 +453,39 @@ fn execute_prompt_command(
     command: &CommandSpec,
     args: &str,
 ) -> Result<()> {
-    let rendered = prompt_by_id(resources, command.name)
-        .map(|prompt| prompt.value.template.replace("$ARGUMENTS", args))
+    let prompt = prompt_by_id(resources, command.name);
+    if let Some(prompt) = prompt {
+        if let Some(model_override) = prompt
+            .value
+            .model_override
+            .as_deref()
+            .and_then(|model_id| providers.resolve_model(model_id))
+        {
+            state.current_provider = Some(model_override.provider.clone());
+            state.current_model =
+                Some(format!("{}/{}", model_override.provider, model_override.id));
+        } else if let Some(provider_override) = prompt.value.provider_override.as_ref() {
+            state.current_provider = Some(provider_override.clone());
+        }
+    }
+    let variables = std::collections::BTreeMap::from([
+        ("ARGUMENTS".to_string(), args.to_string()),
+        ("CWD".to_string(), state.cwd.display().to_string()),
+        (
+            "PROVIDER".to_string(),
+            state.current_provider.clone().unwrap_or_default(),
+        ),
+        (
+            "MODEL".to_string(),
+            state.current_model.clone().unwrap_or_default(),
+        ),
+        ("SESSION_ID".to_string(), state.session.id.to_string()),
+        (
+            "SESSION_SLUG".to_string(),
+            state.session.slug.clone().unwrap_or_default(),
+        ),
+    ]);
+    let rendered = render_prompt_by_id(resources, command.name, &variables)
         .unwrap_or_else(|| format!("Prompt command /{} invoked with: {}", command.name, args));
     state.push_message(MessageRole::User, rendered.clone());
     session_store.append_event(
@@ -903,9 +933,7 @@ fn render_cost_summary(state: &AppState) -> String {
     let tool_invocations = state
         .transcript
         .iter()
-        .filter(|message| {
-            message.role == MessageRole::System && message.text.starts_with("Tool ")
-        })
+        .filter(|message| message.role == MessageRole::System && message.text.starts_with("Tool "))
         .count();
     format!(
         "Session cost summary:\nelapsed_ms={elapsed_ms}\nuser_messages={user_messages}\nassistant_messages={assistant_messages}\ntool_invocations={tool_invocations}\nrecorded_tasks={}\nestimated_cost_usd=unavailable",

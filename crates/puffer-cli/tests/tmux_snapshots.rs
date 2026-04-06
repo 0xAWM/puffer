@@ -37,8 +37,7 @@ fn tmux_login_overlay_matches_snapshot() {
     let session = start_tmux_with_home(&workspace);
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
     send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
-    let capture =
-        wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(5)).unwrap();
+    let capture = wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(5)).unwrap();
     assert_normalized_snapshot(
         &normalize_tmux_capture(&capture),
         &snapshot_path("tmux_login_overlay_snapshot.txt"),
@@ -51,7 +50,9 @@ fn configured_workspace() -> (tempfile::TempDir, PathBuf) {
     let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store.create_session(workspace.join("dockyard")).unwrap();
+    let session = session_store
+        .create_session(workspace.join("dockyard"))
+        .unwrap();
     session_store
         .rename_session(session.id, "dockyard".to_string())
         .unwrap();

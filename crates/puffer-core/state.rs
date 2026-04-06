@@ -88,7 +88,9 @@ impl AppState {
         let mut state = Self::new(config, cwd, session.metadata);
         for event in session.events {
             match event {
-                TranscriptEvent::UserMessage { text } => state.push_message(MessageRole::User, text),
+                TranscriptEvent::UserMessage { text } => {
+                    state.push_message(MessageRole::User, text)
+                }
                 TranscriptEvent::AssistantMessage { text } => {
                     state.push_message(MessageRole::Assistant, text)
                 }

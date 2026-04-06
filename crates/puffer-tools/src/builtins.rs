@@ -1,8 +1,8 @@
 use crate::model::TypedToolInput;
 use crate::{
-    BashToolInput, ListDirToolInput, ReadFileToolInput, SearchTextToolInput,
-    MovePathToolInput, RemovePathToolInput, ReplaceInFileToolInput, ToolExecutionResult,
-    ToolInput, ToolKind, ToolOutput, WriteFileToolInput,
+    BashToolInput, ListDirToolInput, MovePathToolInput, ReadFileToolInput, RemovePathToolInput,
+    ReplaceInFileToolInput, SearchTextToolInput, ToolExecutionResult, ToolInput, ToolKind,
+    ToolOutput, WriteFileToolInput,
 };
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
@@ -28,6 +28,7 @@ pub fn builtin_tool_kind(handler: &str) -> Option<ToolKind> {
 /// Parses raw JSON input into the typed payload expected by one built-in tool.
 pub fn parse_builtin_input(kind: ToolKind, input: Value) -> Result<ToolInput> {
     match kind {
+        ToolKind::Custom => Err(anyhow!("custom tools do not use built-in typed inputs")),
         ToolKind::Bash => {
             let input = serde_json::from_value::<BashToolInput>(input)?;
             Ok(ToolInput::Bash {
@@ -337,7 +338,12 @@ pub fn execute_search_text_tool(
     let result = if command_exists("rg") {
         run_search_command(
             "rg",
-            &["-n", "--no-heading", &input.query, target.to_string_lossy().as_ref()],
+            &[
+                "-n",
+                "--no-heading",
+                &input.query,
+                target.to_string_lossy().as_ref(),
+            ],
         )?
     } else {
         run_search_command(
@@ -461,12 +467,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("nested")).unwrap();
         fs::write(temp.path().join("note.txt"), "hello").unwrap();
-        let result = execute_list_dir_tool(
-            "list_dir",
-            temp.path(),
-            ListDirToolInput { path: None },
-        )
-        .unwrap();
+        let result =
+            execute_list_dir_tool("list_dir", temp.path(), ListDirToolInput { path: None })
+                .unwrap();
         assert!(result.output.stdout.contains("nested/"));
         assert!(result.output.stdout.contains("note.txt"));
     }

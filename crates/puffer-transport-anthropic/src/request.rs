@@ -115,7 +115,10 @@ pub fn build_messages_request_with_tools(
             STAINLESS_PACKAGE_VERSION.to_string(),
         ),
         ("X-Stainless-Retry-Count".to_string(), "0".to_string()),
-        ("X-Stainless-Runtime".to_string(), STAINLESS_RUNTIME.to_string()),
+        (
+            "X-Stainless-Runtime".to_string(),
+            STAINLESS_RUNTIME.to_string(),
+        ),
         (
             "X-Stainless-Runtime-Version".to_string(),
             stainless_runtime_version(),
@@ -169,7 +172,10 @@ pub fn build_messages_request_with_tools(
 
     Ok(BuiltAnthropicRequest {
         method: "POST",
-        url: format!("{}/v1/messages?beta=true", config.base_url.trim_end_matches('/')),
+        url: format!(
+            "{}/v1/messages?beta=true",
+            config.base_url.trim_end_matches('/')
+        ),
         headers,
         body: build_request_body(payload, tools, tool_choice)?,
         attribution_prefix_block: attribution_header(config, &fingerprint),

@@ -16,11 +16,7 @@ fn tmux_smoke_renders_help_output() {
         .unwrap()
         .parent()
         .unwrap();
-    std::os::unix::fs::symlink(
-        repo_root.join("resources"),
-        workspace.join("resources"),
-    )
-    .unwrap();
+    std::os::unix::fs::symlink(repo_root.join("resources"), workspace.join("resources")).unwrap();
     fs::write(
         workspace.join(".puffer/config.toml"),
         r#"

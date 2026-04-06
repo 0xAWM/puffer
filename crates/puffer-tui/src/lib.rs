@@ -172,8 +172,14 @@ fn handle_key(
                 return Ok(false);
             }
             let current_input = tui.input.clone();
-            if try_open_overlay(state, providers, auth_store, session_store, tui, &current_input)?
-            {
+            if try_open_overlay(
+                state,
+                providers,
+                auth_store,
+                session_store,
+                tui,
+                &current_input,
+            )? {
                 return Ok(false);
             }
             let submitted = tui.take_input();
@@ -548,7 +554,10 @@ fn render_tool_invocation(invocation: &ToolInvocation) -> String {
     let status = if invocation.success { "ok" } else { "error" };
     let output = invocation.output.trim();
     if output.is_empty() {
-        format!("Tool {} [{}]\ninput: {}", invocation.tool_id, status, invocation.input)
+        format!(
+            "Tool {} [{}]\ninput: {}",
+            invocation.tool_id, status, invocation.input
+        )
     } else {
         format!(
             "Tool {} [{}]\ninput: {}\n{}",

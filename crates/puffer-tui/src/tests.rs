@@ -2,8 +2,8 @@ use super::*;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
 use puffer_provider_registry::{AuthMode, ModelDescriptor, OAuthCredential, ProviderDescriptor};
 use puffer_resources::{
-    IdeSpec, LoadedItem, MascotSpec, McpServerSpec, PluginCommandSpec, PluginSpec,
-    PromptTemplate, SkillSpec, SourceInfo, SourceKind, ToolSpec,
+    IdeSpec, LoadedItem, MascotSpec, McpServerSpec, PluginCommandSpec, PluginSpec, PromptTemplate,
+    SkillSpec, SourceInfo, SourceKind, ToolSpec,
 };
 use puffer_session_store::{SessionMetadata, SessionStore};
 use ratatui::backend::TestBackend;
@@ -97,11 +97,20 @@ fn try_open_overlay_builds_resume_picker() {
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened =
-        try_open_overlay(&state, &mut providers, &auth_store, &session_store, &mut tui, "/resume")
-            .unwrap();
+    let opened = try_open_overlay(
+        &state,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/resume",
+    )
+    .unwrap();
     assert!(opened);
-    assert!(matches!(tui.overlay, Some(OverlayState::SessionPicker { .. })));
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::SessionPicker { .. })
+    ));
 }
 
 #[test]
@@ -116,11 +125,20 @@ fn try_open_overlay_builds_agent_picker() {
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened =
-        try_open_overlay(&state, &mut providers, &auth_store, &session_store, &mut tui, "/agents")
-            .unwrap();
+    let opened = try_open_overlay(
+        &state,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/agents",
+    )
+    .unwrap();
     assert!(opened);
-    assert!(matches!(tui.overlay, Some(OverlayState::AgentPicker { .. })));
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::AgentPicker { .. })
+    ));
 }
 
 #[test]
@@ -134,11 +152,20 @@ fn try_open_overlay_builds_login_picker() {
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened =
-        try_open_overlay(&state, &mut providers, &auth_store, &session_store, &mut tui, "/login")
-            .unwrap();
+    let opened = try_open_overlay(
+        &state,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/login",
+    )
+    .unwrap();
     assert!(opened);
-    assert!(matches!(tui.overlay, Some(OverlayState::LoginPicker { .. })));
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::LoginPicker { .. })
+    ));
 }
 
 #[test]
@@ -152,11 +179,20 @@ fn try_open_overlay_builds_logout_picker() {
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened =
-        try_open_overlay(&state, &mut providers, &auth_store, &session_store, &mut tui, "/logout")
-            .unwrap();
+    let opened = try_open_overlay(
+        &state,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/logout",
+    )
+    .unwrap();
     assert!(opened);
-    assert!(matches!(tui.overlay, Some(OverlayState::LogoutPicker { .. })));
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::LogoutPicker { .. })
+    ));
 }
 
 #[test]
@@ -170,11 +206,20 @@ fn try_open_overlay_builds_theme_picker() {
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened =
-        try_open_overlay(&state, &mut providers, &auth_store, &session_store, &mut tui, "/theme")
-            .unwrap();
+    let opened = try_open_overlay(
+        &state,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/theme",
+    )
+    .unwrap();
     assert!(opened);
-    assert!(matches!(tui.overlay, Some(OverlayState::ThemePicker { .. })));
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::ThemePicker { .. })
+    ));
 }
 
 #[test]
@@ -266,8 +311,14 @@ fn sample_resources() -> LoadedResources {
                     name: "bash".to_string(),
                     description: "Run shell commands".to_string(),
                     handler: "bash".to_string(),
+                    handler_args: Vec::new(),
                     approval_policy: Some("on-request".to_string()),
                     sandbox_policy: Some("workspace-write".to_string()),
+                    shared_lib: None,
+                    enabled_if: None,
+                    input_schema: None,
+                    metadata: Default::default(),
+                    display: Default::default(),
                 },
             ),
             loaded_item(
@@ -277,8 +328,14 @@ fn sample_resources() -> LoadedResources {
                     name: "read_file".to_string(),
                     description: "Read a file".to_string(),
                     handler: "read_file".to_string(),
+                    handler_args: Vec::new(),
                     approval_policy: Some("never".to_string()),
                     sandbox_policy: Some("read-only".to_string()),
+                    shared_lib: None,
+                    enabled_if: None,
+                    input_schema: None,
+                    metadata: Default::default(),
+                    display: Default::default(),
                 },
             ),
             loaded_item(
@@ -288,8 +345,14 @@ fn sample_resources() -> LoadedResources {
                     name: "write_file".to_string(),
                     description: "Write a file".to_string(),
                     handler: "write_file".to_string(),
+                    handler_args: Vec::new(),
                     approval_policy: Some("on-request".to_string()),
                     sandbox_policy: Some("workspace-write".to_string()),
+                    shared_lib: None,
+                    enabled_if: None,
+                    input_schema: None,
+                    metadata: Default::default(),
+                    display: Default::default(),
                 },
             ),
         ],
@@ -299,6 +362,11 @@ fn sample_resources() -> LoadedResources {
                 id: "review".to_string(),
                 description: "Review pending changes".to_string(),
                 template: "Review $ARGUMENTS".to_string(),
+                variables: Vec::new(),
+                provider_override: None,
+                model_override: None,
+                mode: None,
+                chained_from: Vec::new(),
             },
         )],
         skills: vec![loaded_item(

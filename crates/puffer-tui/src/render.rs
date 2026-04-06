@@ -494,7 +494,8 @@ fn tool_status(tool_registry: &ToolRegistry) -> ToolStatus {
     let mut status = ToolStatus::default();
     for tool in tool_registry.tools() {
         status.executable += 1;
-        match tool.kind {
+        match tool.spec.kind {
+            ToolKind::Custom => {}
             ToolKind::Bash => status.has_bash = true,
             ToolKind::ReadFile => status.has_read_file = true,
             ToolKind::WriteFile => status.has_write_file = true,
@@ -637,7 +638,11 @@ fn render_overlay(frame: &mut Frame<'_>, transcript_area: Rect, overlay: &Overla
         .collect::<Vec<_>>();
     frame.render_widget(Clear, area);
     frame.render_widget(
-        List::new(rows).block(Block::default().title(overlay_title(overlay)).borders(Borders::ALL)),
+        List::new(rows).block(
+            Block::default()
+                .title(overlay_title(overlay))
+                .borders(Borders::ALL),
+        ),
         area,
     );
 }

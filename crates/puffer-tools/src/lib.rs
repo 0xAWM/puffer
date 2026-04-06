@@ -1,4 +1,5 @@
 mod builtins;
+mod external;
 mod model;
 mod registry;
 
@@ -19,6 +20,7 @@ pub use model::RemovePathToolInput;
 pub use model::ReplaceInFileToolInput;
 pub use model::SearchTextToolInput;
 pub use model::ToolDefinition;
+pub use model::ToolDisplayHints;
 pub use model::ToolExecutionResult;
 pub use model::ToolInput;
 pub use model::ToolInputSchema;

@@ -63,3 +63,73 @@ fn append_prompt_sections(
     }
     sections.push(prompt.value.render(variables));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LoadedItem, PromptTemplate, SourceInfo, SourceKind};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn render_prompt_by_id_includes_chained_templates_and_variables() {
+        let resources = LoadedResources {
+            prompts: vec![
+                LoadedItem {
+                    value: PromptTemplate {
+                        id: "base".to_string(),
+                        description: "Base".to_string(),
+                        template: "Base $ARGUMENTS".to_string(),
+                        variables: vec![PromptVariableSpec {
+                            name: "ARGUMENTS".to_string(),
+                            description: String::new(),
+                            required: false,
+                            default: None,
+                        }],
+                        provider_override: None,
+                        model_override: None,
+                        mode: None,
+                        chained_from: Vec::new(),
+                    },
+                    source_info: SourceInfo {
+                        path: PathBuf::from("base.yaml"),
+                        kind: SourceKind::Builtin,
+                    },
+                },
+                LoadedItem {
+                    value: PromptTemplate {
+                        id: "review".to_string(),
+                        description: "Review".to_string(),
+                        template: "Review $CWD".to_string(),
+                        variables: vec![PromptVariableSpec {
+                            name: "CWD".to_string(),
+                            description: String::new(),
+                            required: false,
+                            default: None,
+                        }],
+                        provider_override: None,
+                        model_override: None,
+                        mode: Some("review".to_string()),
+                        chained_from: vec!["base".to_string()],
+                    },
+                    source_info: SourceInfo {
+                        path: PathBuf::from("review.yaml"),
+                        kind: SourceKind::Builtin,
+                    },
+                },
+            ],
+            ..LoadedResources::default()
+        };
+        let rendered = render_prompt_by_id(
+            &resources,
+            "review",
+            &BTreeMap::from([
+                ("ARGUMENTS".to_string(), "now".to_string()),
+                ("CWD".to_string(), "/tmp/work".to_string()),
+            ]),
+        )
+        .expect("rendered prompt");
+        assert!(rendered.contains("Base now"));
+        assert!(rendered.contains("Review /tmp/work"));
+    }
+}

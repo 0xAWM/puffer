@@ -1,5 +1,5 @@
-use crate::AppState;
 use crate::hooks::run_resource_hooks;
+use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
     build_responses_request, build_tool_responses_request, extract_responses_text,
@@ -20,7 +20,6 @@ use reqwest::blocking::Client;
 use serde_json::{json, Value};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// Describes one tool call executed during a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolInvocation {
@@ -29,14 +28,12 @@ pub struct ToolInvocation {
     pub output: String,
     pub success: bool,
 }
-
 /// Stores the visible result of one executed model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnExecution {
     pub assistant_text: String,
     pub tool_invocations: Vec<ToolInvocation>,
 }
-
 /// Executes one user prompt against the currently selected provider and model.
 pub fn execute_user_prompt(
     state: &AppState,
@@ -52,7 +49,6 @@ pub fn execute_user_prompt(
         other => bail!("provider {other} is not executable yet"),
     }
 }
-
 fn resolve_provider_and_model<'a>(
     state: &AppState,
     providers: &'a ProviderRegistry,
@@ -89,7 +85,6 @@ fn resolve_provider_and_model<'a>(
         .ok_or_else(|| anyhow!("provider {} has no configured models", provider.id))?;
     Ok((provider, model_id))
 }
-
 fn execute_anthropic(
     state: &AppState,
     resources: &LoadedResources,
@@ -174,7 +169,6 @@ fn execute_anthropic(
 
     bail!("anthropic tool loop exceeded iteration limit")
 }
-
 fn execute_openai(
     state: &AppState,
     resources: &LoadedResources,
@@ -252,7 +246,6 @@ fn execute_openai(
 
     bail!("openai tool loop exceeded iteration limit")
 }
-
 fn send_http_request(
     url: &str,
     headers: &[(String, String)],
@@ -290,7 +283,6 @@ fn send_http_request(
         .with_context(|| format!("response from {url} was not valid JSON"))?;
     Ok(json)
 }
-
 fn anthropic_auth_for_provider(auth_store: &AuthStore, provider_id: &str) -> Result<AnthropicAuth> {
     match auth_store.get(provider_id) {
         Some(StoredCredential::ApiKey { key }) => Ok(AnthropicAuth::ApiKey(key.clone())),
@@ -304,7 +296,6 @@ fn anthropic_auth_for_provider(auth_store: &AuthStore, provider_id: &str) -> Res
         }),
     }
 }
-
 fn openai_auth_for_provider(auth_store: &AuthStore, provider_id: &str) -> Result<OpenAIAuth> {
     match auth_store.get(provider_id) {
         Some(StoredCredential::ApiKey { key }) => Ok(OpenAIAuth::ApiKey(key.clone())),
@@ -316,7 +307,6 @@ fn openai_auth_for_provider(auth_store: &AuthStore, provider_id: &str) -> Result
         ),
     }
 }
-
 fn parse_anthropic_text(response: &Value) -> Result<String> {
     let parts = response
         .get("content")
@@ -337,7 +327,6 @@ fn parse_anthropic_text(response: &Value) -> Result<String> {
     }
     Ok(parts.join("\n"))
 }
-
 fn anthropic_tool_definitions(registry: &ToolRegistry) -> Vec<Value> {
     registry
         .tools()
@@ -350,7 +339,6 @@ fn anthropic_tool_definitions(registry: &ToolRegistry) -> Vec<Value> {
         })
         .collect()
 }
-
 #[cfg(test)]
 fn anthropic_tool_schema(handler: &str) -> Value {
     match handler {
@@ -407,7 +395,6 @@ fn anthropic_tool_schema(handler: &str) -> Value {
         }),
     }
 }
-
 fn execute_anthropic_tool_calls(
     resources: &LoadedResources,
     response: &Value,
@@ -486,7 +473,6 @@ struct OpenAIToolResults {
     outputs: Vec<OpenAIResponsesFunctionCallOutput>,
     invocations: Vec<ToolInvocation>,
 }
-
 fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResponsesTool> {
     registry
         .definitions()
@@ -498,7 +484,6 @@ fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResponsesTool> 
         })
         .collect()
 }
-
 fn execute_openai_tool_calls(
     resources: &LoadedResources,
     tool_calls: &[puffer_provider_openai::OpenAIResponseToolCall],
@@ -543,7 +528,6 @@ fn execute_openai_tool_calls(
         invocations,
     })
 }
-
 fn run_tool_hooks(
     resources: &LoadedResources,
     cwd: &std::path::Path,
@@ -570,8 +554,12 @@ fn run_tool_hooks(
         ],
     );
 }
-
-fn run_turn_hooks(resources: &LoadedResources, cwd: &std::path::Path, text: &str, tool_count: usize) {
+fn run_turn_hooks(
+    resources: &LoadedResources,
+    cwd: &std::path::Path,
+    text: &str,
+    tool_count: usize,
+) {
     run_resource_hooks(
         resources,
         cwd,
@@ -582,7 +570,6 @@ fn run_turn_hooks(resources: &LoadedResources, cwd: &std::path::Path, text: &str
         ],
     );
 }
-
 fn parse_openai_text(response: &Value) -> Result<String> {
     if let Some(text) = response.get("output_text").and_then(Value::as_str) {
         return Ok(text.to_string());
@@ -611,7 +598,6 @@ fn parse_openai_text(response: &Value) -> Result<String> {
     }
     Ok(parts.join("\n"))
 }
-
 fn transcript_to_anthropic_messages(state: &AppState, input: &str) -> Vec<Value> {
     let mut messages = state
         .transcript
@@ -639,7 +625,6 @@ fn transcript_to_anthropic_messages(state: &AppState, input: &str) -> Vec<Value>
     }
     messages
 }
-
 fn transcript_to_anthropic_request_messages(
     state: &AppState,
     input: &str,
@@ -666,7 +651,6 @@ fn transcript_to_anthropic_request_messages(
     }
     messages
 }
-
 fn transcript_to_openai_input(state: &AppState, input: &str) -> Value {
     if state.transcript.is_empty() {
         return Value::String(input.to_string());
@@ -708,7 +692,6 @@ fn transcript_to_openai_input(state: &AppState, input: &str) -> Value {
             .collect(),
     )
 }
-
 fn parse_openai_assistant_text(
     parsed: &puffer_provider_openai::OpenAIResponsesResponse,
     response: &Value,
@@ -721,7 +704,6 @@ fn parse_openai_assistant_text(
         Ok(text)
     }
 }
-
 fn parse_openai_text_fallback(response: &Value, state: &AppState) -> Result<String> {
     if let Some(text) = response
         .pointer("/choices/0/message/content")
@@ -736,7 +718,6 @@ fn parse_openai_text_fallback(response: &Value, state: &AppState) -> Result<Stri
         state.session.id
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +767,29 @@ mod tests {
         )
     }
 
+    fn loaded_tool(id: &str, description: &str, handler: &str) -> LoadedItem<ToolSpec> {
+        LoadedItem {
+            value: ToolSpec {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: description.to_string(),
+                handler: handler.to_string(),
+                handler_args: Vec::new(),
+                approval_policy: None,
+                sandbox_policy: None,
+                shared_lib: None,
+                enabled_if: None,
+                input_schema: None,
+                metadata: Default::default(),
+                display: Default::default(),
+            },
+            source_info: SourceInfo {
+                path: format!("{id}.yaml").into(),
+                kind: SourceKind::Builtin,
+            },
+        }
+    }
+
     #[test]
     fn anthropic_tool_schema_lists_expected_fields() {
         let schema = anthropic_tool_schema("write_file");
@@ -807,20 +811,7 @@ mod tests {
     #[test]
     fn execute_anthropic_tool_calls_runs_registered_tools() {
         let resources = LoadedResources {
-            tools: vec![LoadedItem {
-                value: ToolSpec {
-                    id: "bash".to_string(),
-                    name: "bash".to_string(),
-                    description: "Run shell".to_string(),
-                    handler: "bash".to_string(),
-                    approval_policy: None,
-                    sandbox_policy: None,
-                },
-                source_info: SourceInfo {
-                    path: "bash.yaml".into(),
-                    kind: SourceKind::Builtin,
-                },
-            }],
+            tools: vec![loaded_tool("bash", "Run shell", "bash")],
             ..LoadedResources::default()
         };
         let registry = ToolRegistry::from_resources(&resources);
@@ -849,20 +840,7 @@ mod tests {
     #[test]
     fn openai_tool_definitions_use_registry_schema() {
         let resources = LoadedResources {
-            tools: vec![LoadedItem {
-                value: ToolSpec {
-                    id: "search_text".to_string(),
-                    name: "search_text".to_string(),
-                    description: "Search".to_string(),
-                    handler: "search_text".to_string(),
-                    approval_policy: None,
-                    sandbox_policy: None,
-                },
-                source_info: SourceInfo {
-                    path: "search_text.yaml".into(),
-                    kind: SourceKind::Builtin,
-                },
-            }],
+            tools: vec![loaded_tool("search_text", "Search", "search_text")],
             ..LoadedResources::default()
         };
         let registry = ToolRegistry::from_resources(&resources);
@@ -875,20 +853,7 @@ mod tests {
     #[test]
     fn execute_openai_tool_calls_serializes_outputs() {
         let resources = LoadedResources {
-            tools: vec![LoadedItem {
-                value: ToolSpec {
-                    id: "bash".to_string(),
-                    name: "bash".to_string(),
-                    description: "Run shell".to_string(),
-                    handler: "bash".to_string(),
-                    approval_policy: None,
-                    sandbox_policy: None,
-                },
-                source_info: SourceInfo {
-                    path: "bash.yaml".into(),
-                    kind: SourceKind::Builtin,
-                },
-            }],
+            tools: vec![loaded_tool("bash", "Run shell", "bash")],
             ..LoadedResources::default()
         };
         let registry = ToolRegistry::from_resources(&resources);
@@ -928,20 +893,7 @@ mod tests {
                     kind: SourceKind::Builtin,
                 },
             }],
-            tools: vec![LoadedItem {
-                value: ToolSpec {
-                    id: "bash".to_string(),
-                    name: "bash".to_string(),
-                    description: "Run shell".to_string(),
-                    handler: "bash".to_string(),
-                    approval_policy: None,
-                    sandbox_policy: None,
-                },
-                source_info: SourceInfo {
-                    path: "bash.yaml".into(),
-                    kind: SourceKind::Builtin,
-                },
-            }],
+            tools: vec![loaded_tool("bash", "Run shell", "bash")],
             ..LoadedResources::default()
         };
         let registry = ToolRegistry::from_resources(&resources);
@@ -957,7 +909,8 @@ mod tests {
                 }
             ]
         });
-        let _ = execute_anthropic_tool_calls(&resources, &response, &registry, temp.path()).unwrap();
+        let _ =
+            execute_anthropic_tool_calls(&resources, &response, &registry, temp.path()).unwrap();
         assert_eq!(std::fs::read_to_string(hook_output).unwrap(), "bash");
     }
 

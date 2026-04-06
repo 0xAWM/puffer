@@ -80,7 +80,11 @@ fn claude_bare_request_matches_expected_header_shape() {
         .headers
         .iter()
         .map(|(name, _)| name.as_str())
-        .filter(|name| header_names.iter().any(|captured| captured.eq_ignore_ascii_case(name)))
+        .filter(|name| {
+            header_names
+                .iter()
+                .any(|captured| captured.eq_ignore_ascii_case(name))
+        })
         .collect::<Vec<_>>();
 
     assert_starts_with(&header_names, &expected_names);
@@ -124,7 +128,6 @@ fn capture_single_request(listener: TcpListener) -> Result<String, String> {
         } else {
             write_simple_response(&mut stream, b"")?;
         }
-
     }
 }
 

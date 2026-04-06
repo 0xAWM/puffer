@@ -1,6 +1,10 @@
+use crate::external::{
+    builtin_handler_name, execute_runtime, runtime_from_definition, ToolRuntime,
+};
 use crate::{
-    builtin_tool_definition_by_handler, builtin_tool_kind, execute_builtin_tool,
-    parse_builtin_input, ToolDefinition, ToolExecutionResult, ToolInput, ToolKind, ToolPolicyHints,
+    builtin_tool_definition_by_handler, ToolDefinition, ToolDisplayHints, ToolExecutionResult,
+    ToolInput, ToolInputSchema, ToolKind, ToolMetadata, ToolPolicyHints, ToolPropertySchema,
+    ToolSchemaType,
 };
 use anyhow::{anyhow, Result};
 use puffer_resources::{LoadedResources, ToolSpec};
@@ -8,10 +12,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// One registered tool with its declarative metadata and runtime kind.
-#[derive(Debug, Clone)]
 pub struct RegisteredTool {
     pub spec: ToolDefinition,
-    pub kind: ToolKind,
+    runtime: ToolRuntime,
 }
 
 impl RegisteredTool {
@@ -22,7 +25,7 @@ impl RegisteredTool {
 }
 
 /// Registry of executable built-in tools derived from loaded resources.
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, RegisteredTool>,
 }
@@ -47,15 +50,14 @@ impl ToolRegistry {
         )
     }
 
-    /// Registers one declarative tool definition when it maps to a built-in handler.
+    /// Registers one declarative tool definition when it maps to a supported runtime.
     pub fn register(&mut self, definition: ToolDefinition) -> Result<()> {
-        let kind = builtin_tool_kind(&definition.handler)
-            .ok_or_else(|| anyhow!("unsupported built-in handler {}", definition.handler))?;
+        let runtime = runtime_from_definition(&definition)?;
         self.tools.insert(
             definition.id.clone(),
             RegisteredTool {
                 spec: definition,
-                kind,
+                runtime,
             },
         );
         Ok(())
@@ -98,10 +100,8 @@ impl ToolRegistry {
         cwd: &Path,
         input: ToolInput,
     ) -> Result<ToolExecutionResult> {
-        let tool = self
-            .tool(tool_id)
-            .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?;
-        execute_builtin_tool(tool_id, tool.kind, cwd, input)
+        let payload = serde_json::to_value(input)?;
+        self.execute_json(tool_id, cwd, payload)
     }
 
     /// Executes a registered tool by id using a raw JSON input payload.
@@ -114,30 +114,91 @@ impl ToolRegistry {
         let tool = self
             .tool(tool_id)
             .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?;
-        let typed = parse_builtin_input(tool.kind, input)?;
-        execute_builtin_tool(tool_id, tool.kind, cwd, typed)
+        execute_runtime(&tool.runtime, &tool.spec, cwd, input)
     }
 }
 
 fn definition_from_spec(spec: &ToolSpec) -> Option<ToolDefinition> {
-    let mut definition = builtin_tool_definition_by_handler(&spec.handler)?;
+    let mut definition = builtin_tool_definition_by_handler(&builtin_handler_name(&spec.handler))
+        .unwrap_or_else(|| ToolDefinition {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            handler: spec.handler.clone(),
+            handler_args: spec.handler_args.clone(),
+            kind: ToolKind::Custom,
+            input_schema: ToolInputSchema::default(),
+            metadata: ToolMetadata::default(),
+            policy: ToolPolicyHints::default(),
+            shared_lib: spec.shared_lib.clone(),
+            enabled_if: spec.enabled_if.clone(),
+            display: ToolDisplayHints::default(),
+        });
     definition.id = spec.id.clone();
     definition.name = spec.name.clone();
     definition.description = spec.description.clone();
     definition.handler = spec.handler.clone();
+    definition.handler_args = spec.handler_args.clone();
     if let Some(input_schema) = &spec.input_schema {
-        if let Ok(parsed) = serde_json::from_value(input_schema.clone()) {
+        if let Ok(parsed) = parse_input_schema(input_schema) {
             definition.input_schema = parsed;
         }
     }
-    definition.metadata.may_spawn_processes = spec.metadata.may_spawn_processes;
-    definition.metadata.may_read_files = spec.metadata.may_read_files;
-    definition.metadata.may_write_files = spec.metadata.may_write_files;
+    definition.metadata.may_spawn_processes |= spec.metadata.may_spawn_processes;
+    definition.metadata.may_read_files |= spec.metadata.may_read_files;
+    definition.metadata.may_write_files |= spec.metadata.may_write_files;
     definition.policy = ToolPolicyHints {
         approval_policy: spec.approval_policy.clone(),
         sandbox_policy: spec.sandbox_policy.clone(),
     };
+    definition.shared_lib = spec.shared_lib.clone();
+    definition.enabled_if = spec.enabled_if.clone();
+    definition.display = ToolDisplayHints {
+        group: spec.display.group.clone(),
+        title: spec.display.title.clone(),
+        show_in_status: spec.display.show_in_status,
+    };
     Some(definition)
+}
+
+fn parse_input_schema(input_schema: &serde_json::Value) -> Result<ToolInputSchema> {
+    let properties = input_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!("input_schema is missing properties"))?;
+    let required = input_schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut parsed = BTreeMap::new();
+    for (name, property) in properties {
+        let value_type = match property.get("type").and_then(serde_json::Value::as_str) {
+            Some("string") | None => ToolSchemaType::String,
+            Some("object") => ToolSchemaType::Object,
+            Some(other) => return Err(anyhow!("unsupported input schema type {other}")),
+        };
+        let description = property
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        parsed.insert(
+            name.clone(),
+            ToolPropertySchema {
+                value_type,
+                description,
+                required: required.iter().any(|required_name| required_name == name),
+            },
+        );
+    }
+    Ok(ToolInputSchema { properties: parsed })
 }
 
 #[cfg(test)]
@@ -195,25 +256,33 @@ mod tests {
                 name: "custom".to_string(),
                 description: "Custom".to_string(),
                 handler: "custom_handler".to_string(),
-                kind: ToolKind::Bash,
-                input_schema: ToolKind::Bash.definition().input_schema,
-                metadata: ToolKind::Bash.definition().metadata,
+                handler_args: Vec::new(),
+                kind: ToolKind::Custom,
+                input_schema: ToolInputSchema::default(),
+                metadata: ToolMetadata::default(),
                 policy: ToolPolicyHints::default(),
+                shared_lib: None,
+                enabled_if: None,
+                display: ToolDisplayHints::default(),
             })
             .unwrap_err();
-        assert!(error.to_string().contains("unsupported built-in handler"));
+        assert!(error.to_string().contains("unsupported tool handler"));
     }
 
     #[test]
-    fn registry_ignores_unknown_handlers() {
+    fn registry_registers_external_exec_handlers() {
         let resources = LoadedResources {
             tools: vec![LoadedItem {
                 value: ToolSpec {
-                    id: "custom".to_string(),
-                    name: "custom".to_string(),
-                    description: "Custom".to_string(),
-                    handler: "custom_handler".to_string(),
-                    handler_args: Vec::new(),
+                    id: "echo_json".to_string(),
+                    name: "echo_json".to_string(),
+                    description: "Echo JSON".to_string(),
+                    handler: "exec:python3".to_string(),
+                    handler_args: vec![
+                        "-c".to_string(),
+                        "import json,sys; data=json.load(sys.stdin); print(json.dumps({'received': data}))"
+                            .to_string(),
+                    ],
                     approval_policy: None,
                     sandbox_policy: None,
                     shared_lib: None,
@@ -230,8 +299,20 @@ mod tests {
             ..LoadedResources::default()
         };
         let registry = ToolRegistry::from_resources(&resources);
-        assert!(registry.tool("custom").is_none());
-        assert!(registry.is_empty());
+        let temp = tempfile::tempdir().unwrap();
+        let result = registry
+            .execute_json(
+                "echo_json",
+                temp.path(),
+                serde_json::json!({ "path": "demo.txt" }),
+            )
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.stdout.contains("demo.txt"));
+        assert_eq!(
+            result.output.metadata["received"]["path"],
+            serde_json::Value::String("demo.txt".to_string())
+        );
     }
 
     #[test]
@@ -258,6 +339,39 @@ mod tests {
             crate::ToolSchemaType::String
         );
         assert!(definition.metadata.may_spawn_processes);
+    }
+
+    #[test]
+    fn registry_accepts_builtin_prefix_and_schema_override() {
+        let resources = LoadedResources {
+            tools: vec![LoadedItem {
+                value: ToolSpec {
+                    handler: "builtin:bash".to_string(),
+                    input_schema: Some(serde_json::json!({
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "Command override"
+                            }
+                        },
+                        "required": ["command"]
+                    })),
+                    ..bash_tool_spec()
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("bash.yaml"),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let registry = ToolRegistry::from_resources(&resources);
+        let definition = registry.definition("bash").expect("tool definition");
+        assert_eq!(definition.handler, "builtin:bash");
+        assert_eq!(
+            definition.input_schema.properties["command"].description,
+            "Command override"
+        );
     }
 
     #[test]

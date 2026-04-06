@@ -9,7 +9,11 @@ pub fn run_resource_hooks(
     event: &str,
     envs: &[(&str, String)],
 ) {
-    for hook in resources.hooks.iter().filter(|hook| hook.value.event == event) {
+    for hook in resources
+        .hooks
+        .iter()
+        .filter(|hook| hook.value.event == event)
+    {
         let mut command = Command::new("sh");
         command
             .arg("-lc")

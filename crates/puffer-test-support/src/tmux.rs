@@ -38,16 +38,16 @@ pub fn detect_tmux() -> TmuxInfo {
 }
 
 /// Starts a detached tmux session that runs the provided program and arguments.
-pub fn start_tmux_command(
-    program: &str,
-    args: &[&str],
-    cwd: Option<&Path>,
-) -> Result<TmuxSession> {
+pub fn start_tmux_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<TmuxSession> {
     let session = TmuxSession {
         name: format!("puffer-{}", Uuid::new_v4().simple()),
     };
     let mut command = Command::new("tmux");
-    command.arg("new-session").arg("-d").arg("-s").arg(&session.name);
+    command
+        .arg("new-session")
+        .arg("-d")
+        .arg("-s")
+        .arg(&session.name);
     if let Some(cwd) = cwd {
         command.arg("-c").arg(cwd);
     }
@@ -159,14 +159,10 @@ mod tests {
         if !tmux_available() {
             return;
         }
-        let session = start_tmux_command(
-            "sh",
-            &["-lc", "printf 'hello from tmux'; sleep 2"],
-            None,
-        )
-        .unwrap();
-        let capture = wait_for_tmux_text(&session, "hello from tmux", Duration::from_secs(3))
-            .unwrap();
+        let session =
+            start_tmux_command("sh", &["-lc", "printf 'hello from tmux'; sleep 2"], None).unwrap();
+        let capture =
+            wait_for_tmux_text(&session, "hello from tmux", Duration::from_secs(3)).unwrap();
         assert!(capture.contains("hello from tmux"));
     }
 }

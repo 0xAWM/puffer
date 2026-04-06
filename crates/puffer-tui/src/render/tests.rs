@@ -48,14 +48,14 @@ fn header_snapshot_reports_runtime_counts() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-        snapshot,
-        @r"
+                    snapshot,
+                    @r"
 Puffer Code  session=Shipyard  cwd=puffer  msgs=2
 provider=anthropic  model=anthropic/claude-sonnet-4-5  auth=api-key  remote=dockyard@staging
 slug=shipyard-run  tags=review,tmux  mascot=Clawd
 theme=harbor  effort=high  tools=3/4  prompts=2
 "
-    );
+                );
 }
 
 #[test]
@@ -74,8 +74,8 @@ fn inspector_snapshot_reports_slash_state() {
     )
     .join("\n");
     assert_snapshot!(
-        snapshot,
-        @r"
+                    snapshot,
+                    @r"
 Provider: anthropic
 Model: anthropic/claude-sonnet-4-5
 Auth: api-key
@@ -91,7 +91,7 @@ Resources: skills=2 plugins=1 mcp=1 ides=1
 Slash filter: /re
 Slash matches: 2 best=/review
 "
-    );
+                );
 }
 
 #[test]
@@ -113,13 +113,13 @@ fn footer_snapshot_reports_slash_hint_and_tool_state() {
     .collect::<Vec<_>>()
     .join("\n");
     assert_snapshot!(
-        snapshot,
-        @r"
+                    snapshot,
+                    @r"
 auth=api-key  provider=anthropic  model=anthropic/claude-sonnet-4-5  transcript=2
 tools=3/4 ready  shell-runs=1  fast=on  vim=on  sandbox=workspace-write
 slash=/re matches=2 best=/review  Enter submits  Esc clears
 "
-    );
+                );
 }
 
 #[test]
@@ -323,8 +323,14 @@ fn tool_spec(
             name: id.to_string(),
             description: format!("{id} tool"),
             handler: handler.to_string(),
+            handler_args: Vec::new(),
             approval_policy: approval_policy.map(str::to_string),
             sandbox_policy: sandbox_policy.map(str::to_string),
+            shared_lib: None,
+            enabled_if: None,
+            input_schema: None,
+            metadata: Default::default(),
+            display: Default::default(),
         },
         source_info: SourceInfo {
             path: PathBuf::from(format!("{id}.yaml")),
@@ -339,6 +345,11 @@ fn loaded_prompt(id: &str, description: &str) -> LoadedItem<puffer_resources::Pr
             id: id.to_string(),
             description: description.to_string(),
             template: "template".to_string(),
+            variables: Vec::new(),
+            provider_override: None,
+            model_override: None,
+            mode: None,
+            chained_from: Vec::new(),
         },
         source_info: SourceInfo {
             path: PathBuf::from(format!("{id}.yaml")),

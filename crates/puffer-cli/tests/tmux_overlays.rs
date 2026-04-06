@@ -16,17 +16,15 @@ fn tmux_resume_overlay_lists_workspace_sessions() {
     let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store.create_session(workspace.join("dockyard")).unwrap();
+    let session = session_store
+        .create_session(workspace.join("dockyard"))
+        .unwrap();
     session_store
         .rename_session(session.id, "dockyard".to_string())
         .unwrap();
 
-    let session = start_tmux_command(
-        env!("CARGO_BIN_EXE_puffer"),
-        &[],
-        Some(workspace.as_path()),
-    )
-    .unwrap();
+    let session =
+        start_tmux_command(env!("CARGO_BIN_EXE_puffer"), &[], Some(workspace.as_path())).unwrap();
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
     send_tmux_keys(&session, &["/resume", "Enter"]).unwrap();
     let capture = wait_for_tmux_text(&session, "Resume Session", Duration::from_secs(5)).unwrap();
@@ -40,12 +38,8 @@ fn tmux_login_overlay_lists_available_providers() {
     }
 
     let (_tempdir, workspace) = configured_workspace();
-    let session = start_tmux_command(
-        env!("CARGO_BIN_EXE_puffer"),
-        &[],
-        Some(workspace.as_path()),
-    )
-    .unwrap();
+    let session =
+        start_tmux_command(env!("CARGO_BIN_EXE_puffer"), &[], Some(workspace.as_path())).unwrap();
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
     send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
     let capture = wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(5)).unwrap();

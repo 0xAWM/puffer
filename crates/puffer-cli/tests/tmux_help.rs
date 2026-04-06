@@ -18,8 +18,8 @@ fn puffer_help_renders_in_tmux_no_alt_screen() {
         Some(&workspace_root),
     )
     .unwrap();
-    let capture = wait_for_tmux_text(&session, "Supported commands", Duration::from_secs(15))
-        .unwrap();
+    let capture =
+        wait_for_tmux_text(&session, "Supported commands", Duration::from_secs(15)).unwrap();
     assert!(capture.contains("/review"));
     assert!(capture.contains("Supported commands"));
 }

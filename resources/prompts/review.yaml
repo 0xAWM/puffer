@@ -1,7 +1,16 @@
 id: review
 description: Review the current work and look for bugs, regressions, and missing tests.
+mode: review
+variables:
+  - name: ARGUMENTS
+    description: Optional extra review instructions.
+  - name: CWD
+    description: Workspace root for the review.
+  - name: MODEL
+    description: Active model selector.
 template: |
   Review the current worktree carefully.
+  Workspace: $CWD
+  Active model: $MODEL
   Focus on bugs, regressions, behavior changes, and missing tests.
   Extra instruction: $ARGUMENTS
-

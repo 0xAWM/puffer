@@ -44,7 +44,7 @@ pub struct LoadedItem<T> {
 }
 
 /// Declares a YAML-editable tool specification.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolSpec {
     pub id: String,
     pub name: String,
@@ -69,7 +69,7 @@ pub struct ToolSpec {
 }
 
 /// Declares a YAML-editable prompt template.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PromptTemplate {
     pub id: String,
     pub description: String,
@@ -107,7 +107,7 @@ impl PromptTemplate {
 }
 
 /// Declares one variable accepted by a prompt template.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PromptVariableSpec {
     pub name: String,
     #[serde(default)]

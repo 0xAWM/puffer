@@ -278,8 +278,7 @@ fn merge_by_id<T, F>(
     key: F,
     label: &str,
     diagnostics: &mut Vec<String>,
-)
-where
+) where
     T: Clone,
     F: Fn(&LoadedItem<T>) -> String,
 {
@@ -302,7 +301,12 @@ where
     *existing = merged.into_values().collect();
 }
 
-fn describe_override(label: &str, id: &str, previous: &SourceInfo, incoming: &SourceInfo) -> String {
+fn describe_override(
+    label: &str,
+    id: &str,
+    previous: &SourceInfo,
+    incoming: &SourceInfo,
+) -> String {
     if previous.kind == incoming.kind {
         return format!(
             "duplicate {label} `{id}` in {} resources: {} overrides {}",

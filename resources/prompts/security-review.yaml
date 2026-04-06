@@ -1,7 +1,12 @@
 id: security-review
 description: Review the current work for security issues.
+mode: security-review
+chained_from:
+  - review
+variables:
+  - name: ARGUMENTS
+    description: Additional security-specific review notes.
 template: |
   Review the pending changes for security issues.
   Focus on auth, secrets, sandbox escapes, data leaks, and unsafe execution paths.
   Extra instruction: $ARGUMENTS
-
