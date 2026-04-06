@@ -90,6 +90,7 @@ pub(super) fn execute_openai(
                         model: model_id.clone(),
                         input: next_input.clone(),
                         tools: tools.clone(),
+                        include: Vec::new(),
                         tool_choice: if tools.is_empty() {
                             None
                         } else {
@@ -223,6 +224,9 @@ pub(super) fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResp
             name: definition.id.clone(),
             description: definition.description.clone(),
             parameters: definition.input_schema.as_json_schema(),
+            filters: None,
+            user_location: None,
+            external_web_access: None,
         })
         .collect()
 }
@@ -743,5 +747,8 @@ fn openai_registry_credential(
         plan_type: credential.plan_type,
         rate_limit_tier: None,
         scopes: Vec::new(),
+        organization_name: None,
+        organization_role: None,
+        workspace_role: None,
     }
 }

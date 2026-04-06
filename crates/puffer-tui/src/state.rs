@@ -1,4 +1,5 @@
 use crate::popup::popup_rows;
+use crate::usage::UsageOverlay;
 use anyhow::Result;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_core::CommandSpec;
@@ -252,6 +253,7 @@ pub(crate) enum OverlayState {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
     },
+    Usage(UsageOverlay),
     OnboardingTheme {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
@@ -299,7 +301,7 @@ impl OverlayState {
             | Self::OnboardingModel { selection, .. } => {
                 *selection = selection.saturating_sub(1);
             }
-            Self::ApiKeyPrompt { .. } | Self::OnboardingApiKey { .. } => {}
+            Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
 
@@ -340,7 +342,7 @@ impl OverlayState {
             } => {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
-            Self::ApiKeyPrompt { .. } | Self::OnboardingApiKey { .. } => {}
+            Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
 
@@ -403,6 +405,7 @@ impl OverlayState {
             Self::ProviderPicker { .. }
             | Self::AuthPicker { .. }
             | Self::ApiKeyPrompt { .. }
+            | Self::Usage(..)
             | Self::OnboardingTheme { .. }
             | Self::OnboardingProvider { .. }
             | Self::OnboardingAuth { .. }
@@ -432,6 +435,7 @@ impl OverlayState {
             | Self::LogoutPicker { .. }
             | Self::ThemePicker { .. }
             | Self::CommandPicker { .. }
+            | Self::Usage(..)
             | Self::OnboardingTheme { .. } => None,
         }
     }
@@ -521,7 +525,7 @@ impl OverlayState {
                     *selection = index;
                 }
             }
-            Self::ApiKeyPrompt { .. } | Self::OnboardingApiKey { .. } => {}
+            Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
 

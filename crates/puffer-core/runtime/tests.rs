@@ -342,6 +342,9 @@ fn resolve_openai_execution_config_uses_codex_chatgpt_route_for_builtin_oauth() 
             plan_type: Some("pro".to_string()),
             rate_limit_tier: None,
             scopes: vec!["openid".to_string()],
+            organization_name: None,
+            organization_role: None,
+            workspace_role: None,
         },
     );
 
@@ -503,6 +506,9 @@ fn execute_user_prompt_refreshes_openai_oauth_after_401() {
             plan_type: None,
             rate_limit_tier: None,
             scopes: vec!["openid".to_string()],
+            organization_name: None,
+            organization_role: None,
+            workspace_role: None,
         },
     );
     let mut state = state();
