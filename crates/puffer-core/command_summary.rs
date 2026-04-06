@@ -3,6 +3,7 @@ use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::{mascot_by_id, LoadedResources};
 use std::fmt::Write as _;
 
+/// Renders the most recent recorded tool and shell tasks.
 pub(crate) fn render_task_summary(state: &AppState) -> String {
     if state.tasks().is_empty() {
         return "Tasks:\nNo recorded shell or tool tasks yet.".to_string();
@@ -23,6 +24,7 @@ pub(crate) fn render_task_summary(state: &AppState) -> String {
     text.trim_end().to_string()
 }
 
+/// Renders a lightweight local cost-style summary for the active session.
 pub(crate) fn render_cost_summary(state: &AppState) -> String {
     let elapsed_ms = now_ms().saturating_sub(state.session.created_at_ms);
     let assistant_messages = state
@@ -46,6 +48,7 @@ pub(crate) fn render_cost_summary(state: &AppState) -> String {
     )
 }
 
+/// Renders a combined usage summary across runtime state and loaded resources.
 pub(crate) fn render_usage_summary(
     state: &AppState,
     commands: &[CommandSpec],
@@ -75,6 +78,7 @@ pub(crate) fn render_usage_summary(
     )
 }
 
+/// Renders the current mascot summary, including any loaded introduction text.
 pub(crate) fn render_buddy_summary(state: &AppState, resources: &LoadedResources) -> String {
     let intro = mascot_by_id(resources, &state.config.mascot.id)
         .map(|mascot| mascot.introduction.as_str())
