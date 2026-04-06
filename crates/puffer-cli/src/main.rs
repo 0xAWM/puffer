@@ -13,6 +13,7 @@ use puffer_provider_openai::{
 use puffer_provider_registry::{AuthStore, OAuthCredential, ProviderRegistry, StoredCredential};
 use puffer_resources::load_resources;
 use puffer_session_store::{SessionRecord, SessionStore, TranscriptEvent};
+use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
     build_authorization_url as build_anthropic_authorization_url, build_messages_request,
     exchange_authorization_code as exchange_anthropic_code,
@@ -60,6 +61,11 @@ enum Command {
     Resources,
     /// Print a sample Anthropic request fixture from the current config.
     AnthropicRequestFixture,
+    /// Execute a built-in tool directly for local testing.
+    Tool {
+        #[command(subcommand)]
+        command: ToolCommand,
+    },
     /// Print a stored session as JSON.
     Resume {
         /// The session UUID to resume.
@@ -131,6 +137,17 @@ enum AuthCommand {
     OauthRefresh {
         /// Provider id to refresh.
         provider: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolCommand {
+    /// Run a registered tool using a JSON argument payload.
+    Run {
+        /// Tool id, for example `bash`, `read_file`, or `write_file`.
+        tool_id: String,
+        /// JSON argument payload.
+        args: String,
     },
 }
 
@@ -245,6 +262,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Some(Command::Tool { command }) => run_tool_command(command, &resources, &cwd),
         Some(Command::Resume { session_id }) => {
             let session_store = SessionStore::from_paths(&paths)?;
             let session = session_store.load_session(session_id.parse()?)?;
@@ -290,6 +308,22 @@ fn main() -> Result<()> {
             )
         }
     }
+}
+
+fn run_tool_command(
+    command: ToolCommand,
+    resources: &puffer_resources::LoadedResources,
+    cwd: &std::path::Path,
+) -> Result<()> {
+    match command {
+        ToolCommand::Run { tool_id, args } => {
+            let registry = ToolRegistry::from_resources(resources);
+            let payload: puffer_tools::ToolInput = serde_json::from_str(&args)?;
+            let result = registry.execute(&tool_id, cwd, payload)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
+    Ok(())
 }
 
 fn run_auth_command(

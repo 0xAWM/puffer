@@ -11,6 +11,7 @@ use puffer_resources::{
     plugin_by_id, plugin_mcp_servers, prompt_by_id, skill_by_name, LoadedResources,
 };
 use puffer_session_store::{SessionMetadata, SessionStore, TranscriptEvent};
+use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
     build_authorization_url as build_anthropic_authorization_url,
     generate_pkce as generate_anthropic_pkce, AnthropicOAuthConfig,
@@ -59,10 +60,18 @@ pub struct CommandSpec {
 pub struct AppState {
     pub config: PufferConfig,
     pub cwd: PathBuf,
+    pub working_dirs: Vec<PathBuf>,
     pub session: SessionMetadata,
     pub transcript: Vec<RenderedMessage>,
     pub current_model: Option<String>,
     pub current_provider: Option<String>,
+    pub prompt_color: String,
+    pub effort_level: String,
+    pub fast_mode: bool,
+    pub sandbox_mode: String,
+    pub remote_name: Option<String>,
+    pub remote_environment: Option<String>,
+    pub statusline_enabled: bool,
     pub vim_mode: bool,
     pub should_exit: bool,
 }
@@ -75,8 +84,16 @@ impl AppState {
             current_provider: config.default_provider.clone(),
             config,
             cwd,
+            working_dirs: Vec::new(),
             session,
             transcript: Vec::new(),
+            prompt_color: "default".to_string(),
+            effort_level: "medium".to_string(),
+            fast_mode: false,
+            sandbox_mode: "workspace-write".to_string(),
+            remote_name: None,
+            remote_environment: None,
+            statusline_enabled: true,
             vim_mode: false,
             should_exit: false,
         }
@@ -531,10 +548,14 @@ fn execute_local_command(
             state,
             session_store,
             format!(
-                "provider={:?} model={:?} theme={} vim={} messages={} slug={} parent={:?}",
+                "provider={:?} model={:?} theme={} color={} effort={} fast={} sandbox={} vim={} messages={} slug={} parent={:?}",
                 state.current_provider,
                 state.current_model,
                 state.config.theme,
+                state.prompt_color,
+                state.effort_level,
+                state.fast_mode,
+                state.sandbox_mode,
                 state.vim_mode,
                 state.transcript.len(),
                 state.session.slug.as_deref().unwrap_or("<none>"),
@@ -557,9 +578,71 @@ fn execute_local_command(
             state.transcript.clear();
             emit_system(state, session_store, "Transcript cleared.".to_string())
         }
+        "add-dir" => {
+            let dir = if args.is_empty() {
+                state.cwd.clone()
+            } else {
+                PathBuf::from(args)
+            };
+            if !state.working_dirs.iter().any(|existing| existing == &dir) {
+                state.working_dirs.push(dir.clone());
+            }
+            emit_system(
+                state,
+                session_store,
+                format!("Added working directory {}.", dir.display()),
+            )
+        }
         "exit" => {
             state.should_exit = true;
             emit_system(state, session_store, "Exiting Puffer Code.".to_string())
+        }
+        "color" => {
+            if args.is_empty() {
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Current prompt color is {}.", state.prompt_color),
+                )
+            } else {
+                state.prompt_color = args.to_string();
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Prompt color set to {}.", state.prompt_color),
+                )
+            }
+        }
+        "effort" => {
+            if args.is_empty() {
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Current effort level is {}.", state.effort_level),
+                )
+            } else {
+                state.effort_level = args.to_string();
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Effort level set to {}.", state.effort_level),
+                )
+            }
+        }
+        "fast" => {
+            if args.is_empty() {
+                state.fast_mode = !state.fast_mode;
+            } else {
+                state.fast_mode = matches!(args, "on" | "true" | "1");
+            }
+            emit_system(
+                state,
+                session_store,
+                format!(
+                    "Fast mode is now {}.",
+                    if state.fast_mode { "on" } else { "off" }
+                ),
+            )
         }
         "theme" => {
             if args.is_empty() {
@@ -606,6 +689,135 @@ fn execute_local_command(
                 )
             } else {
                 emit_system(state, session_store, format!("Unknown model {args}."))
+            }
+        }
+        "permissions" => describe_permissions(state, resources, session_store),
+        "doctor" => run_doctor(state, resources, session_store),
+        "hooks" => emit_system(
+            state,
+            session_store,
+            format!(
+                "Hook configuration:\nexternal_handlers=0\nresource_tools={}\nresource_prompts={}",
+                resources.tools.len(),
+                resources.prompts.len()
+            ),
+        ),
+        "statusline" => {
+            if args.is_empty() {
+                state.statusline_enabled = !state.statusline_enabled;
+            } else {
+                state.statusline_enabled = matches!(args, "on" | "true" | "1");
+            }
+            emit_system(
+                state,
+                session_store,
+                format!(
+                    "Status line is now {}.",
+                    if state.statusline_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ),
+            )
+        }
+        "tasks" => emit_system(
+            state,
+            session_store,
+            format!(
+                "Background tasks:\nqueued=0\nrunning=0\ncompleted=0\nknown_tools={}",
+                ToolRegistry::from_resources(resources).tools().count()
+            ),
+        ),
+        "config" => emit_system(
+            state,
+            session_store,
+            format!(
+                "Config summary:\napp_name={}\ndefault_provider={}\ndefault_model={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}",
+                state.config.app_name,
+                state.config.default_provider.as_deref().unwrap_or("<unset>"),
+                state.config.default_model.as_deref().unwrap_or("<unset>"),
+                state.config.theme,
+                state.config.ui.no_alt_screen,
+                state.config.ui.tmux_golden_mode,
+            ),
+        ),
+        "agents" => emit_system(
+            state,
+            session_store,
+            "Agent management:\ninteractive_agent=default\nforkable_sessions=yes\nnamed_presets=not yet implemented".to_string(),
+        ),
+        "memory" => emit_system(
+            state,
+            session_store,
+            format!(
+                "Session memory summary:\nslug={}\nnote={}\ntags={}",
+                state.session.slug.as_deref().unwrap_or("<none>"),
+                state.session.note.as_deref().unwrap_or("<none>"),
+                if state.session.tags.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    state.session.tags.join(", ")
+                },
+            ),
+        ),
+        "keybindings" => emit_system(
+            state,
+            session_store,
+            "Keybinding defaults:\nenter=submit\nesc=clear input\nctrl+c=exit".to_string(),
+        ),
+        "remote-control" => {
+            if args.is_empty() {
+                emit_system(
+                    state,
+                    session_store,
+                    format!(
+                        "Remote control session name: {}",
+                        state.remote_name.as_deref().unwrap_or("<unset>")
+                    ),
+                )
+            } else {
+                state.remote_name = Some(args.to_string());
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Remote control session name set to {}.", args),
+                )
+            }
+        }
+        "remote-env" => {
+            if args.is_empty() {
+                emit_system(
+                    state,
+                    session_store,
+                    format!(
+                        "Remote environment: {}",
+                        state.remote_environment.as_deref().unwrap_or("<unset>")
+                    ),
+                )
+            } else {
+                state.remote_environment = Some(args.to_string());
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Remote environment set to {}.", args),
+                )
+            }
+        }
+        "sandbox" => {
+            if args.is_empty() {
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Current sandbox mode is {}.", state.sandbox_mode),
+                )
+            } else {
+                state.sandbox_mode = args.to_string();
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Sandbox mode set to {}.", state.sandbox_mode),
+                )
             }
         }
         "rename" => {
@@ -765,6 +977,67 @@ fn list_skills(
             &mut text,
             "/skill:{} - {}",
             skill.value.name, skill.value.description
+        );
+    }
+    emit_system(state, session_store, text)
+}
+
+fn describe_permissions(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    session_store: &SessionStore,
+) -> Result<()> {
+    let registry = ToolRegistry::from_resources(resources);
+    if registry.tools().count() == 0 {
+        return emit_system(
+            state,
+            session_store,
+            "No tool metadata is loaded.".to_string(),
+        );
+    }
+
+    let mut text = String::from("Tool permission summary:\n");
+    for tool in registry.tools() {
+        let _ = writeln!(
+            &mut text,
+            "- {} [{}]: approval={} sandbox={}",
+            tool.spec.name,
+            tool.spec.handler,
+            tool.spec
+                .approval_policy
+                .as_deref()
+                .unwrap_or("<unspecified>"),
+            tool.spec
+                .sandbox_policy
+                .as_deref()
+                .unwrap_or("<unspecified>")
+        );
+    }
+    emit_system(state, session_store, text)
+}
+
+fn run_doctor(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    session_store: &SessionStore,
+) -> Result<()> {
+    let registry = ToolRegistry::from_resources(resources);
+    let mut text = String::from("Puffer doctor summary:\n");
+    let _ = writeln!(
+        &mut text,
+        "provider={} model={}",
+        state.current_provider.as_deref().unwrap_or("<unset>"),
+        state.current_model.as_deref().unwrap_or("<unset>")
+    );
+    let _ = writeln!(&mut text, "tool_count={}", registry.tools().count());
+    for tool in registry.tools() {
+        let _ = writeln!(
+            &mut text,
+            "- {} handler={} approval={} sandbox={}",
+            tool.spec.id,
+            tool.spec.handler,
+            tool.spec.approval_policy.as_deref().unwrap_or("<unspecified>"),
+            tool.spec.sandbox_policy.as_deref().unwrap_or("<unspecified>")
         );
     }
     emit_system(state, session_store, text)

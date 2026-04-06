@@ -1244,6 +1244,7 @@ dependencies = [
  "puffer-provider-registry",
  "puffer-resources",
  "puffer-session-store",
+ "puffer-tools",
  "puffer-transport-anthropic",
  "puffer-tui",
  "serde_json",
@@ -1271,6 +1272,7 @@ dependencies = [
  "puffer-provider-registry",
  "puffer-resources",
  "puffer-session-store",
+ "puffer-tools",
  "puffer-transport-anthropic",
  "reqwest",
  "serde",
@@ -1335,6 +1337,17 @@ name = "puffer-test-support"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tempfile",
+]
+
+[[package]]
+name = "puffer-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "puffer-resources",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

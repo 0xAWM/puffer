@@ -21,4 +21,5 @@ puffer-provider-registry = { path = "../puffer-provider-registry" }
 puffer-resources = { path = "../puffer-resources" }
 puffer-session-store = { path = "../puffer-session-store" }
 puffer-transport-anthropic = { path = "../puffer-transport-anthropic" }
+puffer-tools = { path = "../puffer-tools" }
 puffer-tui = { path = "../puffer-tui" }

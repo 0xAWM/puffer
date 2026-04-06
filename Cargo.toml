@@ -8,6 +8,7 @@ members = [
     "crates/puffer-resources",
     "crates/puffer-session-store",
     "crates/puffer-test-support",
+    "crates/puffer-tools",
     "crates/puffer-transport-anthropic",
     "crates/puffer-tui",
 ]
