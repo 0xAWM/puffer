@@ -391,7 +391,7 @@ pub fn dispatch_command(
     state: &mut AppState,
     commands: &[CommandSpec],
     resources: &LoadedResources,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
     session_store: &SessionStore,
     raw_input: &str,
@@ -489,7 +489,7 @@ fn execute_local_command(
     state: &mut AppState,
     commands: &[CommandSpec],
     resources: &LoadedResources,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
     session_store: &SessionStore,
     command: &CommandSpec,
@@ -611,6 +611,31 @@ fn execute_local_command(
                     .collect::<Vec<_>>()
                     .join(", ");
                 emit_system(state, session_store, format!("Available models: {models}"))
+            } else if args == "refresh" {
+                providers.discover_and_merge_all(auth_store)?;
+                emit_system(
+                    state,
+                    session_store,
+                    format!(
+                        "Refreshed provider models.\nproviders={}\nmodels={}",
+                        providers.providers().count(),
+                        providers.models().count()
+                    ),
+                )
+            } else if let Some(provider_id) = args.strip_prefix("refresh ") {
+                providers.discover_and_merge_provider(provider_id.trim(), auth_store)?;
+                let provider = providers
+                    .provider(provider_id.trim())
+                    .ok_or_else(|| anyhow::anyhow!("provider {} not found", provider_id.trim()))?;
+                emit_system(
+                    state,
+                    session_store,
+                    format!(
+                        "Refreshed models for {}.\nmodels={}",
+                        provider.id,
+                        provider.models.len()
+                    ),
+                )
             } else if let Some(model) = providers.resolve_model(args) {
                 state.current_provider = Some(model.provider.clone());
                 state.current_model = Some(format!("{}/{}", model.provider, model.id));
