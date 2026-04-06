@@ -66,7 +66,7 @@ impl Default for OpenAIOAuthConfig {
 }
 
 /// Generates a PKCE verifier/challenge pair and state for OpenAI OAuth.
-pub fn generate_pkce() -> OpenAIPkce {
+pub(crate) fn generate_pkce() -> OpenAIPkce {
     let verifier = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let digest = Sha256::digest(verifier.as_bytes());
     let challenge = URL_SAFE_NO_PAD.encode(digest);
@@ -78,7 +78,7 @@ pub fn generate_pkce() -> OpenAIPkce {
 }
 
 /// Builds an OpenAI OAuth authorization URL from the provided flow parameters.
-pub fn build_authorization_url(config: &OpenAIOAuthConfig) -> String {
+pub(crate) fn build_authorization_url(config: &OpenAIOAuthConfig) -> String {
     let mut url = url::Url::parse(OPENAI_AUTHORIZE_URL).expect("valid OpenAI authorize URL");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -95,7 +95,7 @@ pub fn build_authorization_url(config: &OpenAIOAuthConfig) -> String {
 }
 
 /// Extracts an OAuth code and optional state from pasted manual input.
-pub fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>) {
+pub(crate) fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>) {
     let value = input.trim();
     if value.is_empty() {
         return (None, None);
@@ -133,7 +133,7 @@ pub fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>
 }
 
 /// Exchanges an OpenAI OAuth authorization code for persisted OAuth credentials.
-pub fn exchange_authorization_code(
+pub(crate) fn exchange_authorization_code(
     code: &str,
     verifier: &str,
     redirect_uri: Option<&str>,
@@ -164,7 +164,7 @@ pub fn exchange_authorization_code(
 }
 
 /// Refreshes OpenAI OAuth credentials using a stored refresh token.
-pub fn refresh_oauth_token(refresh_token: &str) -> Result<OpenAIOAuthCredentials> {
+pub(crate) fn refresh_oauth_token(refresh_token: &str) -> Result<OpenAIOAuthCredentials> {
     let client = Client::new();
     let response = client
         .post(OPENAI_TOKEN_URL)

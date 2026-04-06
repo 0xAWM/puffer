@@ -26,7 +26,7 @@ pub struct BuiltOpenAIRequest {
 }
 
 /// Builds a minimal OpenAI Responses API request with ordered headers.
-pub fn build_responses_request(
+pub(crate) fn build_responses_request(
     config: &OpenAIRequestConfig,
     request: &OpenAIResponsesRequest,
 ) -> anyhow::Result<BuiltOpenAIRequest> {
