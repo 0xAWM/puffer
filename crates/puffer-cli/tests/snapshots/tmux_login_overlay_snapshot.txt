@@ -1,4 +1,4 @@
-╭Select Provider──────────────────────────────────╮
-│anthropic  Anthropic                             │
-│openai  OpenAI                                   │
-│cerebras  Cerebras                               │
+│Select Provider                                                       │
+│anthropic  Anthropic                                                  │
+│openai  OpenAI                                                        │
+│cerebras  Cerebras                                                    │

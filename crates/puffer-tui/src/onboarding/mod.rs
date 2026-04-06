@@ -151,6 +151,12 @@ pub(crate) fn back_overlay(
         | OverlayState::LoginPicker { .. }
         | OverlayState::LogoutPicker { .. }
         | OverlayState::ThemePicker { .. }
+        | OverlayState::CommandPicker { .. }
+        | OverlayState::OnboardingTheme { .. }
+        | OverlayState::OnboardingProvider { .. }
+        | OverlayState::OnboardingAuth { .. }
+        | OverlayState::OnboardingModel { .. }
+        | OverlayState::OnboardingApiKey { .. }
         | OverlayState::Usage(..) => None,
     };
     Ok(next)

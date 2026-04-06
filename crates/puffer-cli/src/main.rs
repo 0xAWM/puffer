@@ -20,9 +20,8 @@ use puffer_provider_openai::{
     parse_authorization_input as parse_openai_authorization_input,
     refresh_oauth_token as refresh_openai_oauth_token,
 };
-<<<<<<< HEAD
 use puffer_provider_registry::{
-    AuthMode, AuthStore, OAuthCredential, ProviderRegistry, StoredCredential,
+    AuthMode, AuthStore, ProviderRegistry, StoredCredential,
 };
 use puffer_resources::load_resources;
 use puffer_session_store::SessionStore;

@@ -338,7 +338,6 @@ fn logout_clears_selection_when_model_provider_matches_logged_out_provider() {
         &session_store,
         &mut tui,
         true,
-        handle_submit,
     )
     .unwrap();
     assert!(matches!(
@@ -391,7 +390,6 @@ fn missing_auth_for_selected_provider_reopens_auth_picker() {
         &session_store,
         &mut tui,
         true,
-        handle_submit,
     )
     .unwrap();
 
@@ -502,7 +500,6 @@ fn codex_import_without_base_url_clears_previous_openai_override() {
         &mut auth_store,
         &auth_path,
         &session_store,
-        &supported_commands(),
         &mut tui,
         true,
     )

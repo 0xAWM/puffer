@@ -6,6 +6,7 @@ mod popup;
 mod render;
 #[path = "state.rs"]
 mod state;
+mod usage;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};

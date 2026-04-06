@@ -560,6 +560,12 @@ fn overlay_title(overlay: &OverlayState) -> &'static str {
         OverlayState::LoginPicker { .. } => "Select Provider",
         OverlayState::LogoutPicker { .. } => "Logout Provider",
         OverlayState::ThemePicker { .. } => "Select Theme",
+        OverlayState::CommandPicker { .. } => "Select Command",
+        OverlayState::OnboardingTheme { .. } => "Select Theme",
+        OverlayState::OnboardingProvider { .. } => "Select Provider",
+        OverlayState::OnboardingAuth { .. } => "Select Login Method",
+        OverlayState::OnboardingModel { .. } => "Select Model",
+        OverlayState::OnboardingApiKey { .. } => "Enter API Key",
         OverlayState::Usage(..) => "Usage",
     }
 }
@@ -590,7 +596,18 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
         }
         | OverlayState::LoginPicker { entries, selection }
         | OverlayState::LogoutPicker { entries, selection }
-        | OverlayState::ThemePicker { entries, selection } => entries
+        | OverlayState::ThemePicker { entries, selection }
+        | OverlayState::CommandPicker {
+            entries, selection, ..
+        }
+        | OverlayState::OnboardingTheme { entries, selection }
+        | OverlayState::OnboardingProvider { entries, selection }
+        | OverlayState::OnboardingAuth {
+            entries, selection, ..
+        }
+        | OverlayState::OnboardingModel {
+            entries, selection, ..
+        } => entries
             .iter()
             .enumerate()
             .map(|(index, entry)| OverlayRow {
@@ -614,6 +631,16 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
             OverlayRow {
                 selected: true,
                 text: format!("key  {}", masked_secret(value)),
+            },
+        ],
+        OverlayState::OnboardingApiKey { input, .. } => vec![
+            OverlayRow {
+                selected: false,
+                text: "Paste an API key and press Enter.".to_string(),
+            },
+            OverlayRow {
+                selected: true,
+                text: format!("key  {}", masked_secret(input)),
             },
         ],
         OverlayState::Usage(..) => Vec::new(),
