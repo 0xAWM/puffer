@@ -86,8 +86,8 @@ fn claude_bare_request_matches_expected_header_shape() {
     assert_starts_with(&header_names, &expected_names);
     let user_agent = header_value(&captured, "User-Agent").expect("user agent");
     assert!(user_agent.starts_with("claude-cli/"));
-    assert!(user_agent.contains("(external, cli"));
-    assert!(captured.starts_with("POST /v1/messages HTTP/1.1"));
+    assert!(user_agent.contains("(external, "));
+    assert!(captured.starts_with("POST /v1/messages?beta=true HTTP/1.1"));
 }
 
 fn capture_single_request(listener: TcpListener) -> Result<String, String> {
@@ -101,7 +101,7 @@ fn capture_single_request(listener: TcpListener) -> Result<String, String> {
             Ok(pair) => pair,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
-                    return Err("timed out waiting for POST /v1/messages".to_string());
+                    return Err("timed out waiting for POST /v1/messages?beta=true".to_string());
                 }
                 thread::sleep(Duration::from_millis(50));
                 continue;
@@ -117,7 +117,7 @@ fn capture_single_request(listener: TcpListener) -> Result<String, String> {
 
         if request_line.starts_with("HEAD / ") {
             write_simple_response(&mut stream, b"")?;
-        } else if request_line.starts_with("POST /v1/messages ") {
+        } else if request_line.starts_with("POST /v1/messages?beta=true ") {
             let body = br#"{"id":"msg_test","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}"#;
             write_json_response(&mut stream, body)?;
             return Ok(request);

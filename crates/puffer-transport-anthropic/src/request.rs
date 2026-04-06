@@ -3,6 +3,16 @@ use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::env;
+
+const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
+const CLAUDE_CODE_BETA_HEADER: &str = "claude-code-20250219";
+const CONTEXT_MANAGEMENT_BETA_HEADER: &str = "context-management-2025-06-27";
+const INTERLEAVED_THINKING_BETA_HEADER: &str = "interleaved-thinking-2025-05-14";
+const PROMPT_CACHING_SCOPE_BETA_HEADER: &str = "prompt-caching-scope-2026-01-05";
+const STAINLESS_LANG: &str = "js";
+const STAINLESS_RUNTIME: &str = "node";
+const STAINLESS_PACKAGE_VERSION: &str = "0.80.0";
 
 /// Represents a minimal Anthropic messages request body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,12 +100,27 @@ pub fn build_messages_request_with_tools(
     let fingerprint = compute_fingerprint(first_user_text, &config.version);
 
     let mut headers = vec![
-        ("x-app".to_string(), "cli".to_string()),
+        ("Accept".to_string(), "application/json".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
         ("User-Agent".to_string(), anthropic_user_agent(config)),
         (
             "X-Claude-Code-Session-Id".to_string(),
             config.session_id.clone(),
         ),
+        ("X-Stainless-Arch".to_string(), stainless_arch().to_string()),
+        ("X-Stainless-Lang".to_string(), STAINLESS_LANG.to_string()),
+        ("X-Stainless-OS".to_string(), stainless_os().to_string()),
+        (
+            "X-Stainless-Package-Version".to_string(),
+            STAINLESS_PACKAGE_VERSION.to_string(),
+        ),
+        ("X-Stainless-Retry-Count".to_string(), "0".to_string()),
+        ("X-Stainless-Runtime".to_string(), STAINLESS_RUNTIME.to_string()),
+        (
+            "X-Stainless-Runtime-Version".to_string(),
+            stainless_runtime_version(),
+        ),
+        ("X-Stainless-Timeout".to_string(), stainless_timeout()),
     ];
     headers.extend(
         config
@@ -124,14 +149,27 @@ pub fn build_messages_request_with_tools(
             "true".to_string(),
         ));
     }
+    headers.push((
+        "anthropic-beta".to_string(),
+        default_beta_header(config, &payload.model),
+    ));
+    headers.push((
+        "anthropic-dangerous-direct-browser-access".to_string(),
+        "true".to_string(),
+    ));
+    headers.push((
+        "anthropic-version".to_string(),
+        ANTHROPIC_VERSION_HEADER.to_string(),
+    ));
     append_auth_headers(&mut headers, config);
+    headers.push(("x-app".to_string(), "cli".to_string()));
     if let Some(client_request_id) = &config.client_request_id {
         headers.push(("x-client-request-id".to_string(), client_request_id.clone()));
     }
 
     Ok(BuiltAnthropicRequest {
         method: "POST",
-        url: format!("{}/v1/messages", config.base_url.trim_end_matches('/')),
+        url: format!("{}/v1/messages?beta=true", config.base_url.trim_end_matches('/')),
         headers,
         body: build_request_body(payload, tools, tool_choice)?,
         attribution_prefix_block: attribution_header(config, &fingerprint),
@@ -179,13 +217,6 @@ fn append_auth_headers(headers: &mut Vec<(String, String)>, config: &AnthropicRe
         }
         AnthropicAuth::OAuthBearer(token) => {
             headers.push(("Authorization".to_string(), format!("Bearer {token}")));
-            headers.push((
-                "anthropic-beta".to_string(),
-                config
-                    .beta_header
-                    .clone()
-                    .unwrap_or_else(|| OAUTH_BETA_HEADER.to_string()),
-            ));
         }
         AnthropicAuth::SessionIngress {
             token,
@@ -201,6 +232,59 @@ fn append_auth_headers(headers: &mut Vec<(String, String)>, config: &AnthropicRe
             }
         }
     }
+}
+
+fn default_beta_header(config: &AnthropicRequestConfig, model: &str) -> String {
+    if let Some(header) = &config.beta_header {
+        return header.clone();
+    }
+    match &config.auth {
+        AnthropicAuth::OAuthBearer(_) => OAUTH_BETA_HEADER.to_string(),
+        _ => default_agentic_beta_header(model),
+    }
+}
+
+fn default_agentic_beta_header(model: &str) -> String {
+    let model_name = model.to_ascii_lowercase();
+    let mut betas = vec![
+        INTERLEAVED_THINKING_BETA_HEADER.to_string(),
+        CONTEXT_MANAGEMENT_BETA_HEADER.to_string(),
+        PROMPT_CACHING_SCOPE_BETA_HEADER.to_string(),
+    ];
+    if !model_name.contains("claude-3-") {
+        betas.push(CLAUDE_CODE_BETA_HEADER.to_string());
+    }
+    betas.join(",")
+}
+
+fn stainless_arch() -> &'static str {
+    match env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "x86",
+        other => other,
+    }
+}
+
+fn stainless_os() -> &'static str {
+    match env::consts::OS {
+        "macos" => "MacOS",
+        "linux" => "Linux",
+        "windows" => "Windows",
+        other => other,
+    }
+}
+
+fn stainless_runtime_version() -> String {
+    env::var("PUFFER_STAINLESS_RUNTIME_VERSION").unwrap_or_else(|_| "v24.3.0".to_string())
+}
+
+fn stainless_timeout() -> String {
+    let timeout_ms = env::var("API_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(600_000);
+    (timeout_ms / 1000).to_string()
 }
 
 fn build_request_body(
@@ -269,11 +353,23 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "x-app",
+                "Accept",
+                "Content-Type",
                 "User-Agent",
                 "X-Claude-Code-Session-Id",
-                "Authorization",
+                "X-Stainless-Arch",
+                "X-Stainless-Lang",
+                "X-Stainless-OS",
+                "X-Stainless-Package-Version",
+                "X-Stainless-Retry-Count",
+                "X-Stainless-Runtime",
+                "X-Stainless-Runtime-Version",
+                "X-Stainless-Timeout",
                 "anthropic-beta",
+                "anthropic-dangerous-direct-browser-access",
+                "anthropic-version",
+                "Authorization",
+                "x-app",
                 "x-client-request-id",
             ]
         );
@@ -378,16 +474,29 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "x-app",
+                "Accept",
+                "Content-Type",
                 "User-Agent",
                 "X-Claude-Code-Session-Id",
+                "X-Stainless-Arch",
+                "X-Stainless-Lang",
+                "X-Stainless-OS",
+                "X-Stainless-Package-Version",
+                "X-Stainless-Retry-Count",
+                "X-Stainless-Runtime",
+                "X-Stainless-Runtime-Version",
+                "X-Stainless-Timeout",
                 "x-custom-a",
                 "x-custom-b",
                 "x-claude-remote-container-id",
                 "x-claude-remote-session-id",
                 "x-client-app",
                 "x-anthropic-additional-protection",
+                "anthropic-beta",
+                "anthropic-dangerous-direct-browser-access",
+                "anthropic-version",
                 "x-api-key",
+                "x-app",
                 "x-client-request-id",
             ]
         );
@@ -451,6 +560,36 @@ mod tests {
             .headers
             .iter()
             .any(|(key, value)| key == "anthropic-beta" && value == "custom-beta"));
+    }
+
+    #[test]
+    fn api_key_request_uses_agentic_beta_header_bundle() {
+        let request = build_messages_request(
+            &base_config(AnthropicAuth::ApiKey("sk-ant".to_string())),
+            &AnthropicModelRequest {
+                model: "claude-haiku-4-5-20251001".to_string(),
+                max_tokens: 8,
+                messages: vec![AnthropicMessage {
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+        let beta = request
+            .headers
+            .iter()
+            .find(|(key, _)| key == "anthropic-beta")
+            .map(|(_, value)| value.as_str())
+            .expect("beta header");
+        assert_eq!(
+            beta,
+            "interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219"
+        );
+        assert_eq!(
+            request.url,
+            "https://api.anthropic.com/v1/messages?beta=true"
+        );
     }
 
     #[test]

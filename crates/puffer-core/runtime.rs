@@ -264,8 +264,17 @@ fn send_http_request(
     for (key, value) in headers {
         request = request.header(key, value);
     }
-    request = request.header("content-type", "application/json");
-    if anthropic {
+    if !headers
+        .iter()
+        .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+    {
+        request = request.header("content-type", "application/json");
+    }
+    if anthropic
+        && !headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("anthropic-version"))
+    {
         request = request.header("anthropic-version", "2023-06-01");
     }
     let response = request
