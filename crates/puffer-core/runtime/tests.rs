@@ -3,7 +3,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
 use puffer_provider_openai::OpenAIResponseToolCall;
-use puffer_provider_registry::{AuthMode, ProviderDescriptor, StoredCredential};
+use puffer_provider_registry::{AuthMode, OAuthCredential, ProviderDescriptor, StoredCredential};
 use puffer_resources::{LoadedItem, LoadedResources, SourceInfo, SourceKind, ToolSpec};
 use puffer_session_store::SessionMetadata;
 use std::io::{Read, Write};

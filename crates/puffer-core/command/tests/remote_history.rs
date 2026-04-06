@@ -24,13 +24,14 @@ fn diff_command_includes_recent_command_snapshots() {
         tempdir.path().to_path_buf(),
         session,
     );
+    let mut auth_store = AuthStore::default();
 
     dispatch_command(
         &mut state,
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut auth_store,
         &session_store,
         "/theme harbor",
     )
@@ -40,7 +41,7 @@ fn diff_command_includes_recent_command_snapshots() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut auth_store,
         &session_store,
         "/diff",
     )
@@ -70,13 +71,14 @@ fn remote_control_command_persists_remote_session_metadata() {
         tempdir.path().to_path_buf(),
         session,
     );
+    let mut auth_store = AuthStore::default();
 
     dispatch_command(
         &mut state,
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut auth_store,
         &session_store,
         "/remote-control dockyard",
     )
@@ -86,7 +88,7 @@ fn remote_control_command_persists_remote_session_metadata() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut auth_store,
         &session_store,
         "/remote-env staging",
     )
@@ -128,13 +130,14 @@ fn branch_clears_active_remote_session_connection() {
     state.remote_session_id = Some("remote-1".to_string());
     state.remote_session_url = Some("puffer://remote/remote-1?name=dockyard&env=staging".to_string());
     state.remote_session_status = Some("connected".to_string());
+    let mut auth_store = AuthStore::default();
 
     dispatch_command(
         &mut state,
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut auth_store,
         &session_store,
         "/branch remote-fork",
     )
@@ -164,6 +167,7 @@ fn rewind_command_can_target_a_specific_user_turn() {
     state.push_message(MessageRole::Assistant, "a1");
     state.push_message(MessageRole::User, "second");
     state.push_message(MessageRole::Assistant, "a2");
+    let mut auth_store = AuthStore::default();
     session_store
         .append_event(
             session.id,
@@ -202,7 +206,7 @@ fn rewind_command_can_target_a_specific_user_turn() {
         &supported_commands(),
         &LoadedResources::default(),
         &mut ProviderRegistry::new(),
-        &AuthStore::default(),
+        &mut auth_store,
         &session_store,
         "/rewind 2",
     )

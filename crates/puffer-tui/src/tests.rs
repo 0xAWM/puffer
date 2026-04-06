@@ -1,5 +1,8 @@
 use super::*;
+use crate::flow::{handle_auth_command, parse_shell_shortcut};
+use crate::state::AuthPickerEntry;
 use puffer_config::{ensure_workspace_dirs, save_user_config, ConfigPaths, PufferConfig};
+use puffer_core::MessageRole;
 use puffer_provider_registry::{
     AuthMode, ExternalImportCandidate, ExternalImportFamily, ExternalImportSource, ModelDescriptor,
     OAuthCredential, ProviderDescriptor, StoredCredential,
@@ -11,7 +14,6 @@ use puffer_resources::{
 use puffer_session_store::{SessionMetadata, SessionStore};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use crate::state::AuthPickerEntry;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -325,10 +327,11 @@ fn logout_clears_selection_when_model_provider_matches_logged_out_provider() {
     assert!(!auth_store.has_auth("openai"));
 
     let mut providers = sample_providers();
+    let mut resources = sample_resources();
     let mut tui = TuiState::default();
     submit_queued_prompt_if_ready(
         &mut state,
-        &sample_resources(),
+        &mut resources,
         &mut providers,
         &mut auth_store,
         &auth_path,
@@ -376,11 +379,12 @@ fn missing_auth_for_selected_provider_reopens_auth_picker() {
     state.current_provider = Some("openai".to_string());
     state.current_model = Some("openai/gpt-5".to_string());
     let mut providers = sample_providers();
+    let mut resources = sample_resources();
     let mut tui = TuiState::default();
 
     submit_queued_prompt_if_ready(
         &mut state,
-        &sample_resources(),
+        &mut resources,
         &mut providers,
         &mut AuthStore::default(),
         &paths.user_config_dir.join("auth.json"),
@@ -464,7 +468,7 @@ fn codex_import_without_base_url_clears_previous_openai_override() {
         "api-version".to_string(),
         "stale".to_string(),
     )]));
-    let resources = openai_provider_resources();
+    let mut resources = openai_provider_resources();
     let mut tui = TuiState {
         overlay: Some(OverlayState::AuthPicker {
             provider_id: "openai".to_string(),
@@ -493,7 +497,7 @@ fn codex_import_without_base_url_clears_previous_openai_override() {
     handle_overlay_key(
         KeyEvent::from(KeyCode::Enter),
         &mut state,
-        &resources,
+        &mut resources,
         &mut providers,
         &mut auth_store,
         &auth_path,

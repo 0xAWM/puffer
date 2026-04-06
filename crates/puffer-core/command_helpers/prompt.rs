@@ -128,7 +128,7 @@ pub(crate) fn execute_compact_prompt_command(
     state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
     session_store: &SessionStore,
     rendered: &str,
 ) -> Result<()> {
@@ -151,7 +151,7 @@ pub(crate) fn execute_plan_prompt_command(
     state: &mut AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
     session_store: &SessionStore,
     rendered: &str,
 ) -> Result<()> {
