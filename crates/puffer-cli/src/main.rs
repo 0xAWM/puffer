@@ -3,7 +3,7 @@ mod authflow;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use puffer_config::{ensure_workspace_dirs, load_config, ConfigPaths};
-use puffer_core::{supported_commands, AppState, MessageRole};
+use puffer_core::{supported_commands, AppState};
 use puffer_provider_openai::{
     build_authorization_url as build_openai_authorization_url,
     exchange_authorization_code as exchange_openai_code, generate_pkce as generate_openai_pkce,
@@ -12,7 +12,7 @@ use puffer_provider_openai::{
 };
 use puffer_provider_registry::{AuthStore, OAuthCredential, ProviderRegistry, StoredCredential};
 use puffer_resources::load_resources;
-use puffer_session_store::{SessionRecord, SessionStore, TranscriptEvent};
+use puffer_session_store::SessionStore;
 use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
     build_authorization_url as build_anthropic_authorization_url, build_messages_request,
@@ -318,7 +318,7 @@ fn main() -> Result<()> {
             let session_store = SessionStore::from_paths(&paths)?;
             let session =
                 session_store.load_session(resolve_session_query(&session_store, &session_id)?)?;
-            let mut state = restore_state_from_session(config.clone(), session);
+            let mut state = AppState::from_session_record(config.clone(), session);
             puffer_tui::run_app(
                 &mut state,
                 &resources,
@@ -334,7 +334,7 @@ fn main() -> Result<()> {
             let source = resolve_session_query(&session_store, &session_id)?;
             let session = session_store.fork_session(source, std::env::current_dir()?)?;
             let record = session_store.load_session(session.id)?;
-            let mut state = restore_state_from_session(config.clone(), record);
+            let mut state = AppState::from_session_record(config.clone(), record);
             puffer_tui::run_app(
                 &mut state,
                 &resources,
@@ -787,56 +787,6 @@ struct OauthStartBundle {
     verifier: String,
     state: String,
     redirect_uri: String,
-}
-
-fn restore_state_from_session(
-    config: puffer_config::PufferConfig,
-    session: SessionRecord,
-) -> AppState {
-    let cwd = session.metadata.cwd.clone();
-    let mut state = AppState::new(config, cwd, session.metadata);
-    for event in session.events {
-        match event {
-            TranscriptEvent::UserMessage { text } => state.push_message(MessageRole::User, text),
-            TranscriptEvent::AssistantMessage { text } => {
-                state.push_message(MessageRole::Assistant, text)
-            }
-            TranscriptEvent::SystemMessage { text } => {
-                state.push_message(MessageRole::System, text)
-            }
-            TranscriptEvent::CommandInvoked { name, args } => state.push_message(
-                MessageRole::System,
-                format!("Command: /{} {}", name, args).trim().to_string(),
-            ),
-            TranscriptEvent::SessionRenamed { .. } => {}
-            TranscriptEvent::StateSnapshot {
-                current_model,
-                current_provider,
-                theme,
-                prompt_color,
-                effort_level,
-                fast_mode,
-                sandbox_mode,
-                remote_name,
-                remote_environment,
-                statusline_enabled,
-                working_dirs,
-            } => {
-                state.current_model = current_model;
-                state.current_provider = current_provider;
-                state.config.theme = theme;
-                state.prompt_color = prompt_color;
-                state.effort_level = effort_level;
-                state.fast_mode = fast_mode;
-                state.sandbox_mode = sandbox_mode;
-                state.remote_name = remote_name;
-                state.remote_environment = remote_environment;
-                state.statusline_enabled = statusline_enabled;
-                state.working_dirs = working_dirs.into_iter().map(Into::into).collect();
-            }
-        }
-    }
-    state
 }
 
 fn to_registry_oauth_credential_openai(

@@ -808,17 +808,43 @@ fn execute_local_command(
             ),
         ),
         "resume" => {
-            let sessions = session_store.list_sessions()?;
-            let mut text = String::from("Sessions:\n");
-            for session in sessions.iter().take(10) {
-                let name = session.display_name.as_deref().unwrap_or("<unnamed>");
-                let _ = writeln!(&mut text, "{} {}", session.id, name);
+            if args.is_empty() {
+                let sessions = session_store.list_sessions()?;
+                let mut text = String::from("Sessions:\n");
+                for session in sessions.iter().take(10) {
+                    let name = session.display_name.as_deref().unwrap_or("<unnamed>");
+                    let _ = writeln!(&mut text, "{} {}", session.id, name);
+                }
+                emit_system(state, session_store, text)
+            } else if let Some(session) = session_store.find_session(args)? {
+                let record = session_store.load_session(session.id)?;
+                let config = state.config.clone();
+                *state = AppState::from_session_record(config, record);
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Resumed session {}.", state.session.id),
+                )
+            } else {
+                emit_system(state, session_store, format!("No session matched {args}."))
             }
-            emit_system(state, session_store, text)
         }
         "branch" => {
             let fork = session_store.fork_session(state.session.id, state.cwd.clone())?;
-            emit_system(state, session_store, format!("Forked current session into {}.", fork.id))
+            if !args.is_empty() {
+                session_store.rename_session(fork.id, args.to_string())?;
+            }
+            let record = session_store.load_session(fork.id)?;
+            let config = state.config.clone();
+            *state = AppState::from_session_record(config, record);
+            if !args.is_empty() {
+                state.session.display_name = Some(args.to_string());
+            }
+            emit_system(
+                state,
+                session_store,
+                format!("Forked current session into {}.", state.session.id),
+            )
         }
         "rewind" => rewind_transcript(state, session_store),
         "terminal-setup" => emit_system(state, session_store, terminal_setup_advice(state)),
