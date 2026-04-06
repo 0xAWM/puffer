@@ -3,8 +3,8 @@ use crate::command_helpers::{
     describe_permissions, emit_system, execute_skill_command, handle_agents_command,
     handle_config_command, handle_hooks_command, handle_ide_command,
     handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_plugin_command, list_skills, reload_plugins_summary, rewind_transcript, run_doctor,
-    terminal_setup_advice,
+    handle_plugin_command, handle_session_command, list_skills, reload_plugins_summary,
+    rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::{AppState, MessageRole};
 use anyhow::Result;
@@ -786,24 +786,7 @@ fn execute_local_command(
                 ),
             )
         }
-        "session" => emit_system(
-            state,
-            session_store,
-            format!(
-                "session_id={}\ncwd={}\ndisplay_name={}\nslug={}\nparent={:?}\ntags={}\nnote={}",
-                state.session.id,
-                state.session.cwd.display(),
-                state.session.display_name.as_deref().unwrap_or("<unnamed>"),
-                state.session.slug.as_deref().unwrap_or("<none>"),
-                state.session.parent_session_id,
-                if state.session.tags.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    state.session.tags.join(", ")
-                },
-                state.session.note.as_deref().unwrap_or("<none>")
-            ),
-        ),
+        "session" => handle_session_command(state, session_store, args),
         "resume" => {
             if args.is_empty() {
                 let sessions = session_store.list_sessions()?;
