@@ -1,26 +1,8 @@
-//! Public Anthropic transport surface for Claude-compatible request building.
-//!
-//! This crate exposes the request and OAuth helpers needed by the CLI, core
-//! runtime, and tests while keeping the lower-level module layout private.
-
-pub mod auth;
-mod fingerprint;
-
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-pub use auth::build_authorization_url;
-pub use auth::exchange_authorization_code;
-pub use auth::generate_pkce;
-pub use auth::parse_authorization_input;
-pub use auth::refresh_oauth_token;
-pub use auth::AnthropicOAuthConfig;
-pub use auth::AnthropicOAuthCredentials;
-pub use auth::AnthropicPkce;
-pub use auth::CLAUDE_AI_AUTHORIZE_URL;
-pub use auth::CONSOLE_AUTHORIZE_URL;
-pub use auth::OAUTH_BETA_HEADER;
-pub use fingerprint::compute_fingerprint;
+use crate::auth::{AnthropicAuth, OAUTH_BETA_HEADER};
+use crate::compute_fingerprint;
 
 /// Represents a minimal Anthropic messages request body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
