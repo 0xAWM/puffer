@@ -47,7 +47,7 @@ Mode      effort high · fast · vim
 
 Session    Shipyard · 12345678
 Model      anthropic/claude-sonn... · tools 3/4
-Directory  /tmp/puffer
+Directory  puffer
 Activity   2 messages · 2 workdirs · dockyard@staging
 "
     );
@@ -98,7 +98,7 @@ Mode      effort high · fast · vim
 
 Session    Shipyard · 12345678
 Model      openai/gpt-5 · tools 3/4
-Directory  /tmp/puffer
+Directory  puffer
 Activity   2 messages · 2 workdirs · dockyard@staging
 "
     );
@@ -201,9 +201,78 @@ fn render_empty_state_shows_transcript_guidance() {
         .unwrap();
 
     let rendered = terminal_view(&terminal);
-    assert!(!rendered.contains("Welcome to Puffer Code"));
+    assert!(rendered.contains("Welcome to Puffer Code"));
     assert!(rendered.contains("Clawd on duty"));
+    assert!(rendered.contains("Tips to get started"));
+}
+
+#[test]
+fn render_empty_state_compacts_on_narrow_width() {
+    let backend = TestBackend::new(72, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.transcript.clear();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            )
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    assert!(rendered.contains("Welcome to Puffer Code"));
     assert!(rendered.contains("? for shortcuts"));
+    assert!(rendered.contains("/help"));
+}
+
+#[test]
+fn render_help_pane_reflows_on_narrow_width() {
+    let backend = TestBackend::new(72, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.push_message(
+        MessageRole::System,
+        "Supported commands:\n/help Show help and available commands".to_string(),
+    );
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            )
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    assert!(rendered.contains("Supported commands"));
+    assert!(rendered.contains("/help"));
+    assert!(rendered.contains("Esc to cancel"));
 }
 
 #[test]

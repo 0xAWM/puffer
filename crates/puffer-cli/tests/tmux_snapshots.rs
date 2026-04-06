@@ -1,46 +1,93 @@
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_session_store::SessionStore;
 use puffer_test_support::{
-    assert_normalized_snapshot, send_tmux_keys, start_tmux_command, temp_workspace, tmux_available,
-    wait_for_tmux_text,
+    assert_normalized_snapshot, capture_tmux_visible_pane, start_tmux_command_with_size,
+    temp_workspace, tmux_available, wait_for_tmux_text, TerminalSize,
 };
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
+const WIDE_TMUX_SIZE: TerminalSize = TerminalSize {
+    rows: 36,
+    cols: 120,
+};
+const NARROW_TMUX_SIZE: TerminalSize = TerminalSize { rows: 20, cols: 72 };
+
 #[test]
-fn tmux_help_matches_snapshot() {
+fn tmux_home_wide_matches_snapshot() {
+    assert_tmux_home_snapshot(WIDE_TMUX_SIZE, "tmux_home_wide_snapshot.txt");
+}
+
+#[test]
+fn tmux_home_narrow_matches_snapshot() {
+    assert_tmux_home_snapshot(NARROW_TMUX_SIZE, "tmux_home_narrow_snapshot.txt");
+}
+
+#[test]
+fn tmux_help_wide_matches_snapshot() {
+    assert_tmux_help_snapshot(WIDE_TMUX_SIZE, "tmux_help_wide_snapshot.txt");
+}
+
+#[test]
+fn tmux_help_narrow_matches_snapshot() {
+    assert_tmux_help_snapshot(NARROW_TMUX_SIZE, "tmux_help_narrow_snapshot.txt");
+}
+
+#[test]
+fn tmux_login_overlay_wide_matches_snapshot() {
+    assert_tmux_login_snapshot(WIDE_TMUX_SIZE, "tmux_login_overlay_wide_snapshot.txt");
+}
+
+#[test]
+fn tmux_login_overlay_narrow_matches_snapshot() {
+    assert_tmux_login_snapshot(NARROW_TMUX_SIZE, "tmux_login_overlay_narrow_snapshot.txt");
+}
+
+fn assert_tmux_home_snapshot(size: TerminalSize, snapshot_name: &str) {
     if !tmux_available() {
         return;
     }
 
     let (_tempdir, workspace) = configured_workspace();
-    let session = start_tmux_with_home(&workspace);
-    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
-    send_tmux_keys(&session, &["/help", "Enter"]).unwrap();
-    let capture =
-        wait_for_tmux_text(&session, "Supported commands:", Duration::from_secs(10)).unwrap();
+    let session = start_tmux_with_home(&workspace, size);
+    wait_for_tmux_text(&session, "Welcome to Puffer Code", Duration::from_secs(10)).unwrap();
+    let capture = capture_tmux_visible_pane(&session).unwrap();
     assert_normalized_snapshot(
-        &normalize_tmux_capture(&focused_help_capture(&capture)),
-        &snapshot_path("tmux_help_snapshot.txt"),
+        &normalize_tmux_capture(&trim_blank_rows(&capture)),
+        &snapshot_path(snapshot_name),
     )
     .unwrap();
 }
 
-#[test]
-fn tmux_login_overlay_matches_snapshot() {
+fn assert_tmux_help_snapshot(size: TerminalSize, snapshot_name: &str) {
     if !tmux_available() {
         return;
     }
 
     let (_tempdir, workspace) = configured_workspace();
-    let session = start_tmux_with_home(&workspace);
-    wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
-    send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
-    let capture = wait_for_tmux_text(&session, "Select Provider", Duration::from_secs(10)).unwrap();
+    let session = start_tmux_with_home_args(&workspace, size, &["/help"]);
+    wait_for_tmux_text(&session, "Supported commands", Duration::from_secs(10)).unwrap();
+    let capture = capture_tmux_visible_pane(&session).unwrap();
     assert_normalized_snapshot(
-        &normalize_tmux_capture(&focused_login_capture(&capture)),
-        &snapshot_path("tmux_login_overlay_snapshot.txt"),
+        &normalize_tmux_capture(&focused_help_capture(&capture, size)),
+        &snapshot_path(snapshot_name),
+    )
+    .unwrap();
+}
+
+fn assert_tmux_login_snapshot(size: TerminalSize, snapshot_name: &str) {
+    if !tmux_available() {
+        return;
+    }
+
+    let (_tempdir, workspace) = configured_workspace();
+    let session = start_tmux_with_home_args(&workspace, size, &["/login"]);
+    wait_for_tmux_text(&session, "anthropic", Duration::from_secs(10)).unwrap();
+    let capture = capture_tmux_visible_pane(&session).unwrap();
+    assert_normalized_snapshot(
+        &normalize_tmux_capture(&focused_login_capture(&capture, size)),
+        &snapshot_path(snapshot_name),
     )
     .unwrap();
 }
@@ -50,6 +97,7 @@ fn configured_workspace() -> (tempfile::TempDir, PathBuf) {
     let paths = ConfigPaths::discover(&workspace);
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
+    fs::create_dir_all(workspace.join("dockyard")).unwrap();
     let session = session_store
         .create_session(workspace.join("dockyard"))
         .unwrap();
@@ -103,20 +151,43 @@ fn snapshot_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn start_tmux_with_home(workspace: &std::path::Path) -> puffer_test_support::TmuxSession {
-    start_tmux_command(
+fn start_tmux_with_home(
+    workspace: &std::path::Path,
+    size: TerminalSize,
+) -> puffer_test_support::TmuxSession {
+    start_tmux_with_home_args(workspace, size, &[])
+}
+
+fn start_tmux_with_home_args(
+    workspace: &std::path::Path,
+    size: TerminalSize,
+    cli_args: &[&str],
+) -> puffer_test_support::TmuxSession {
+    let extra_args = cli_args
+        .iter()
+        .map(|value| shell_escape(value))
+        .collect::<Vec<_>>()
+        .join(" ");
+    start_tmux_command_with_size(
         "sh",
         &[
             "-lc",
             &format!(
-                "HOME='{}' '{}'",
+                "HOME='{}' '{}'{}{}",
                 workspace.display(),
-                env!("CARGO_BIN_EXE_puffer")
+                env!("CARGO_BIN_EXE_puffer"),
+                if extra_args.is_empty() { "" } else { " " },
+                extra_args,
             ),
         ],
-        Some(workspace),
+        Some(&workspace.join("dockyard")),
+        size,
     )
     .unwrap()
+}
+
+fn shell_escape(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn normalize_tmux_capture(capture: &str) -> String {
@@ -138,12 +209,27 @@ fn focused_tmux_capture(capture: &str, anchor: &str, before: usize, after: usize
     lines[start..end].join("\n")
 }
 
-fn focused_help_capture(capture: &str) -> String {
-    trim_common_padding(&focused_tmux_capture(capture, "Supported commands:", 0, 4))
+fn focused_help_capture(capture: &str, size: TerminalSize) -> String {
+    let after = if size.cols >= WIDE_TMUX_SIZE.cols { 12 } else { 10 };
+    trim_common_padding(&focused_tmux_capture(capture, "Supported commands", 0, after))
 }
 
-fn focused_login_capture(capture: &str) -> String {
-    trim_common_padding(&focused_tmux_capture(capture, "Select Provider", 0, 4))
+fn focused_login_capture(capture: &str, size: TerminalSize) -> String {
+    let provider_rows = capture
+        .lines()
+        .filter(|line| {
+            line.contains("Select Provider")
+                || line.contains("anthropic")
+                || line.contains("openai")
+                || line.contains("cerebras")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if provider_rows.trim().is_empty() {
+        let after = if size.cols >= WIDE_TMUX_SIZE.cols { 6 } else { 5 };
+        return trim_common_padding(&focused_tmux_capture(capture, "Select Provider", 0, after));
+    }
+    trim_common_padding(&provider_rows)
 }
 
 fn trim_common_padding(capture: &str) -> String {
@@ -160,6 +246,17 @@ fn trim_common_padding(capture: &str) -> String {
         .join("\n")
 }
 
+fn trim_blank_rows(capture: &str) -> String {
+    let lines = capture.lines().collect::<Vec<_>>();
+    let start = lines.iter().position(|line| !line.trim().is_empty()).unwrap_or(0);
+    let end = lines
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map(|index| index + 1)
+        .unwrap_or(lines.len());
+    lines[start..end].join("\n")
+}
+
 fn normalize_tmux_line(line: &str) -> String {
     let line = replace_session_marker(line);
     let line = replace_id_line(&line);
@@ -167,7 +264,7 @@ fn normalize_tmux_line(line: &str) -> String {
 }
 
 fn replace_session_marker(line: &str) -> String {
-    for marker in ["session=session-", "│session-"] {
+    for marker in ["session=session-", "│session-", "session-"] {
         if let Some(index) = line.find(marker) {
             let start = index + marker.len();
             let mut end = start;

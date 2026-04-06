@@ -1,4 +1,0 @@
-│Select Provider                                                       │
-│anthropic  Anthropic                                                  │
-│openai  OpenAI                                                        │
-│cerebras  Cerebras                                                    │

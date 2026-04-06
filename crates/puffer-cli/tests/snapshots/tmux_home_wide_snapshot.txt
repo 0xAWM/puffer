@@ -1,0 +1,36 @@
+╭ Puffer Code ─────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Mascot    Clawd on duty                            │Session    session-<id> · <id>                      │
+│User      anthropic via API key                    │Model      anthropic/claude-sonn... · tools 0/0                   │
+│Provider  anthropic · auth api-key                 │Directory  dockyard                                               │
+│Mode      effort medium                            │Activity   0 messages · 0 workdirs · sandbox workspace-write      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+        ╭ Puffer Code ─────────────────────────────────────────────────────────────────────────────────────────╮
+        │Welcome to Puffer Code                                    │Tips to get started                        │
+        │                                                          │                                           │
+        │Clawd on duty                                             │/help   Browse common commands             │
+        │anthropic/claude-sonnet-4-5                               │/review Review the current worktree        │
+        │dockyard                                                  │/login  Switch provider auth               │
+        │                                                          │                                           │
+        │                                                          │Recent activity                            │
+        │                                                          │No recent activity yet.                    │
+        │                                                          │                                           │
+        │                                                          │                                           │
+        ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 0/0                                                    │
+│dockyard · shell 0 · prompts 0 · 0 workdirs · sandbox workspace-write · no tools                                      │
+│❯ Review changes, ask a question, or type /                                                                           │
+│? for shortcuts · /help · /review · !pwd                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,4 +1,4 @@
-use crate::{run_command_capture, CommandOutput};
+use crate::{run_command_capture, CommandOutput, TerminalSize};
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use std::process::Command;
@@ -16,6 +16,7 @@ pub struct TmuxInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TmuxSession {
     pub name: String,
+    pub socket_name: String,
 }
 
 /// Returns true when tmux appears to be installed and runnable.
@@ -39,13 +40,32 @@ pub fn detect_tmux() -> TmuxInfo {
 
 /// Starts a detached tmux session that runs the provided program and arguments.
 pub fn start_tmux_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<TmuxSession> {
+    start_tmux_command_with_size(program, args, cwd, TerminalSize::default())
+}
+
+/// Starts a detached tmux session using an isolated server and explicit pane size.
+pub fn start_tmux_command_with_size(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    size: TerminalSize,
+) -> Result<TmuxSession> {
     let session = TmuxSession {
         name: format!("puffer-{}", Uuid::new_v4().simple()),
+        socket_name: format!("puffer-test-{}", Uuid::new_v4().simple()),
     };
     let mut command = Command::new("tmux");
     command
+        .arg("-L")
+        .arg(&session.socket_name)
+        .arg("-f")
+        .arg("/dev/null")
         .arg("new-session")
         .arg("-d")
+        .arg("-x")
+        .arg(size.cols.to_string())
+        .arg("-y")
+        .arg(size.rows.to_string())
         .arg("-s")
         .arg(&session.name);
     if let Some(cwd) = cwd {
@@ -56,7 +76,10 @@ pub fn start_tmux_command(program: &str, args: &[&str], cwd: Option<&Path>) -> R
     if !status.success() {
         return Err(anyhow!("failed to start tmux session {}", session.name));
     }
-    let output = run_tmux_command(&["set-option", "-t", &session.name, "remain-on-exit", "on"])?;
+    let output = run_tmux_command(
+        &session,
+        &["set-option", "-t", &session.name, "remain-on-exit", "on"],
+    )?;
     if output.status_code != 0 {
         return Err(anyhow!(
             "failed to set remain-on-exit for {}: {}",
@@ -70,10 +93,24 @@ pub fn start_tmux_command(program: &str, args: &[&str], cwd: Option<&Path>) -> R
 /// Captures the current pane contents for a tmux session.
 pub fn capture_tmux_pane(session: &TmuxSession) -> Result<String> {
     let target = format!("{}:0.0", session.name);
-    let output = run_tmux_command(&["capture-pane", "-p", "-S", "-", "-t", &target])?;
+    let output = run_tmux_command(session, &["capture-pane", "-p", "-S", "-", "-t", &target])?;
     if output.status_code != 0 {
         return Err(anyhow!(
             "failed to capture tmux pane for {}: {}",
+            session.name,
+            output.stderr.trim()
+        ));
+    }
+    Ok(output.stdout)
+}
+
+/// Captures only the visible pane viewport for a tmux session.
+pub fn capture_tmux_visible_pane(session: &TmuxSession) -> Result<String> {
+    let target = format!("{}:0.0", session.name);
+    let output = run_tmux_command(session, &["capture-pane", "-p", "-t", &target])?;
+    if output.status_code != 0 {
+        return Err(anyhow!(
+            "failed to capture visible tmux pane for {}: {}",
             session.name,
             output.stderr.trim()
         ));
@@ -85,7 +122,7 @@ pub fn capture_tmux_pane(session: &TmuxSession) -> Result<String> {
 pub fn send_tmux_keys(session: &TmuxSession, keys: &[&str]) -> Result<()> {
     let mut args = vec!["send-keys", "-t", session.name.as_str()];
     args.extend(keys.iter().copied());
-    let output = run_tmux_command(&args)?;
+    let output = run_tmux_command(session, &args)?;
     if output.status_code != 0 {
         return Err(anyhow!(
             "failed to send tmux keys to {}: {}",
@@ -120,7 +157,7 @@ pub fn wait_for_tmux_text(
 
 /// Kills a tmux session created for testing.
 pub fn kill_tmux_session(session: &TmuxSession) -> Result<()> {
-    let output = run_tmux_command(&["kill-session", "-t", &session.name])?;
+    let output = run_tmux_command(session, &["kill-server"])?;
     if output.status_code != 0 {
         return Err(anyhow!(
             "failed to kill tmux session {}: {}",
@@ -133,12 +170,17 @@ pub fn kill_tmux_session(session: &TmuxSession) -> Result<()> {
 
 impl Drop for TmuxSession {
     fn drop(&mut self) {
-        let _ = run_tmux_command(&["kill-session", "-t", &self.name]);
+        let _ = run_tmux_command(self, &["kill-server"]);
     }
 }
 
-fn run_tmux_command(args: &[&str]) -> Result<CommandOutput> {
-    run_command_capture("tmux", args, None)
+fn run_tmux_command(session: &TmuxSession, args: &[&str]) -> Result<CommandOutput> {
+    let owned = std::iter::once("-L".to_string())
+        .chain(std::iter::once(session.socket_name.clone()))
+        .chain(args.iter().map(|value| (*value).to_string()))
+        .collect::<Vec<_>>();
+    let refs = owned.iter().map(String::as_str).collect::<Vec<_>>();
+    run_command_capture("tmux", &refs, None)
 }
 
 fn shell_command(program: &str, args: &[&str]) -> String {
@@ -172,5 +214,26 @@ mod tests {
         let capture =
             wait_for_tmux_text(&session, "hello from tmux", Duration::from_secs(3)).unwrap();
         assert!(capture.contains("hello from tmux"));
+    }
+
+    #[test]
+    fn tmux_command_respects_requested_size() {
+        if !tmux_available() {
+            return;
+        }
+        let session = start_tmux_command_with_size(
+            "sh",
+            &["-lc", "sleep 2"],
+            None,
+            TerminalSize { rows: 24, cols: 80 },
+        )
+        .unwrap();
+        let target = format!("{}:0.0", session.name);
+        let output = run_tmux_command(
+            &session,
+            &["display-message", "-p", "-t", &target, "#{pane_width}x#{pane_height}"],
+        )
+        .unwrap();
+        assert_eq!(output.stdout.trim(), "80x24");
     }
 }

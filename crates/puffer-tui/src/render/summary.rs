@@ -94,7 +94,7 @@ pub(super) fn top_panel_columns(
             ),
             right.line(
                 "Directory",
-                vec![Span::raw(truncate(&state.cwd.display().to_string(), 34))],
+                vec![Span::raw(truncate(&path_tail(&state.cwd), 34))],
             ),
             right.line("Activity", vec![Span::raw(activity)]),
         ],

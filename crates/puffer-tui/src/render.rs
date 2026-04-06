@@ -1,5 +1,7 @@
+mod panes;
 mod summary;
 
+use self::panes::{render_empty_state, render_help_pane};
 use self::summary::{
     hint_line, status_primary_line, status_secondary_line, top_panel_columns, top_panel_height,
 };
@@ -14,7 +16,7 @@ use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage};
 use puffer_provider_registry::AuthStore;
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::symbols::border;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -74,8 +76,8 @@ pub(crate) fn render(
         render_top_panel(frame, layout[0], state, resources, auth_store, &tool_registry);
     }
 
-    if let Some(help_text) = active_help_text(state, &active_overlay) {
-        render_help_pane(frame, layout[1], state, help_text);
+    if help_pane_active(state, &active_overlay) {
+        render_help_pane(frame, layout[1], state, commands, resources);
     } else if state.transcript.is_empty() && !onboarding_active {
         render_empty_state(frame, layout[1], state);
     } else {
@@ -253,16 +255,12 @@ fn render_top_panel(
     );
 }
 
-fn active_help_text<'a>(
-    state: &'a AppState,
-    active_overlay: &Option<OverlayState>,
-) -> Option<&'a str> {
-    if !state.config.ui.tmux_golden_mode || active_overlay.is_some() {
-        return None;
+fn help_pane_active(state: &AppState, active_overlay: &Option<OverlayState>) -> bool {
+    if active_overlay.is_some() {
+        return false;
     }
-    state.transcript.last().and_then(|message| {
-        (message.role == MessageRole::System && message.text.starts_with("Supported commands:"))
-            .then_some(message.text.as_str())
+    state.transcript.last().is_some_and(|message| {
+        message.role == MessageRole::System && message.text.starts_with("Supported commands:")
     })
 }
 
@@ -309,65 +307,6 @@ fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
             }
         })
         .collect()
-}
-
-fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let model = if state.current_model.is_none() {
-        "/model to choose a model".to_string()
-    } else {
-        state.current_model.clone().unwrap_or_default()
-    };
-    let mascot = if state.config.mascot.enabled {
-        format!("{} on duty", state.config.mascot.display_name)
-    } else {
-        "Mascot disabled".to_string()
-    };
-    let text = Text::from(vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            mascot,
-            Style::default().add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        Line::from(Span::styled(model, Style::default().add_modifier(Modifier::DIM))),
-        Line::from(Span::styled(
-            state.cwd.display().to_string(),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Review changes, ask a question, or type /",
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        Line::from(Span::styled(
-            "? for shortcuts · /help to begin",
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-    ]);
-    frame.render_widget(
-        Paragraph::new(text)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn render_help_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState, text: &str) {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(prompt_border_style(state));
-    frame.render_widget(&block, area);
-    let inner = block.inner(area);
-    let content = Rect {
-        x: inner.x.saturating_add(2),
-        y: inner.y,
-        width: inner.width.saturating_sub(4),
-        height: inner.height,
-    };
-    frame.render_widget(
-        Paragraph::new(text.to_string()).wrap(Wrap { trim: false }),
-        content,
-    );
 }
 
 fn prompt_line(input: &str) -> Line<'static> {
@@ -666,7 +605,7 @@ fn accent_border_style() -> Style {
     Style::default().fg(Color::Cyan)
 }
 
-fn prompt_border_style(state: &AppState) -> Style {
+pub(super) fn prompt_border_style(state: &AppState) -> Style {
     let color = match state.prompt_color.as_str() {
         "amber" | "yellow" => Color::Yellow,
         "teal" | "cyan" => Color::Cyan,
