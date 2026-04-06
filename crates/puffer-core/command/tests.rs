@@ -580,6 +580,142 @@ fn tasks_command_reports_recorded_runtime_tasks() {
 }
 
 #[test]
+fn session_command_can_list_and_update_note() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let second = session_store
+        .create_session(tempdir.path().join("secondary"))
+        .unwrap();
+    session_store
+        .rename_session(second.id, "dockyard".to_string())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/session note keep-shipping",
+    )
+    .unwrap();
+    assert_eq!(state.session.note.as_deref(), Some("keep-shipping"));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/session list",
+    )
+    .unwrap();
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("dockyard")
+    ));
+}
+
+#[test]
+fn session_command_can_update_note_and_slug() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/session note keep shipping",
+    )
+    .unwrap();
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/session slug dockyard",
+    )
+    .unwrap();
+
+    let record = session_store.load_session(state.session.id).unwrap();
+    assert_eq!(state.session.note.as_deref(), Some("keep shipping"));
+    assert_eq!(state.session.slug.as_deref(), Some("dockyard"));
+    assert_eq!(record.metadata.note.as_deref(), Some("keep shipping"));
+    assert_eq!(record.metadata.slug.as_deref(), Some("dockyard"));
+}
+
+#[test]
+fn session_command_lists_saved_sessions() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().join("current"))
+        .unwrap();
+    let listed = session_store
+        .create_session(tempdir.path().join("listed"))
+        .unwrap();
+    session_store
+        .rename_session(listed.id, "dockyard".to_string())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().join("current"),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/session list",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("dockyard")
+    ));
+}
+
+#[test]
 fn cost_command_reports_runtime_summary() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());

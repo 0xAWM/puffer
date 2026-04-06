@@ -1,4 +1,5 @@
 use crate::AppState;
+use crate::hooks::run_resource_hooks;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
     build_responses_request, build_tool_responses_request, extract_responses_text,
@@ -17,7 +18,6 @@ use puffer_transport_anthropic::{
 };
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
-use std::process::Command;
 
 /// Describes one tool call executed during a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,10 +98,7 @@ fn execute_anthropic(
 ) -> Result<TurnExecution> {
     let auth = anthropic_auth_for_provider(auth_store, &provider.id)?;
     let registry = ToolRegistry::from_resources(resources);
-    let mut messages = vec![json!({
-        "role": "user",
-        "content": input,
-    })];
+    let mut messages = transcript_to_anthropic_messages(state, input);
     let mut invocations = Vec::new();
     let request = build_messages_request(
         &AnthropicRequestConfig {
@@ -124,10 +121,7 @@ fn execute_anthropic(
         &AnthropicModelRequest {
             model: model_id.clone(),
             max_tokens: 1024,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: input.to_string(),
-            }],
+            messages: transcript_to_anthropic_request_messages(state, input),
         },
     )?;
 
@@ -168,8 +162,10 @@ fn execute_anthropic(
             continue;
         }
 
+        let assistant_text = parse_anthropic_text(&response)?;
+        run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
         return Ok(TurnExecution {
-            assistant_text: parse_anthropic_text(&response)?,
+            assistant_text,
             tool_invocations: invocations,
         });
     }
@@ -194,16 +190,19 @@ fn execute_openai(
     let registry = ToolRegistry::from_resources(resources);
     let tools = openai_tool_definitions(&registry);
     let mut previous_response_id = None;
-    let mut next_input = json!(input);
+    let mut next_input = transcript_to_openai_input(state, input);
     let mut invocations = Vec::new();
 
     for _ in 0..8 {
-        let response = if tools.is_empty() && previous_response_id.is_none() {
+        let response = if tools.is_empty()
+            && previous_response_id.is_none()
+            && matches!(next_input, Value::String(_))
+        {
             let request = build_responses_request(
                 &request_config,
                 &OpenAIResponsesRequest {
                     model: model_id.clone(),
-                    input: input.to_string(),
+                    input: next_input.as_str().unwrap_or_default().to_string(),
                 },
             )?;
             send_http_request(&request.url, &request.headers, &request.body, false)?
@@ -214,9 +213,13 @@ fn execute_openai(
                     model: model_id.clone(),
                     input: next_input.clone(),
                     tools: tools.clone(),
-                    tool_choice: Some(OpenAIResponsesToolChoice::Mode(
-                        OpenAIResponsesToolChoiceMode::Auto,
-                    )),
+                    tool_choice: if tools.is_empty() {
+                        None
+                    } else {
+                        Some(OpenAIResponsesToolChoice::Mode(
+                            OpenAIResponsesToolChoiceMode::Auto,
+                        ))
+                    },
                     previous_response_id: previous_response_id.clone(),
                 },
             )?;
@@ -226,8 +229,10 @@ fn execute_openai(
         let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
         let tool_calls = extract_responses_tool_calls(&parsed)?;
         if tool_calls.is_empty() {
+            let assistant_text = parse_openai_assistant_text(&parsed, &response, state)?;
+            run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
             return Ok(TurnExecution {
-                assistant_text: parse_openai_assistant_text(&parsed, &response, state)?,
+                assistant_text,
                 tool_invocations: invocations,
             });
         }
@@ -536,20 +541,33 @@ fn run_tool_hooks(
     stdout: &str,
     stderr: &str,
 ) {
-    for hook in resources.hooks.iter().filter(|hook| hook.value.event == event) {
-        let _ = Command::new("sh")
-            .arg("-lc")
-            .arg(&hook.value.command)
-            .current_dir(cwd)
-            .env("PUFFER_HOOK_ID", &hook.value.id)
-            .env("PUFFER_HOOK_EVENT", event)
-            .env("PUFFER_TOOL_ID", tool_id)
-            .env("PUFFER_TOOL_INPUT", input.to_string())
-            .env("PUFFER_TOOL_SUCCESS", if success { "true" } else { "false" })
-            .env("PUFFER_TOOL_STDOUT", stdout)
-            .env("PUFFER_TOOL_STDERR", stderr)
-            .output();
-    }
+    run_resource_hooks(
+        resources,
+        cwd,
+        event,
+        &[
+            ("PUFFER_TOOL_ID", tool_id.to_string()),
+            ("PUFFER_TOOL_INPUT", input.to_string()),
+            (
+                "PUFFER_TOOL_SUCCESS",
+                if success { "true" } else { "false" }.to_string(),
+            ),
+            ("PUFFER_TOOL_STDOUT", stdout.to_string()),
+            ("PUFFER_TOOL_STDERR", stderr.to_string()),
+        ],
+    );
+}
+
+fn run_turn_hooks(resources: &LoadedResources, cwd: &std::path::Path, text: &str, tool_count: usize) {
+    run_resource_hooks(
+        resources,
+        cwd,
+        "turn_end",
+        &[
+            ("PUFFER_TURN_TEXT", text.to_string()),
+            ("PUFFER_TURN_TOOL_COUNT", tool_count.to_string()),
+        ],
+    );
 }
 
 fn parse_openai_text(response: &Value) -> Result<String> {
@@ -579,6 +597,103 @@ fn parse_openai_text(response: &Value) -> Result<String> {
         bail!("openai response did not contain output text");
     }
     Ok(parts.join("\n"))
+}
+
+fn transcript_to_anthropic_messages(state: &AppState, input: &str) -> Vec<Value> {
+    let mut messages = state
+        .transcript
+        .iter()
+        .map(|message| match message.role {
+            crate::MessageRole::User => json!({
+                "role": "user",
+                "content": message.text,
+            }),
+            crate::MessageRole::Assistant => json!({
+                "role": "assistant",
+                "content": message.text,
+            }),
+            crate::MessageRole::System => json!({
+                "role": "user",
+                "content": format!("[system]\n{}", message.text),
+            }),
+        })
+        .collect::<Vec<_>>();
+    if messages.is_empty() {
+        messages.push(json!({
+            "role": "user",
+            "content": input,
+        }));
+    }
+    messages
+}
+
+fn transcript_to_anthropic_request_messages(
+    state: &AppState,
+    input: &str,
+) -> Vec<AnthropicMessage> {
+    let mut messages = state
+        .transcript
+        .iter()
+        .map(|message| AnthropicMessage {
+            role: match message.role {
+                crate::MessageRole::Assistant => "assistant".to_string(),
+                crate::MessageRole::User | crate::MessageRole::System => "user".to_string(),
+            },
+            content: match message.role {
+                crate::MessageRole::System => format!("[system]\n{}", message.text),
+                _ => message.text.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    if messages.is_empty() {
+        messages.push(AnthropicMessage {
+            role: "user".to_string(),
+            content: input.to_string(),
+        });
+    }
+    messages
+}
+
+fn transcript_to_openai_input(state: &AppState, input: &str) -> Value {
+    if state.transcript.is_empty() {
+        return Value::String(input.to_string());
+    }
+
+    Value::Array(
+        state
+            .transcript
+            .iter()
+            .enumerate()
+            .map(|(index, message)| match message.role {
+                crate::MessageRole::User => json!({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": message.text,
+                        }
+                    ],
+                }),
+                crate::MessageRole::Assistant => json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": message.text,
+                            "annotations": [],
+                        }
+                    ],
+                    "status": "completed",
+                    "id": format!("msg_{index}"),
+                }),
+                crate::MessageRole::System => json!({
+                    "role": "system",
+                    "content": message.text,
+                }),
+            })
+            .collect(),
+    )
 }
 
 fn parse_openai_assistant_text(
@@ -831,5 +946,33 @@ mod tests {
         });
         let _ = execute_anthropic_tool_calls(&resources, &response, &registry, temp.path()).unwrap();
         assert_eq!(std::fs::read_to_string(hook_output).unwrap(), "bash");
+    }
+
+    #[test]
+    fn transcript_to_anthropic_messages_replays_all_roles() {
+        let mut state = state();
+        state.push_message(crate::MessageRole::User, "hello");
+        state.push_message(crate::MessageRole::Assistant, "hi");
+        state.push_message(crate::MessageRole::System, "note");
+
+        let messages = transcript_to_anthropic_messages(&state, "fallback");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["content"], "[system]\nnote");
+    }
+
+    #[test]
+    fn transcript_to_openai_input_replays_transcript_items() {
+        let mut state = state();
+        state.push_message(crate::MessageRole::User, "hello");
+        state.push_message(crate::MessageRole::Assistant, "hi");
+
+        let input = transcript_to_openai_input(&state, "fallback");
+        let items = input.as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["role"], "user");
+        assert_eq!(items[1]["type"], "message");
+        assert_eq!(items[1]["role"], "assistant");
     }
 }

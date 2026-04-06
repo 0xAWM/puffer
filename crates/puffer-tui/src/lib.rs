@@ -10,8 +10,8 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use puffer_core::{
-    dispatch_command, execute_user_turn, supported_commands, AppState, CommandSpec, MessageRole,
-    ToolInvocation,
+    dispatch_command, execute_user_turn, run_resource_hooks, supported_commands, AppState,
+    CommandSpec, MessageRole, ToolInvocation,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -21,6 +21,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 /// Runs the interactive Puffer TUI until the user exits.
@@ -43,6 +44,7 @@ pub fn run_app(
             auth_path,
             session_store,
             prompt,
+            no_alt_screen,
         )?;
     }
 
@@ -114,6 +116,7 @@ fn handle_key(
     session_store: &SessionStore,
     commands: &[CommandSpec],
     tui: &mut TuiState,
+    no_alt_screen: bool,
 ) -> Result<bool> {
     if tui.overlay.is_some() {
         return handle_overlay_key(
@@ -125,6 +128,7 @@ fn handle_key(
             auth_path,
             session_store,
             tui,
+            no_alt_screen,
         );
     }
 
@@ -176,6 +180,7 @@ fn handle_key(
                 auth_path,
                 session_store,
                 submitted,
+                no_alt_screen,
             )?;
         }
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -195,6 +200,7 @@ fn handle_overlay_key(
     auth_path: &Path,
     session_store: &SessionStore,
     tui: &mut TuiState,
+    no_alt_screen: bool,
 ) -> Result<bool> {
     let Some(overlay) = tui.overlay.as_mut() else {
         return Ok(false);
@@ -217,6 +223,7 @@ fn handle_overlay_key(
                     auth_path,
                     session_store,
                     command,
+                    no_alt_screen,
                 )?;
             } else {
                 tui.overlay = None;
@@ -349,13 +356,21 @@ fn handle_submit(
     auth_path: &Path,
     session_store: &SessionStore,
     submitted: String,
+    no_alt_screen: bool,
 ) -> Result<()> {
     let submitted = submitted.trim().to_string();
     if submitted.is_empty() {
         return Ok(());
     }
 
-    if handle_auth_command(state, auth_store, auth_path, session_store, &submitted)? {
+    if handle_auth_command(
+        state,
+        auth_store,
+        auth_path,
+        session_store,
+        &submitted,
+        no_alt_screen,
+    )? {
         return Ok(());
     }
 
@@ -415,12 +430,29 @@ fn handle_auth_command(
     auth_path: &Path,
     session_store: &SessionStore,
     submitted: &str,
+    no_alt_screen: bool,
 ) -> Result<bool> {
     let without_slash = submitted.trim_start_matches('/');
     let (name, args) = without_slash
         .split_once(' ')
         .map(|(name, args)| (name, args.trim()))
         .unwrap_or((without_slash, ""));
+    if name == "login" {
+        let provider = if args.is_empty() {
+            state.current_provider.as_deref().unwrap_or("anthropic")
+        } else {
+            args
+        };
+        run_embedded_auth_login(provider, auth_store, auth_path, no_alt_screen)?;
+        let message = format!("Completed login flow for {provider}.");
+        state.push_message(MessageRole::System, message.clone());
+        session_store.append_event(
+            state.session.id,
+            TranscriptEvent::SystemMessage { text: message },
+        )?;
+        return Ok(true);
+    }
+
     if name != "logout" {
         return Ok(false);
     }
@@ -442,6 +474,36 @@ fn handle_auth_command(
         TranscriptEvent::SystemMessage { text: message },
     )?;
     Ok(true)
+}
+
+fn run_embedded_auth_login(
+    provider: &str,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
+    no_alt_screen: bool,
+) -> Result<()> {
+    if !no_alt_screen {
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+    }
+
+    let status = Command::new(std::env::current_exe()?)
+        .arg("auth")
+        .arg("login")
+        .arg(provider)
+        .status()?;
+
+    if !no_alt_screen {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+    }
+
+    if !status.success() {
+        anyhow::bail!("login flow for {provider} exited with {}", status);
+    }
+
+    *auth_store = AuthStore::load(auth_path)?;
+    Ok(())
 }
 
 fn append_tool_messages(
@@ -502,6 +564,24 @@ fn execute_shell_shortcut(
         },
     )?;
     state.record_task("bash", shell_command.to_string(), result.success);
+    run_resource_hooks(
+        resources,
+        &state.cwd,
+        "tool_end",
+        &[
+            ("PUFFER_TOOL_ID", "bash".to_string()),
+            (
+                "PUFFER_TOOL_INPUT",
+                serde_json::json!({ "command": shell_command }).to_string(),
+            ),
+            (
+                "PUFFER_TOOL_SUCCESS",
+                if result.success { "true" } else { "false" }.to_string(),
+            ),
+            ("PUFFER_TOOL_STDOUT", result.output.stdout.clone()),
+            ("PUFFER_TOOL_STDERR", result.output.stderr.clone()),
+        ],
+    );
 
     let reply = if result.output.stderr.is_empty() {
         result.output.stdout

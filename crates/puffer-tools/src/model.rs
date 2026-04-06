@@ -87,6 +87,8 @@ pub enum ToolKind {
     ReadFile,
     WriteFile,
     ReplaceInFile,
+    MovePath,
+    RemovePath,
     ListDir,
     SearchText,
 }
@@ -99,6 +101,8 @@ impl ToolKind {
             "read_file" => Some(Self::ReadFile),
             "write_file" => Some(Self::WriteFile),
             "replace_in_file" => Some(Self::ReplaceInFile),
+            "move_path" => Some(Self::MovePath),
+            "remove_path" => Some(Self::RemovePath),
             "list_dir" => Some(Self::ListDir),
             "search_text" => Some(Self::SearchText),
             _ => None,
@@ -112,6 +116,8 @@ impl ToolKind {
             Self::ReadFile => "read_file",
             Self::WriteFile => "write_file",
             Self::ReplaceInFile => "replace_in_file",
+            Self::MovePath => "move_path",
+            Self::RemovePath => "remove_path",
             Self::ListDir => "list_dir",
             Self::SearchText => "search_text",
         }
@@ -176,6 +182,21 @@ pub struct ReplaceInFileToolInput {
     pub replace_all: bool,
 }
 
+/// Typed input for the built-in move-path tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovePathToolInput {
+    pub from: PathBuf,
+    pub to: PathBuf,
+}
+
+/// Typed input for the built-in remove-path tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovePathToolInput {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
 /// Typed input for the built-in directory-listing tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListDirToolInput {
@@ -204,6 +225,14 @@ pub enum ToolInput {
         new: String,
         replace_all: bool,
     },
+    MovePath {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    RemovePath {
+        path: PathBuf,
+        recursive: bool,
+    },
     ListDir { path: Option<PathBuf> },
     SearchText { query: String, path: Option<PathBuf> },
 }
@@ -216,6 +245,8 @@ impl ToolInput {
             Self::ReadFile { .. } => ToolKind::ReadFile,
             Self::WriteFile { .. } => ToolKind::WriteFile,
             Self::ReplaceInFile { .. } => ToolKind::ReplaceInFile,
+            Self::MovePath { .. } => ToolKind::MovePath,
+            Self::RemovePath { .. } => ToolKind::RemovePath,
             Self::ListDir { .. } => ToolKind::ListDir,
             Self::SearchText { .. } => ToolKind::SearchText,
         }
@@ -250,6 +281,14 @@ impl ToolInput {
                     replace_all,
                 }),
             ),
+            Self::MovePath { from, to } => (
+                ToolKind::MovePath,
+                TypedToolInput::MovePath(MovePathToolInput { from, to }),
+            ),
+            Self::RemovePath { path, recursive } => (
+                ToolKind::RemovePath,
+                TypedToolInput::RemovePath(RemovePathToolInput { path, recursive }),
+            ),
             Self::ListDir { path } => (
                 ToolKind::ListDir,
                 TypedToolInput::ListDir(ListDirToolInput { path }),
@@ -269,6 +308,8 @@ pub enum TypedToolInput {
     ReadFile(ReadFileToolInput),
     WriteFile(WriteFileToolInput),
     ReplaceInFile(ReplaceInFileToolInput),
+    MovePath(MovePathToolInput),
+    RemovePath(RemovePathToolInput),
     ListDir(ListDirToolInput),
     SearchText(SearchTextToolInput),
 }
@@ -296,6 +337,8 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         builtin_tool_definition(ToolKind::ReadFile),
         builtin_tool_definition(ToolKind::WriteFile),
         builtin_tool_definition(ToolKind::ReplaceInFile),
+        builtin_tool_definition(ToolKind::MovePath),
+        builtin_tool_definition(ToolKind::RemovePath),
         builtin_tool_definition(ToolKind::ListDir),
         builtin_tool_definition(ToolKind::SearchText),
     ]
@@ -432,6 +475,73 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             },
             policy: ToolPolicyHints::default(),
         },
+        ToolKind::MovePath => ToolDefinition {
+            id: "move_path".to_string(),
+            name: "move_path".to_string(),
+            description: "Move or rename one workspace file or directory.".to_string(),
+            handler: kind.handler().to_string(),
+            kind,
+            input_schema: ToolInputSchema {
+                properties: BTreeMap::from([
+                    (
+                        "from".to_string(),
+                        ToolPropertySchema {
+                            value_type: ToolSchemaType::String,
+                            description: "Existing source path.".to_string(),
+                            required: true,
+                        },
+                    ),
+                    (
+                        "to".to_string(),
+                        ToolPropertySchema {
+                            value_type: ToolSchemaType::String,
+                            description: "Destination path.".to_string(),
+                            required: true,
+                        },
+                    ),
+                ]),
+            },
+            metadata: ToolMetadata {
+                may_spawn_processes: false,
+                may_read_files: false,
+                may_write_files: true,
+            },
+            policy: ToolPolicyHints::default(),
+        },
+        ToolKind::RemovePath => ToolDefinition {
+            id: "remove_path".to_string(),
+            name: "remove_path".to_string(),
+            description: "Remove one workspace file or directory.".to_string(),
+            handler: kind.handler().to_string(),
+            kind,
+            input_schema: ToolInputSchema {
+                properties: BTreeMap::from([
+                    (
+                        "path".to_string(),
+                        ToolPropertySchema {
+                            value_type: ToolSchemaType::String,
+                            description: "Path to remove.".to_string(),
+                            required: true,
+                        },
+                    ),
+                    (
+                        "recursive".to_string(),
+                        ToolPropertySchema {
+                            value_type: ToolSchemaType::String,
+                            description: "Set to true when removing directories recursively."
+                                .to_string(),
+                            required: false,
+                        },
+                    ),
+                ]),
+            },
+            metadata: ToolMetadata {
+                may_spawn_processes: false,
+                may_read_files: false,
+                may_write_files: true,
+            },
+            policy: ToolPolicyHints::default(),
+        },
         ToolKind::ListDir => ToolDefinition {
             id: "list_dir".to_string(),
             name: "list_dir".to_string(),
@@ -499,6 +609,8 @@ pub fn builtin_tool_definition_by_handler(handler: &str) -> Option<ToolDefinitio
         "read_file" => Some(builtin_tool_definition(ToolKind::ReadFile)),
         "write_file" => Some(builtin_tool_definition(ToolKind::WriteFile)),
         "replace_in_file" => Some(builtin_tool_definition(ToolKind::ReplaceInFile)),
+        "move_path" => Some(builtin_tool_definition(ToolKind::MovePath)),
+        "remove_path" => Some(builtin_tool_definition(ToolKind::RemovePath)),
         "list_dir" => Some(builtin_tool_definition(ToolKind::ListDir)),
         "search_text" => Some(builtin_tool_definition(ToolKind::SearchText)),
         _ => None,
@@ -523,6 +635,8 @@ mod tests {
                 "read_file",
                 "write_file",
                 "replace_in_file",
+                "move_path",
+                "remove_path",
                 "list_dir",
                 "search_text"
             ]
@@ -599,6 +713,14 @@ mod tests {
             }
             .kind(),
             ToolKind::ReplaceInFile
+        );
+        assert_eq!(
+            ToolInput::MovePath {
+                from: "a".into(),
+                to: "b".into(),
+            }
+            .kind(),
+            ToolKind::MovePath
         );
     }
 }

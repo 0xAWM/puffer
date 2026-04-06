@@ -663,6 +663,99 @@ pub(crate) fn handle_memory_command(
     )
 }
 
+pub(crate) fn handle_session_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<()> {
+    let trimmed = args.trim();
+    match trimmed {
+        "" | "show" => emit_system(state, session_store, render_session_summary(state)),
+        "list" => {
+            let sessions = session_store.list_sessions()?;
+            let mut text = String::from("Sessions:\n");
+            for session in sessions.iter().take(20) {
+                let _ = writeln!(
+                    &mut text,
+                    "{} {}",
+                    session.id,
+                    session.display_name.as_deref().unwrap_or("<unnamed>")
+                );
+            }
+            emit_system(state, session_store, text)
+        }
+        _ if trimmed.starts_with("rename ") => {
+            let name = trimmed.trim_start_matches("rename ").trim();
+            if name.is_empty() {
+                return emit_system(
+                    state,
+                    session_store,
+                    "Usage: /session rename <name>".to_string(),
+                );
+            }
+            session_store.rename_session(state.session.id, name.to_string())?;
+            state.session.display_name = Some(name.to_string());
+            emit_system(state, session_store, format!("Session renamed to `{name}`."))
+        }
+        _ if trimmed.starts_with("note ") => {
+            let note = trimmed.trim_start_matches("note ").trim();
+            if matches!(note, "clear" | "none" | "off") {
+                session_store.set_note(state.session.id, None)?;
+                state.session.note = None;
+                return emit_system(state, session_store, "Cleared session note.".to_string());
+            }
+            session_store.set_note(state.session.id, Some(note.to_string()))?;
+            state.session.note = Some(note.to_string());
+            emit_system(state, session_store, "Updated session note.".to_string())
+        }
+        _ if trimmed.starts_with("slug ") => {
+            let slug = trimmed.trim_start_matches("slug ").trim();
+            if matches!(slug, "clear" | "none" | "off") {
+                session_store.set_slug(state.session.id, None)?;
+                state.session.slug = None;
+                return emit_system(state, session_store, "Cleared session slug.".to_string());
+            }
+            session_store.set_slug(state.session.id, Some(slug.to_string()))?;
+            state.session.slug = Some(slug.to_string());
+            emit_system(state, session_store, format!("Session slug set to `{slug}`."))
+        }
+        _ if trimmed.starts_with("tag add ") => {
+            let tag = trimmed.trim_start_matches("tag add ").trim();
+            if tag.is_empty() {
+                return emit_system(
+                    state,
+                    session_store,
+                    "Usage: /session tag add <tag>".to_string(),
+                );
+            }
+            session_store.add_tag(state.session.id, tag)?;
+            if !state.session.tags.iter().any(|existing| existing == tag) {
+                state.session.tags.push(tag.to_string());
+                state.session.tags.sort();
+            }
+            emit_system(state, session_store, format!("Added session tag `{tag}`."))
+        }
+        _ if trimmed.starts_with("tag remove ") => {
+            let tag = trimmed.trim_start_matches("tag remove ").trim();
+            if tag.is_empty() {
+                return emit_system(
+                    state,
+                    session_store,
+                    "Usage: /session tag remove <tag>".to_string(),
+                );
+            }
+            session_store.remove_tag(state.session.id, tag)?;
+            state.session.tags.retain(|existing| existing != tag);
+            emit_system(state, session_store, format!("Removed session tag `{tag}`."))
+        }
+        _ => emit_system(
+            state,
+            session_store,
+            "Usage: /session [show|list|rename <name>|note <text|clear>|slug <value|clear>|tag add <tag>|tag remove <tag>]".to_string(),
+        ),
+    }
+}
+
 pub(crate) fn handle_plugin_command(
     state: &mut AppState,
     resources: &LoadedResources,
@@ -862,6 +955,23 @@ fn render_memory_summary(state: &AppState) -> String {
         } else {
             state.session.tags.join(", ")
         },
+    )
+}
+
+fn render_session_summary(state: &AppState) -> String {
+    format!(
+        "session_id={}\ncwd={}\ndisplay_name={}\nslug={}\nparent={:?}\ntags={}\nnote={}",
+        state.session.id,
+        state.session.cwd.display(),
+        state.session.display_name.as_deref().unwrap_or("<unnamed>"),
+        state.session.slug.as_deref().unwrap_or("<none>"),
+        state.session.parent_session_id,
+        if state.session.tags.is_empty() {
+            "<none>".to_string()
+        } else {
+            state.session.tags.join(", ")
+        },
+        state.session.note.as_deref().unwrap_or("<none>")
     )
 }
 
