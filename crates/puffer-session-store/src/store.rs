@@ -155,6 +155,37 @@ impl SessionStore {
         Ok(sessions)
     }
 
+    /// Finds the most recent session matching a UUID prefix or display-name substring.
+    pub fn find_session(&self, query: &str) -> Result<Option<SessionSummary>> {
+        let normalized = query.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        let sessions = self.list_sessions()?;
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| session.id.to_string() == normalized)
+            .cloned()
+        {
+            return Ok(Some(session));
+        }
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| session.id.to_string().starts_with(&normalized))
+            .cloned()
+        {
+            return Ok(Some(session));
+        }
+        Ok(sessions.into_iter().find(|session| {
+            session
+                .display_name
+                .as_deref()
+                .map(|name| name.to_lowercase().contains(&normalized))
+                .unwrap_or(false)
+        }))
+    }
+
     /// Creates a new session by forking an existing session and copying its transcript.
     pub fn fork_session(&self, source_session_id: Uuid, cwd: PathBuf) -> Result<SessionMetadata> {
         let source = self.load_session(source_session_id)?;
@@ -336,5 +367,25 @@ mod tests {
         store.set_note(session.id, None).unwrap();
         let cleared = store.load_session(session.id).unwrap();
         assert!(cleared.metadata.note.is_none());
+    }
+
+    #[test]
+    fn find_session_matches_uuid_prefix_and_name() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        fs::create_dir_all(&paths.workspace_config_dir).unwrap();
+        let store = SessionStore::from_paths(&paths).unwrap();
+
+        let session = store.create_session(tempdir.path().join("src")).unwrap();
+        store
+            .rename_session(session.id, "Review session".to_string())
+            .unwrap();
+
+        let prefix = &session.id.to_string()[..8];
+        let by_prefix = store.find_session(prefix).unwrap().unwrap();
+        assert_eq!(by_prefix.id, session.id);
+
+        let by_name = store.find_session("review").unwrap().unwrap();
+        assert_eq!(by_name.id, session.id);
     }
 }
