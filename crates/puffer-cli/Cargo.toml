@@ -24,3 +24,6 @@ puffer-session-store = { path = "../puffer-session-store" }
 puffer-transport-anthropic = { path = "../puffer-transport-anthropic" }
 puffer-tools = { path = "../puffer-tools" }
 puffer-tui = { path = "../puffer-tui" }
+
+[dev-dependencies]
+puffer-test-support = { path = "../puffer-test-support" }
