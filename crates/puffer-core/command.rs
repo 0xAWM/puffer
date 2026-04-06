@@ -1,9 +1,10 @@
 use crate::command_helpers::{
-    copy_last_message, describe_context, describe_git_diff, describe_permissions, describe_plugin,
-    emit_system, execute_skill_command, list_ides, list_mcp_servers, list_skills,
-    rewind_transcript, run_doctor, terminal_setup_advice,
+    append_tool_invocations, copy_last_message, describe_context, describe_git_diff,
+    describe_permissions, describe_plugin, emit_system, execute_skill_command,
+    handle_config_command, handle_keybindings_command, handle_memory_command, list_ides,
+    list_mcp_servers, list_skills, rewind_transcript, run_doctor, terminal_setup_advice,
 };
-use crate::{AppState, MessageRole, ToolInvocation};
+use crate::{AppState, MessageRole};
 use anyhow::Result;
 use puffer_provider_openai::{
     build_authorization_url as build_openai_authorization_url,
@@ -482,30 +483,6 @@ fn execute_prompt_command(
     Ok(())
 }
 
-fn append_tool_invocations(
-    state: &mut AppState,
-    session_store: &SessionStore,
-    invocations: &[ToolInvocation],
-) -> Result<()> {
-    for invocation in invocations {
-        emit_system(state, session_store, format_tool_invocation(invocation))?;
-    }
-    Ok(())
-}
-
-fn format_tool_invocation(invocation: &ToolInvocation) -> String {
-    let status = if invocation.success { "ok" } else { "error" };
-    let output = invocation.output.trim();
-    if output.is_empty() {
-        format!("Tool {} [{}]\ninput: {}", invocation.tool_id, status, invocation.input)
-    } else {
-        format!(
-            "Tool {} [{}]\ninput: {}\n{}",
-            invocation.tool_id, status, invocation.input, output
-        )
-    }
-}
-
 fn execute_local_command(
     state: &mut AppState,
     commands: &[CommandSpec],
@@ -673,19 +650,7 @@ fn execute_local_command(
             session_store,
             "Background tasks:\nqueued=0\nrunning=0\ncompleted=0".to_string(),
         ),
-        "config" => emit_system(
-            state,
-            session_store,
-            format!(
-                "Config summary:\napp_name={}\ndefault_provider={}\ndefault_model={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}",
-                state.config.app_name,
-                state.config.default_provider.as_deref().unwrap_or("<unset>"),
-                state.config.default_model.as_deref().unwrap_or("<unset>"),
-                state.config.theme,
-                state.config.ui.no_alt_screen,
-                state.config.ui.tmux_golden_mode,
-            ),
-        ),
+        "config" => handle_config_command(state, session_store, args),
         "context" => describe_context(state, resources, session_store),
         "agents" => emit_system(
             state,
@@ -693,11 +658,7 @@ fn execute_local_command(
             "Agent management:\ninteractive_agent=default\nforkable_sessions=yes\nnamed_presets=not yet implemented".to_string(),
         ),
         "memory" => handle_memory_command(state, session_store, args),
-        "keybindings" => emit_system(
-            state,
-            session_store,
-            "Keybinding defaults:\nenter=submit\nesc=clear input\nctrl+c=exit".to_string(),
-        ),
+        "keybindings" => handle_keybindings_command(state, session_store),
         "remote-control" => {
             if args.is_empty() {
                 emit_system(
@@ -901,106 +862,6 @@ fn execute_local_command(
             ),
         ),
     }
-}
-
-fn handle_memory_command(
-    state: &mut AppState,
-    session_store: &SessionStore,
-    args: &str,
-) -> Result<()> {
-    let trimmed = args.trim();
-    if trimmed.is_empty() || trimmed == "show" {
-        return emit_system(state, session_store, render_memory_summary(state));
-    }
-
-    if trimmed == "clear" {
-        let tags = state.session.tags.clone();
-        session_store.set_note(state.session.id, None)?;
-        session_store.set_slug(state.session.id, None)?;
-        for tag in &tags {
-            session_store.remove_tag(state.session.id, tag)?;
-        }
-        state.session.note = None;
-        state.session.slug = None;
-        state.session.tags.clear();
-        return emit_system(
-            state,
-            session_store,
-            "Cleared session note, slug, and tags.".to_string(),
-        );
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("note ") {
-        if matches!(rest, "clear" | "none" | "off") {
-            session_store.set_note(state.session.id, None)?;
-            state.session.note = None;
-            return emit_system(state, session_store, "Cleared session note.".to_string());
-        }
-        session_store.set_note(state.session.id, Some(rest.to_string()))?;
-        state.session.note = Some(rest.to_string());
-        return emit_system(state, session_store, format!("Session note set to `{rest}`."));
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("slug ") {
-        if matches!(rest, "clear" | "none" | "off") {
-            session_store.set_slug(state.session.id, None)?;
-            state.session.slug = None;
-            return emit_system(state, session_store, "Cleared session slug.".to_string());
-        }
-        session_store.set_slug(state.session.id, Some(rest.to_string()))?;
-        state.session.slug = Some(rest.to_string());
-        return emit_system(state, session_store, format!("Session slug set to `{rest}`."));
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("tag add ") {
-        let tag = rest.trim();
-        if tag.is_empty() {
-            return emit_system(
-                state,
-                session_store,
-                "Usage: /memory tag add <tag>".to_string(),
-            );
-        }
-        session_store.add_tag(state.session.id, tag)?;
-        if !state.session.tags.iter().any(|existing| existing == tag) {
-            state.session.tags.push(tag.to_string());
-            state.session.tags.sort();
-        }
-        return emit_system(state, session_store, format!("Added session tag `{tag}`."));
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("tag remove ") {
-        let tag = rest.trim();
-        if tag.is_empty() {
-            return emit_system(
-                state,
-                session_store,
-                "Usage: /memory tag remove <tag>".to_string(),
-            );
-        }
-        session_store.remove_tag(state.session.id, tag)?;
-        state.session.tags.retain(|existing| existing != tag);
-        return emit_system(state, session_store, format!("Removed session tag `{tag}`."));
-    }
-
-    emit_system(
-        state,
-        session_store,
-        "Usage: /memory [show|clear|note <text>|note clear|slug <value>|slug clear|tag add <tag>|tag remove <tag>]".to_string(),
-    )
-}
-
-fn render_memory_summary(state: &AppState) -> String {
-    format!(
-        "Session memory summary:\nslug={}\nnote={}\ntags={}",
-        state.session.slug.as_deref().unwrap_or("<none>"),
-        state.session.note.as_deref().unwrap_or("<none>"),
-        if state.session.tags.is_empty() {
-            "<none>".to_string()
-        } else {
-            state.session.tags.join(", ")
-        },
-    )
 }
 
 fn cmd(

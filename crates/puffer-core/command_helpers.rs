@@ -1,10 +1,12 @@
-use crate::{AppState, MessageRole};
+use crate::{AppState, MessageRole, ToolInvocation};
 use anyhow::Result;
 use arboard::Clipboard;
+use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_provider_registry::ProviderRegistry;
 use puffer_resources::{plugin_by_id, plugin_mcp_servers, skill_by_name, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_tools::ToolRegistry;
+use std::fs;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
@@ -331,4 +333,238 @@ pub(crate) fn terminal_setup_advice(state: &AppState) -> String {
         state.config.ui.no_alt_screen,
         state.config.ui.tmux_golden_mode
     )
+}
+
+pub(crate) fn handle_config_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<()> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let config_path = paths.workspace_config_file();
+    let trimmed = args.trim();
+
+    if trimmed.is_empty() || trimmed == "show" {
+        return emit_system(
+            state,
+            session_store,
+            format!(
+                "Config summary:\npath={}\napp_name={}\ndefault_provider={}\ndefault_model={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}",
+                config_path.display(),
+                state.config.app_name,
+                state.config.default_provider.as_deref().unwrap_or("<unset>"),
+                state.config.default_model.as_deref().unwrap_or("<unset>"),
+                state.config.theme,
+                state.config.ui.no_alt_screen,
+                state.config.ui.tmux_golden_mode,
+            ),
+        );
+    }
+
+    if trimmed == "path" {
+        return emit_system(
+            state,
+            session_store,
+            format!("Workspace config path: {}", config_path.display()),
+        );
+    }
+
+    let Some(rest) = trimmed.strip_prefix("set ") else {
+        return emit_system(
+            state,
+            session_store,
+            "Usage: /config [show|path|set <theme|default_provider|default_model|no_alt_screen|tmux_golden_mode> <value>]".to_string(),
+        );
+    };
+    let Some((key, value)) = rest.split_once(' ') else {
+        return emit_system(
+            state,
+            session_store,
+            "Usage: /config set <key> <value>".to_string(),
+        );
+    };
+    let value = value.trim();
+    match key {
+        "theme" => state.config.theme = value.to_string(),
+        "default_provider" => state.config.default_provider = Some(value.to_string()),
+        "default_model" => state.config.default_model = Some(value.to_string()),
+        "no_alt_screen" => state.config.ui.no_alt_screen = parse_bool(value)?,
+        "tmux_golden_mode" => state.config.ui.tmux_golden_mode = parse_bool(value)?,
+        _ => {
+            return emit_system(
+                state,
+                session_store,
+                format!("Unsupported config key {key}."),
+            );
+        }
+    }
+    write_workspace_config(state, &config_path)?;
+    emit_system(
+        state,
+        session_store,
+        format!("Updated {key} in {}.", config_path.display()),
+    )
+}
+
+pub(crate) fn handle_keybindings_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+) -> Result<()> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let keybindings_path = paths.workspace_config_dir.join("keybindings.toml");
+    if !keybindings_path.exists() {
+        fs::write(&keybindings_path, default_keybindings_contents())?;
+    }
+    emit_system(
+        state,
+        session_store,
+        format!(
+            "Keybindings file: {}\n{}",
+            keybindings_path.display(),
+            fs::read_to_string(&keybindings_path)?
+        ),
+    )
+}
+
+pub(crate) fn append_tool_invocations(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    invocations: &[ToolInvocation],
+) -> Result<()> {
+    for invocation in invocations {
+        emit_system(state, session_store, format_tool_invocation(invocation))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn handle_memory_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<()> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "show" {
+        return emit_system(state, session_store, render_memory_summary(state));
+    }
+
+    if trimmed == "clear" {
+        let tags = state.session.tags.clone();
+        session_store.set_note(state.session.id, None)?;
+        session_store.set_slug(state.session.id, None)?;
+        for tag in &tags {
+            session_store.remove_tag(state.session.id, tag)?;
+        }
+        state.session.note = None;
+        state.session.slug = None;
+        state.session.tags.clear();
+        return emit_system(
+            state,
+            session_store,
+            "Cleared session note, slug, and tags.".to_string(),
+        );
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("note ") {
+        if matches!(rest, "clear" | "none" | "off") {
+            session_store.set_note(state.session.id, None)?;
+            state.session.note = None;
+            return emit_system(state, session_store, "Cleared session note.".to_string());
+        }
+        session_store.set_note(state.session.id, Some(rest.to_string()))?;
+        state.session.note = Some(rest.to_string());
+        return emit_system(state, session_store, format!("Session note set to `{rest}`."));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("slug ") {
+        if matches!(rest, "clear" | "none" | "off") {
+            session_store.set_slug(state.session.id, None)?;
+            state.session.slug = None;
+            return emit_system(state, session_store, "Cleared session slug.".to_string());
+        }
+        session_store.set_slug(state.session.id, Some(rest.to_string()))?;
+        state.session.slug = Some(rest.to_string());
+        return emit_system(state, session_store, format!("Session slug set to `{rest}`."));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("tag add ") {
+        let tag = rest.trim();
+        if tag.is_empty() {
+            return emit_system(
+                state,
+                session_store,
+                "Usage: /memory tag add <tag>".to_string(),
+            );
+        }
+        session_store.add_tag(state.session.id, tag)?;
+        if !state.session.tags.iter().any(|existing| existing == tag) {
+            state.session.tags.push(tag.to_string());
+            state.session.tags.sort();
+        }
+        return emit_system(state, session_store, format!("Added session tag `{tag}`."));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("tag remove ") {
+        let tag = rest.trim();
+        if tag.is_empty() {
+            return emit_system(
+                state,
+                session_store,
+                "Usage: /memory tag remove <tag>".to_string(),
+            );
+        }
+        session_store.remove_tag(state.session.id, tag)?;
+        state.session.tags.retain(|existing| existing != tag);
+        return emit_system(state, session_store, format!("Removed session tag `{tag}`."));
+    }
+
+    emit_system(
+        state,
+        session_store,
+        "Usage: /memory [show|clear|note <text>|note clear|slug <value>|slug clear|tag add <tag>|tag remove <tag>]".to_string(),
+    )
+}
+
+fn format_tool_invocation(invocation: &ToolInvocation) -> String {
+    let status = if invocation.success { "ok" } else { "error" };
+    let output = invocation.output.trim();
+    if output.is_empty() {
+        format!("Tool {} [{}]\ninput: {}", invocation.tool_id, status, invocation.input)
+    } else {
+        format!(
+            "Tool {} [{}]\ninput: {}\n{}",
+            invocation.tool_id, status, invocation.input, output
+        )
+    }
+}
+
+fn render_memory_summary(state: &AppState) -> String {
+    format!(
+        "Session memory summary:\nslug={}\nnote={}\ntags={}",
+        state.session.slug.as_deref().unwrap_or("<none>"),
+        state.session.note.as_deref().unwrap_or("<none>"),
+        if state.session.tags.is_empty() {
+            "<none>".to_string()
+        } else {
+            state.session.tags.join(", ")
+        },
+    )
+}
+
+fn parse_bool(value: &str) -> Result<bool> {
+    match value {
+        "true" | "on" | "1" => Ok(true),
+        "false" | "off" | "0" => Ok(false),
+        _ => anyhow::bail!("expected a boolean value, got `{value}`"),
+    }
+}
+
+fn write_workspace_config(state: &AppState, path: &PathBuf) -> Result<()> {
+    fs::write(path, toml::to_string_pretty(&state.config)?)?;
+    Ok(())
+}
+
+fn default_keybindings_contents() -> &'static str {
+    "submit = \"enter\"\nclear_input = \"esc\"\nexit = \"ctrl+c\"\n"
 }

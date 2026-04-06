@@ -97,6 +97,11 @@ fn execute_anthropic(
 ) -> Result<TurnExecution> {
     let auth = anthropic_auth_for_provider(auth_store, &provider.id)?;
     let registry = ToolRegistry::from_resources(resources);
+    let mut messages = vec![json!({
+        "role": "user",
+        "content": input,
+    })];
+    let mut invocations = Vec::new();
     let request = build_messages_request(
         &AnthropicRequestConfig {
             base_url: provider.base_url.clone(),
@@ -125,71 +130,49 @@ fn execute_anthropic(
         },
     )?;
 
-    let mut body = json!({
-        "model": model_id,
-        "max_tokens": 1024,
-        "messages": [
-            {
-                "role": "user",
-                "content": input,
-            }
-        ],
-        "system": [
-            {
-                "type": "text",
-                "text": request.attribution_prefix_block.clone(),
-            }
-        ]
-    });
-
-    let tools = anthropic_tool_definitions(&registry);
-    if !tools.is_empty() {
-        body["tools"] = Value::Array(tools);
-    }
-
-    let response = send_http_request(&request.url, &request.headers, &body.to_string(), true)?;
-    if let Some(tool_results) = execute_anthropic_tool_calls(&response, &registry, &state.cwd)? {
-        let follow_up_body = json!({
+    for _ in 0..8 {
+        let mut body = json!({
             "model": model_id,
             "max_tokens": 1024,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": input,
-                },
-                {
-                    "role": "assistant",
-                    "content": response.get("content").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
-                },
-                {
-                    "role": "user",
-                    "content": tool_results.results,
-                }
-            ],
+            "messages": messages,
             "system": [
                 {
                     "type": "text",
-                    "text": request.attribution_prefix_block,
+                    "text": request.attribution_prefix_block.clone(),
                 }
-            ],
-            "tools": anthropic_tool_definitions(&registry),
+            ]
         });
-        let follow_up = send_http_request(
-            &request.url,
-            &request.headers,
-            &follow_up_body.to_string(),
-            true,
-        )?;
+
+        let tools = anthropic_tool_definitions(&registry);
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools);
+        }
+
+        let response = send_http_request(&request.url, &request.headers, &body.to_string(), true)?;
+        if let Some(tool_results) = execute_anthropic_tool_calls(&response, &registry, &state.cwd)?
+        {
+            invocations.extend(tool_results.invocations);
+            messages.push(json!({
+                "role": "assistant",
+                "content": response
+                    .get("content")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
+            }));
+            messages.push(json!({
+                "role": "user",
+                "content": tool_results.results,
+            }));
+            continue;
+        }
+
         return Ok(TurnExecution {
-            assistant_text: parse_anthropic_text(&follow_up)?,
-            tool_invocations: tool_results.invocations,
+            assistant_text: parse_anthropic_text(&response)?,
+            tool_invocations: invocations,
         });
     }
 
-    Ok(TurnExecution {
-        assistant_text: parse_anthropic_text(&response)?,
-        tool_invocations: Vec::new(),
-    })
+    bail!("anthropic tool loop exceeded iteration limit")
 }
 
 fn execute_openai(
@@ -208,74 +191,56 @@ fn execute_openai(
     };
     let registry = ToolRegistry::from_resources(resources);
     let tools = openai_tool_definitions(&registry);
-    let response = if tools.is_empty() {
-        let request = build_responses_request(
-            &request_config,
-            &OpenAIResponsesRequest {
-                model: model_id.clone(),
-                input: input.to_string(),
-            },
-        )?;
-        send_http_request(&request.url, &request.headers, &request.body, false)?
-    } else {
-        let request = build_tool_responses_request(
-            &request_config,
-            &OpenAIResponsesToolRequest {
-                model: model_id.clone(),
-                input: json!(input),
-                tools,
-                tool_choice: Some(OpenAIResponsesToolChoice::Mode(
-                    OpenAIResponsesToolChoiceMode::Auto,
-                )),
-                previous_response_id: None,
-            },
-        )?;
-        send_http_request(&request.url, &request.headers, &request.body, false)?
-    };
+    let mut previous_response_id = None;
+    let mut next_input = json!(input);
+    let mut invocations = Vec::new();
 
-    let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
-    let tool_calls = extract_responses_tool_calls(&parsed)?;
-    if tool_calls.is_empty() {
-        return Ok(TurnExecution {
-            assistant_text: parse_openai_text(&response)
-                .or_else(|_| parse_openai_text_fallback(&response, state))?,
-            tool_invocations: Vec::new(),
-        });
+    for _ in 0..8 {
+        let response = if tools.is_empty() && previous_response_id.is_none() {
+            let request = build_responses_request(
+                &request_config,
+                &OpenAIResponsesRequest {
+                    model: model_id.clone(),
+                    input: input.to_string(),
+                },
+            )?;
+            send_http_request(&request.url, &request.headers, &request.body, false)?
+        } else {
+            let request = build_tool_responses_request(
+                &request_config,
+                &OpenAIResponsesToolRequest {
+                    model: model_id.clone(),
+                    input: next_input.clone(),
+                    tools: tools.clone(),
+                    tool_choice: Some(OpenAIResponsesToolChoice::Mode(
+                        OpenAIResponsesToolChoiceMode::Auto,
+                    )),
+                    previous_response_id: previous_response_id.clone(),
+                },
+            )?;
+            send_http_request(&request.url, &request.headers, &request.body, false)?
+        };
+
+        let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
+        let tool_calls = extract_responses_tool_calls(&parsed)?;
+        if tool_calls.is_empty() {
+            return Ok(TurnExecution {
+                assistant_text: parse_openai_assistant_text(&parsed, &response, state)?,
+                tool_invocations: invocations,
+            });
+        }
+
+        let response_id = parsed
+            .id
+            .clone()
+            .ok_or_else(|| anyhow!("OpenAI response missing id for tool continuation"))?;
+        let tool_results = execute_openai_tool_calls(&tool_calls, &registry, &state.cwd)?;
+        invocations.extend(tool_results.invocations);
+        previous_response_id = Some(response_id);
+        next_input = json!(tool_results.outputs);
     }
 
-    let tool_results = execute_openai_tool_calls(&tool_calls, &registry, &state.cwd)?;
-    let follow_up = build_tool_responses_request(
-        &request_config,
-        &OpenAIResponsesToolRequest {
-            model: model_id.clone(),
-            input: json!(tool_results.outputs),
-            tools: openai_tool_definitions(&registry),
-            tool_choice: Some(OpenAIResponsesToolChoice::Mode(
-                OpenAIResponsesToolChoiceMode::Auto,
-            )),
-            previous_response_id: parsed.id.clone(),
-        },
-    )?;
-    let follow_up_response = send_http_request(
-        &follow_up.url,
-        &follow_up.headers,
-        &follow_up.body,
-        false,
-    )?;
-    let follow_up_parsed = parse_responses_response(&serde_json::to_string(&follow_up_response)?)?;
-    let assistant_text = {
-        let text = extract_responses_text(&follow_up_parsed);
-        if text.trim().is_empty() {
-            parse_openai_text(&follow_up_response)
-                .or_else(|_| parse_openai_text_fallback(&follow_up_response, state))?
-        } else {
-            text
-        }
-    };
-    Ok(TurnExecution {
-        assistant_text,
-        tool_invocations: tool_results.invocations,
-    })
+    bail!("openai tool loop exceeded iteration limit")
 }
 
 fn send_http_request(
@@ -555,6 +520,19 @@ fn parse_openai_text(response: &Value) -> Result<String> {
         bail!("openai response did not contain output text");
     }
     Ok(parts.join("\n"))
+}
+
+fn parse_openai_assistant_text(
+    parsed: &puffer_provider_openai::OpenAIResponsesResponse,
+    response: &Value,
+    state: &AppState,
+) -> Result<String> {
+    let text = extract_responses_text(parsed);
+    if text.trim().is_empty() {
+        parse_openai_text(response).or_else(|_| parse_openai_text_fallback(response, state))
+    } else {
+        Ok(text)
+    }
 }
 
 fn parse_openai_text_fallback(response: &Value, state: &AppState) -> Result<String> {

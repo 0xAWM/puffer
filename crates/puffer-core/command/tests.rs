@@ -231,6 +231,67 @@ fn memory_command_updates_session_metadata() {
 }
 
 #[test]
+fn config_command_writes_workspace_config() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/config set theme harbor",
+    )
+    .unwrap();
+
+    let config_text = std::fs::read_to_string(paths.workspace_config_file()).unwrap();
+    assert!(config_text.contains("theme = \"harbor\""));
+}
+
+#[test]
+fn keybindings_command_creates_workspace_file() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &ProviderRegistry::new(),
+        &AuthStore::default(),
+        &session_store,
+        "/keybindings",
+    )
+    .unwrap();
+
+    let keybindings_path = paths.workspace_config_dir.join("keybindings.toml");
+    let keybindings = std::fs::read_to_string(keybindings_path).unwrap();
+    assert!(keybindings.contains("submit = \"enter\""));
+}
+
+#[test]
 fn prompt_commands_append_user_message_and_surface_runtime_failures() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
