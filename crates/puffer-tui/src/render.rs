@@ -117,10 +117,30 @@ pub(crate) fn render(
         .block(Block::default().title("Input").borders(Borders::ALL));
     frame.render_widget(input_widget, layout[2]);
 
-    let footer = Paragraph::new(
-        "Enter submits  Esc clears  Ctrl+C exits  / commands  tools via /permissions  auth via /login",
-    )
-        .block(Block::default().title("Footer").borders(Borders::ALL));
+    let footer_text = if state.statusline_enabled {
+        format!(
+            "provider={}  model={}  effort={}  fast={}  sandbox={}  tools={}  skills={}  plugins={}",
+            state.current_provider.as_deref().unwrap_or("<unset>"),
+            state.current_model.as_deref().unwrap_or("<unset>"),
+            state.effort_level,
+            if state.fast_mode { "on" } else { "off" },
+            state.sandbox_mode,
+            resources.tools.len(),
+            resources.skills.len(),
+            resources.plugins.len(),
+        )
+    } else {
+        "Enter submits  Esc clears  Ctrl+C exits  / commands".to_string()
+    };
+    let footer = Paragraph::new(footer_text).block(
+        Block::default()
+            .title(if state.statusline_enabled {
+                "Status Line"
+            } else {
+                "Footer"
+            })
+            .borders(Borders::ALL),
+    );
     frame.render_widget(footer, layout[3]);
 
     if input.starts_with('/') {
