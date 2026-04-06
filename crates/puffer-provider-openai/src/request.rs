@@ -247,12 +247,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            !request
-                .headers
-                .iter()
-                .any(|(key, _)| key.eq_ignore_ascii_case("authorization"))
-        );
+        assert!(!request
+            .headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("authorization")));
     }
 
     #[test]
