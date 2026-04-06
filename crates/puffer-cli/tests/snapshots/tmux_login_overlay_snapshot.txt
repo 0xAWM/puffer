@@ -1,46 +1,47 @@
-┌Header───────────────────────────────────────────────────┐
-│Puffer Code  session=session-<id>            │
-│cwd=workspace  msgs=0                                    │
-│provider=anthropic  model=<unset>  auth=api-key          │
-│remote=local                                             │
-└─────────────────────────────────────────────────────────┘
-┌Transcript─────────────────────────────┐┌Session─────────┐
-│N┌Login Provider─────────────────────┐ ││Name:           │
-│s│anthropic  Anthropic               │ ││session-<id>│
-│ │cerebras  Cerebras                 │ ││<id>...      │
-│ │groq  Groq                         │ ││Id: <id>    │
-│ │kimi-coding  Kimi Coding           │ ││Parent: root    │
-│ │minimax-cn  MiniMax CN             │ ││Dir: workspace  │
-│ │minimax  MiniMax                   │ ││Transcript: 0   │
-│ │mistral  Mistral                   │ │└────────────────┘
-│ │openai  OpenAI                     │ │┌Tools───────────┐
-│ │openrouter  OpenRouter             │ ││Configured: 8   │
-│ │vercel-ai-gateway  Vercel AI Gatewa│ ││Executable: 8   │
-│ │xai  xAI                           │ ││Kinds: bash=on  │
-│ └───────────────────────────────────┘ ││read=on write=on│
-│                                       ││replace=on      │
-│                                       ││move=on         │
-│                                       ││remove=on       │
-│                                       ││list=on         │
-│                                       │└────────────────┘
-│                                       │┌Inspector───────┐
-│                                       ││Provider:       │
-│                                       ││anthropic       │
-│                                       ││Model: <unset>  │
-│                                       ││Auth: api-key   │
-│                                       ││Auth providers: │
-│                                       ││anthropic       │
-│                                       ││Theme: puffer   │
-│                                       ││Effort: medium  │
-│                                       ││Fast mode: off  │
-│                                       ││Vim mode: off   │
-│                                       ││Status line: on │
-└───────────────────────────────────────┘└────────────────┘
-┌Composer─────────────────────────────────────────────────┐
-│<type /help, /review, or !pwd>                           │
-└─────────────────────────────────────────────────────────┘
-┌Status Line──────────────────────────────────────────────┐
-│auth=api-key  provider=anthropic  model=<unset>          │
-│transcript=0                                             │
-│tools=8/8 ready  shell-runs=0  fast=off  vim=off         │
-└─────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+    ╭ Puffer Code ────────────────────────────────────╮
+    │                                                 │
+    │             Welcome to Puffer Code              │
+    │                                                 │
+    ╭Login Provider───────────────────────────────────╮
+    │anthropic  Anthropic                             │
+    │cerebras  Cerebras   o      e                    │
+    │groq  Groq                                       │
+    ╰kimi-coding──Kimi─Coding─────────────────────────╯
+    │minimax-cn  MiniMax CN                           │
+    │minimax  MiniMax                                 │
+    │mistral  Mistral                                 │
+    │openai  OpenAI                                   │
+    │openrouter  OpenRouter                           │
+    │vercel-ai-gateway  Vercel AI Gateway             │
+    │xai  xAI                                         │
+    ╰─────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──                                                       ──
+an───────────────────────────────────────────────────────
+wothropic · <unset> · auth api-key · tools 8/8           rk
+? /loginortcuts · /help · /review · !pwd
+? for shortcuts · /help · /review · !pwd

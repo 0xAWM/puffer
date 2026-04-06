@@ -37,10 +37,8 @@ fn render_shows_command_popup_for_slash_input() {
         })
         .unwrap();
     let rendered = buffer_to_string(terminal.backend().buffer());
-    assert!(rendered.contains("Commands"));
-    assert!(rendered.contains("Inspector"));
     assert!(rendered.contains("/review"));
-    assert!(rendered.contains("prompt"));
+    assert!(rendered.contains("Review the current worktree"));
 }
 
 #[test]
@@ -269,10 +267,9 @@ fn render_shows_status_line_when_enabled() {
         })
         .unwrap();
     let rendered = buffer_to_string(terminal.backend().buffer());
-    assert!(rendered.contains("Status Line"));
-    assert!(rendered.contains("provider=anthropic"));
-    assert!(rendered.contains("tools=3/3"));
-    assert!(rendered.contains("Inspector"));
+    assert!(rendered.contains("anthropic · anthropic/claude-sonnet-4-5 · auth"));
+    assert!(rendered.contains("/help · /review · !pwd"));
+    assert!(rendered.contains("workspace-write"));
 }
 
 fn sample_state() -> AppState {

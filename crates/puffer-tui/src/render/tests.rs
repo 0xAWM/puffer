@@ -1,6 +1,7 @@
 use super::*;
 use insta::assert_snapshot;
 use puffer_config::PufferConfig;
+use puffer_core::CommandKind;
 use puffer_provider_registry::{
     AuthMode, ModelDescriptor, OAuthCredential, ProviderDescriptor, ProviderRegistry,
 };
@@ -22,22 +23,7 @@ fn session_lines_include_lineage_tags_and_note() {
 }
 
 #[test]
-fn tool_lines_include_registry_status_and_shell_activity() {
-    let state = sample_state();
-    let resources = sample_resources();
-    let registry = ToolRegistry::from_resources(&resources);
-    let lines = tool_lines(&state, &resources, &registry).join("\n");
-    assert!(lines.contains("Configured: 4"));
-    assert!(lines.contains("Executable: 3"));
-    assert!(lines.contains("Kinds: bash=on read=on write=on"));
-    assert!(lines.contains("move=off"));
-    assert!(lines.contains("remove=off"));
-    assert!(lines.contains("Shell runs: 1"));
-    assert!(lines.contains("Last shell: git status"));
-}
-
-#[test]
-fn header_snapshot_reports_runtime_counts() {
+fn header_snapshot_reports_compact_status() {
     let state = sample_state();
     let resources = sample_resources();
     let auth_store = sample_auth_store();
@@ -48,83 +34,37 @@ fn header_snapshot_reports_runtime_counts() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-                                                snapshot,
-                                                @r"
-Puffer Code  session=Shipyard  cwd=puffer  msgs=2
-provider=anthropic  model=anthropic/claude-sonnet-4-5  auth=api-key  remote=dockyard@staging
-slug=shipyard-run  tags=review,tmux  mascot=Clawd
-theme=harbor  effort=high  tools=3/4  prompts=2
+        snapshot,
+        @r"
+Puffer Code · Shipyard · anthropic/claude-sonnet-4-5 · auth api-key · tools 3/4 · dockyard@staging
 "
-                                            );
+    );
 }
 
 #[test]
-fn inspector_snapshot_reports_slash_state() {
-    let state = sample_state();
-    let resources = sample_resources();
-    let providers = sample_providers();
-    let auth_store = sample_auth_store();
-    let snapshot = inspector_lines(
-        &state,
-        &resources,
-        &providers,
-        &auth_store,
-        "/re",
-        &sample_commands(),
-    )
-    .join("\n");
-    assert_snapshot!(
-                                                snapshot,
-                                                @r"
-Provider: anthropic
-Model: anthropic/claude-sonnet-4-5
-Auth: api-key
-Auth providers: anthropic,openai
-Theme: harbor
-Effort: high
-Fast mode: on
-Vim mode: on
-Status line: on
-Providers loaded: 2
-Prompts: 2
-Resources: skills=2 plugins=1 mcp=1 ides=1
-Slash filter: /re
-Slash matches: 2 best=/review
-"
-                                            );
-}
-
-#[test]
-fn footer_snapshot_reports_slash_hint_and_tool_state() {
+fn footer_snapshot_reports_compact_prompt_rail() {
     let state = sample_state();
     let resources = sample_resources();
     let auth_store = sample_auth_store();
     let registry = ToolRegistry::from_resources(&resources);
-    let snapshot = footer_lines(
-        &state,
-        &resources,
-        &auth_store,
-        &registry,
-        "/re",
-        &sample_commands(),
-    )
-    .into_iter()
-    .map(|line| line.to_string())
-    .collect::<Vec<_>>()
-    .join("\n");
+    let snapshot = footer_lines(&state, &resources, &auth_store, &registry, "/re", &sample_commands())
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert_snapshot!(
-                                                snapshot,
-                                                @r"
-auth=api-key  provider=anthropic  model=anthropic/claude-sonnet-4-5  transcript=2
-tools=3/4 ready  shell-runs=1  fast=on  vim=on  sandbox=workspace-write
-slash=/re matches=2 best=/review  Enter submits  Esc clears
+        snapshot,
+        @r"
+anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 3/4
+puffer · shell 1 · prompts 2 · 2 workdirs · dockyard@staging · sandbox workspace-write
+slash /re · 2 matches · best /review · Enter submits · Esc clears
 "
-                                            );
+    );
 }
 
 #[test]
-fn render_draws_session_tool_and_status_surfaces() {
-    let backend = TestBackend::new(120, 36);
+fn render_draws_sparse_transcript_and_popup() {
+    let backend = TestBackend::new(100, 28);
     let mut terminal = Terminal::new(backend).unwrap();
     let state = sample_state();
     let resources = sample_resources();
@@ -149,12 +89,45 @@ fn render_draws_session_tool_and_status_surfaces() {
         .unwrap();
 
     let rendered = terminal_view(&terminal);
-    assert!(rendered.contains("Session"));
-    assert!(rendered.contains("Tools"));
-    assert!(rendered.contains("Inspector"));
-    assert!(rendered.contains("Status Line"));
-    assert!(rendered.contains("slash=/re matches=2 best=/review"));
-    assert!(rendered.contains("Commands"));
+    assert!(rendered.contains("Puffer Code"));
+    assert!(rendered.contains("working tree clean"));
+    assert!(rendered.contains("/review"));
+    assert!(!rendered.contains("Session"));
+    assert!(!rendered.contains("Tools"));
+    assert!(!rendered.contains("Inspector"));
+}
+
+#[test]
+fn render_empty_state_shows_welcome_card() {
+    let backend = TestBackend::new(100, 28);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.transcript.clear();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            )
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    assert!(rendered.contains("Welcome to Puffer Code"));
+    assert!(rendered.contains("Clawd on duty"));
+    assert!(rendered.contains("? for shortcuts"));
 }
 
 fn sample_state() -> AppState {
@@ -190,6 +163,7 @@ fn sample_state() -> AppState {
     state.vim_mode = true;
     state.remote_name = Some("dockyard".to_string());
     state.remote_environment = Some("staging".to_string());
+    state.sandbox_mode = "workspace-write".to_string();
     state.working_dirs = vec![
         PathBuf::from("/tmp/puffer"),
         PathBuf::from("/tmp/puffer/ref"),

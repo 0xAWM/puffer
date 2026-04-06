@@ -1,13 +1,14 @@
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
 use crate::{ModelPickerEntry, OverlayState};
-use puffer_core::{AppState, CommandKind, CommandSpec, MessageRole, RenderedMessage};
+use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage};
 use puffer_provider_registry::{AuthStore, StoredCredential};
 use puffer_resources::LoadedResources;
-use puffer_tools::{ToolKind, ToolRegistry};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use puffer_tools::ToolRegistry;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::symbols::border;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Text};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::cell::RefCell;
@@ -29,7 +30,7 @@ pub(crate) fn render(
     frame: &mut Frame<'_>,
     state: &AppState,
     resources: &LoadedResources,
-    providers: &puffer_provider_registry::ProviderRegistry,
+    _providers: &puffer_provider_registry::ProviderRegistry,
     auth_store: &AuthStore,
     input: &str,
     cursor: usize,
@@ -38,116 +39,146 @@ pub(crate) fn render(
     commands: &[CommandSpec],
 ) {
     let tool_registry = ToolRegistry::from_resources(resources);
+    let header_height = if state.transcript.is_empty() { 0 } else { 1 };
+    let footer_height = if state.statusline_enabled { 4 } else { 3 };
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),
-            Constraint::Min(10),
-            Constraint::Length(3),
-            Constraint::Length(5),
+            Constraint::Length(header_height),
+            Constraint::Min(8),
+            Constraint::Length(footer_height),
         ])
         .split(frame.area());
 
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(layout[1]);
+    if header_height > 0 {
+        frame.render_widget(
+            Paragraph::new(Text::from(header_lines(
+                state,
+                resources,
+                auth_store,
+                &tool_registry,
+            )))
+            .style(Style::default().add_modifier(Modifier::DIM)),
+            layout[0],
+        );
+    }
 
-    let sidebar = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(9),
-            Constraint::Length(10),
-            Constraint::Min(10),
-        ])
-        .split(body[1]);
-
-    let header = Paragraph::new(Text::from(header_lines(
-        state,
-        resources,
-        auth_store,
-        &tool_registry,
-    )))
-    .wrap(Wrap { trim: false })
-    .block(Block::default().title("Header").borders(Borders::ALL));
-    frame.render_widget(header, layout[0]);
-
-    let transcript_widget = Paragraph::new(transcript_text(state))
-        .scroll((scroll_offset, 0))
-        .wrap(Wrap { trim: false })
-        .block(Block::default().title("Transcript").borders(Borders::ALL));
-    frame.render_widget(transcript_widget, body[0]);
-
-    let session = Paragraph::new(session_lines(state).join("\n"))
-        .wrap(Wrap { trim: false })
-        .block(Block::default().title("Session").borders(Borders::ALL));
-    frame.render_widget(session, sidebar[0]);
-
-    let tools = Paragraph::new(tool_lines(state, resources, &tool_registry).join("\n"))
-        .wrap(Wrap { trim: false })
-        .block(Block::default().title("Tools").borders(Borders::ALL));
-    frame.render_widget(tools, sidebar[1]);
-
-    let inspector = Paragraph::new(
-        inspector_lines(state, resources, providers, auth_store, input, commands).join("\n"),
-    )
-    .wrap(Wrap { trim: false })
-    .block(Block::default().title("Inspector").borders(Borders::ALL));
-    frame.render_widget(inspector, sidebar[2]);
-
-    let input_text = if input.is_empty() {
-        "<type /help, /review, or !pwd>"
+    if state.transcript.is_empty() {
+        render_empty_state(frame, layout[1], state);
     } else {
-        input
+        frame.render_widget(
+            Paragraph::new(transcript_text(state))
+                .scroll((scroll_offset, 0))
+                .wrap(Wrap { trim: false }),
+            layout[1],
+        );
+    }
+
+    let footer_block = Block::default().borders(Borders::TOP);
+    frame.render_widget(&footer_block, layout[2]);
+    let footer_area = footer_block.inner(layout[2]);
+    let footer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if state.statusline_enabled {
+            [
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+            .as_ref()
+        } else {
+            [
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(0),
+            ]
+            .as_ref()
+        })
+        .split(footer_area);
+
+    if state.statusline_enabled {
+        frame.render_widget(
+            Paragraph::new(status_primary_line(
+                state,
+                resources,
+                auth_store,
+                &tool_registry,
+            ))
+            .style(Style::default().add_modifier(Modifier::DIM)),
+            footer[0],
+        );
+        frame.render_widget(
+            Paragraph::new(status_secondary_line(state, resources, &tool_registry))
+                .style(Style::default().add_modifier(Modifier::DIM)),
+            footer[1],
+        );
+    }
+
+    let prompt_row = if state.statusline_enabled {
+        footer[2]
+    } else {
+        footer[0]
     };
-    let input_widget =
-        Paragraph::new(input_text).block(Block::default().title("Composer").borders(Borders::ALL));
-    frame.render_widget(input_widget, layout[2]);
-    let max_cursor = usize::from(layout[2].width.saturating_sub(3));
+    let hint_row = if state.statusline_enabled {
+        footer[3]
+    } else {
+        footer[1]
+    };
+    let summary_row = if state.statusline_enabled {
+        None
+    } else {
+        Some(footer[2])
+    };
+
+    frame.render_widget(Paragraph::new(prompt_line(input)), prompt_row);
+    let max_cursor = usize::from(prompt_row.width.saturating_sub(3));
     frame.set_cursor_position((
-        layout[2].x + 1 + cursor.min(max_cursor) as u16,
-        layout[2].y + 1,
+        prompt_row.x + 2 + cursor.min(max_cursor) as u16,
+        prompt_row.y,
     ));
 
-    let footer_title = if state.statusline_enabled {
-        "Status Line"
-    } else {
-        "Footer"
-    };
-    let footer = Paragraph::new(Text::from(footer_lines(
-        state,
-        resources,
-        auth_store,
-        &tool_registry,
-        input,
-        commands,
-    )))
-    .wrap(Wrap { trim: false })
-    .block(Block::default().title(footer_title).borders(Borders::ALL));
-    frame.render_widget(footer, layout[3]);
+    frame.render_widget(
+        Paragraph::new(hint_line(input, commands)).style(Style::default().add_modifier(Modifier::DIM)),
+        hint_row,
+    );
+    if let Some(summary_row) = summary_row {
+        frame.render_widget(
+            Paragraph::new(status_primary_line(
+                state,
+                resources,
+                auth_store,
+                &tool_registry,
+            ))
+            .style(Style::default().add_modifier(Modifier::DIM)),
+            summary_row,
+        );
+    }
 
     if input.starts_with('/') {
-        render_command_popup(frame, body[0], input, slash_selection, commands);
+        render_command_popup(frame, layout[1], prompt_row, input, slash_selection, commands);
     }
     ACTIVE_OVERLAY.with(|value| {
         if let Some(overlay) = value.borrow().as_ref() {
-            render_overlay(frame, body[0], overlay);
+            render_overlay(frame, layout[1], overlay);
         }
     });
 }
 
 fn transcript_text(state: &AppState) -> Text<'static> {
     if state.transcript.is_empty() {
-        return Text::from("No transcript yet. Type a prompt or a slash command.");
+        return Text::default();
     }
 
-    Text::from(
-        state
-            .transcript
-            .iter()
-            .flat_map(render_transcript_message)
-            .collect::<Vec<_>>(),
-    )
+    let mut lines = Vec::new();
+    for (index, message) in state.transcript.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::default());
+        }
+        lines.extend(render_transcript_message(message));
+    }
+    Text::from(lines)
 }
 
 pub(crate) fn transcript_line_count(state: &AppState) -> u16 {
@@ -155,24 +186,26 @@ pub(crate) fn transcript_line_count(state: &AppState) -> u16 {
 }
 
 fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
-    let prefix = match message.role {
-        MessageRole::User => "You",
-        MessageRole::Assistant => "Puffer",
-        MessageRole::System => "System",
+    let (first_prefix, continuation_prefix) = match message.role {
+        MessageRole::User => ("› ", "  "),
+        MessageRole::Assistant => ("", "  "),
+        MessageRole::System => ("· ", "  "),
     };
     render_markdown(&message.text)
         .lines
         .into_iter()
         .enumerate()
         .map(|(index, line)| {
-            if index == 0 {
-                let mut spans = vec![format!("{prefix}: ").into()];
+            if index == 0 && !first_prefix.is_empty() {
+                let mut spans = vec![Span::raw(first_prefix.to_string())];
+                spans.extend(line.spans);
+                Line::from(spans)
+            } else if index > 0 && !continuation_prefix.is_empty() {
+                let mut spans = vec![Span::raw(continuation_prefix.to_string())];
                 spans.extend(line.spans);
                 Line::from(spans)
             } else {
-                let mut spans = vec!["        ".into()];
-                spans.extend(line.spans);
-                Line::from(spans)
+                line
             }
         })
         .collect()
@@ -184,47 +217,133 @@ fn header_lines(
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
 ) -> Vec<Line<'static>> {
-    let session_name = session_name(state);
+    let mut line = format!(
+        "Puffer Code · {} · {} · auth {} · tools {}/{}",
+        truncate(&session_name(state), 18),
+        truncate(current_model(state), 28),
+        auth_status(state, auth_store),
+        tool_status(tool_registry).executable,
+        resources.tools.len(),
+    );
     let remote = remote_label(state);
-    let tool_status = tool_status(tool_registry);
-    vec![
-        Line::from(format!(
-            "Puffer Code  session={}  cwd={}  msgs={}",
-            truncate(&session_name, 24),
-            truncate(&path_tail(&state.session.cwd), 24),
-            state.transcript.len(),
-        )),
-        Line::from(format!(
-            "provider={}  model={}  auth={}  remote={}",
-            current_provider(state),
-            truncate(current_model(state), 34),
-            auth_status(state, auth_store),
-            truncate(&remote, 24),
-        )),
-        Line::from(format!(
-            "slug={}  tags={}  mascot={}",
-            state.session.slug.as_deref().unwrap_or("-"),
-            truncate(&format_tag_summary(&state.session.tags), 24),
-            mascot_label(state),
-        )),
-        Line::from(format!(
-            "theme={}  effort={}  tools={}/{}  prompts={}",
-            state.config.theme,
-            state.effort_level,
-            tool_status.executable,
-            resources.tools.len(),
-            resources.prompts.len(),
-        )),
-    ]
+    if remote != "local" {
+        line.push_str(&format!(" · {}", truncate(&remote, 18)));
+    }
+    vec![Line::from(line)]
 }
 
+fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let card_width = area.width.saturating_sub(8).min(58).max(24);
+    let card_height = area.height.min(9);
+    let card_area = Rect {
+        x: area.x + area.width.saturating_sub(card_width) / 2,
+        y: area.y + area.height.saturating_sub(card_height) / 3,
+        width: card_width,
+        height: card_height,
+    };
+    let model = if current_model(state) == "<unset>" {
+        "/model to choose a model".to_string()
+    } else {
+        truncate(current_model(state), 34)
+    };
+    let mascot = if state.config.mascot.enabled {
+        format!("{} on duty", state.config.mascot.display_name)
+    } else {
+        "Mascot disabled".to_string()
+    };
+    let text = Text::from(vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Welcome to Puffer Code",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(mascot),
+        Line::from(model),
+        Line::from(path_tail(&state.cwd)),
+        Line::from(""),
+        Line::from("? for shortcuts · /help to begin"),
+    ]);
+    frame.render_widget(Clear, card_area);
+    frame.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .title(" Puffer Code ")
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED),
+            ),
+        card_area,
+    );
+}
+
+fn prompt_line(input: &str) -> Line<'static> {
+    if input.is_empty() {
+        Line::from(vec![
+            Span::raw("❯ "),
+            Span::styled(
+                "Review changes, ask a question, or type /",
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ])
+    } else {
+        Line::from(format!("❯ {input}"))
+    }
+}
+
+fn status_primary_line(
+    state: &AppState,
+    resources: &LoadedResources,
+    auth_store: &AuthStore,
+    tool_registry: &ToolRegistry,
+) -> String {
+    format!(
+        "{} · {} · auth {} · tools {}/{}",
+        truncate(current_provider(state), 18),
+        truncate(current_model(state), 28),
+        auth_status(state, auth_store),
+        tool_status(tool_registry).executable,
+        resources.tools.len(),
+    )
+}
+
+fn status_secondary_line(
+    state: &AppState,
+    resources: &LoadedResources,
+    tool_registry: &ToolRegistry,
+) -> String {
+    let mut line = format!(
+        "{} · shell {} · prompts {} · {} workdirs",
+        truncate(&path_tail(&state.cwd), 18),
+        shell_activity(&state.transcript).total_runs,
+        resources.prompts.len(),
+        state.working_dirs.len(),
+    );
+    let remote = remote_label(state);
+    if remote != "local" {
+        line.push_str(&format!(" · {}", truncate(&remote, 18)));
+    }
+    if state.statusline_enabled {
+        line.push_str(&format!(
+            " · sandbox {}",
+            truncate(&state.sandbox_mode, 18)
+        ));
+    }
+    if tool_status(tool_registry).executable == 0 {
+        line.push_str(" · no tools");
+    }
+    line
+}
+
+#[cfg(test)]
 fn session_lines(state: &AppState) -> Vec<String> {
     let parent = state
         .session
         .parent_session_id
         .map(|value| short_id(&value.to_string()))
         .unwrap_or_else(|| "root".to_string());
-    let note = state.session.note.as_deref().unwrap_or("-");
     vec![
         format!("Name: {}", truncate(&session_name(state), 26)),
         format!("Id: {}", short_id(&state.session.id.to_string())),
@@ -236,104 +355,11 @@ fn session_lines(state: &AppState) -> Vec<String> {
             "Tags: {}",
             truncate(&format_tag_summary(&state.session.tags), 26)
         ),
-        format!("Note: {}", truncate(note, 26)),
+        format!("Note: {}", state.session.note.as_deref().unwrap_or("-")),
     ]
 }
 
-fn tool_lines(
-    state: &AppState,
-    resources: &LoadedResources,
-    tool_registry: &ToolRegistry,
-) -> Vec<String> {
-    let tool_status = tool_status(tool_registry);
-    let activity = shell_activity(&state.transcript);
-    let approval_policies = resources
-        .tools
-        .iter()
-        .filter(|tool| tool.value.approval_policy.is_some())
-        .count();
-    let sandbox_policies = resources
-        .tools
-        .iter()
-        .filter(|tool| tool.value.sandbox_policy.is_some())
-        .count();
-    vec![
-        format!("Configured: {}", resources.tools.len()),
-        format!("Executable: {}", tool_status.executable),
-        format!(
-            "Kinds: bash={} read={} write={} replace={} move={} remove={} list={} search={}",
-            toggle_word(tool_status.has_bash),
-            toggle_word(tool_status.has_read_file),
-            toggle_word(tool_status.has_write_file),
-            toggle_word(tool_status.has_replace_in_file),
-            toggle_word(tool_status.has_move_path),
-            toggle_word(tool_status.has_remove_path),
-            toggle_word(tool_status.has_list_dir),
-            toggle_word(tool_status.has_search_text),
-        ),
-        format!("Policies: approval={approval_policies} sandbox={sandbox_policies}"),
-        format!("Shell runs: {}", activity.total_runs),
-        format!(
-            "Last shell: {}",
-            activity
-                .last_command
-                .as_deref()
-                .map(|command| truncate(command, 24))
-                .unwrap_or_else(|| "-".to_string())
-        ),
-        format!("Current sandbox: {}", state.sandbox_mode),
-        format!("Prompt mode: {}", state.prompt_color),
-    ]
-}
-
-fn inspector_lines(
-    state: &AppState,
-    resources: &LoadedResources,
-    providers: &puffer_provider_registry::ProviderRegistry,
-    auth_store: &AuthStore,
-    input: &str,
-    commands: &[CommandSpec],
-) -> Vec<String> {
-    let mut lines = vec![
-        format!("Provider: {}", current_provider(state)),
-        format!("Model: {}", truncate(current_model(state), 28)),
-        format!("Auth: {}", auth_status(state, auth_store)),
-        format!(
-            "Auth providers: {}",
-            truncate(&auth_provider_summary(auth_store), 28)
-        ),
-        format!("Theme: {}", state.config.theme),
-        format!("Effort: {}", state.effort_level),
-        format!("Fast mode: {}", toggle_word(state.fast_mode)),
-        format!("Vim mode: {}", toggle_word(state.vim_mode)),
-        format!("Status line: {}", toggle_word(state.statusline_enabled)),
-        format!("Providers loaded: {}", providers.providers().count()),
-        format!("Prompts: {}", resources.prompts.len()),
-        format!(
-            "Resources: skills={} plugins={} mcp={} ides={}",
-            resources.skills.len(),
-            resources.plugins.len(),
-            resources.mcp_servers.len(),
-            resources.ides.len(),
-        ),
-    ];
-
-    if input.starts_with('/') {
-        let rows = popup_rows(input, commands);
-        let best = rows
-            .first()
-            .map(|command| format!("/{}", command.name))
-            .unwrap_or_else(|| "<none>".to_string());
-        lines.push(format!("Slash filter: {}", truncate(input, 24)));
-        lines.push(format!("Slash matches: {} best={best}", rows.len()));
-    } else {
-        lines.push("Hint: / opens slash commands".to_string());
-        lines.push("Hint: ! runs the bash tool".to_string());
-    }
-
-    lines
-}
-
+#[cfg(test)]
 fn footer_lines(
     state: &AppState,
     resources: &LoadedResources,
@@ -342,39 +368,15 @@ fn footer_lines(
     input: &str,
     commands: &[CommandSpec],
 ) -> Vec<Line<'static>> {
-    if !state.statusline_enabled {
-        return vec![
-            Line::from("Enter submits  Esc clears  Ctrl+C exits  / opens commands"),
-            Line::from(format!(
-                "session={}  provider={}  tools={}",
-                short_id(&state.session.id.to_string()),
-                current_provider(state),
-                resources.tools.len(),
-            )),
-            Line::from(footer_hint(input, commands)),
-        ];
-    }
-
-    let tool_status = tool_status(tool_registry);
-    let activity = shell_activity(&state.transcript);
     vec![
-        Line::from(format!(
-            "auth={}  provider={}  model={}  transcript={}",
-            auth_status(state, auth_store),
-            current_provider(state),
-            truncate(current_model(state), 28),
-            state.transcript.len(),
+        Line::from(status_primary_line(
+            state,
+            resources,
+            auth_store,
+            tool_registry,
         )),
-        Line::from(format!(
-            "tools={}/{} ready  shell-runs={}  fast={}  vim={}  sandbox={}",
-            tool_status.executable,
-            resources.tools.len(),
-            activity.total_runs,
-            toggle_word(state.fast_mode),
-            toggle_word(state.vim_mode),
-            truncate(&state.sandbox_mode, 20),
-        )),
-        Line::from(footer_hint(input, commands)),
+        Line::from(status_secondary_line(state, resources, tool_registry)),
+        Line::from(hint_line(input, commands)),
     ]
 }
 
@@ -399,15 +401,6 @@ fn auth_status(state: &AppState, auth_store: &AuthStore) -> &'static str {
     }
 }
 
-fn auth_provider_summary(auth_store: &AuthStore) -> String {
-    let providers = auth_store.provider_ids().collect::<Vec<_>>();
-    if providers.is_empty() {
-        "none".to_string()
-    } else {
-        providers.join(",")
-    }
-}
-
 fn session_name(state: &AppState) -> String {
     state
         .session
@@ -416,14 +409,6 @@ fn session_name(state: &AppState) -> String {
         .or(state.session.slug.as_deref())
         .unwrap_or("untitled")
         .to_string()
-}
-
-fn mascot_label(state: &AppState) -> &str {
-    if state.config.mascot.enabled {
-        &state.config.mascot.display_name
-    } else {
-        "disabled"
-    }
 }
 
 fn remote_label(state: &AppState) -> String {
@@ -449,6 +434,8 @@ fn short_id(value: &str) -> String {
     value.chars().take(8).collect()
 }
 
+#[cfg(test)]
+#[cfg(test)]
 fn format_tag_summary(tags: &[String]) -> String {
     if tags.is_empty() {
         "-".to_string()
@@ -469,42 +456,15 @@ fn truncate(value: &str, max_chars: usize) -> String {
     format!("{prefix}...")
 }
 
-fn toggle_word(enabled: bool) -> &'static str {
-    if enabled {
-        "on"
-    } else {
-        "off"
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ToolStatus {
     executable: usize,
-    has_bash: bool,
-    has_read_file: bool,
-    has_write_file: bool,
-    has_replace_in_file: bool,
-    has_move_path: bool,
-    has_remove_path: bool,
-    has_list_dir: bool,
-    has_search_text: bool,
 }
 
 fn tool_status(tool_registry: &ToolRegistry) -> ToolStatus {
     let mut status = ToolStatus::default();
-    for tool in tool_registry.tools() {
+    for _tool in tool_registry.tools() {
         status.executable += 1;
-        match tool.spec.kind {
-            ToolKind::Custom => {}
-            ToolKind::Bash => status.has_bash = true,
-            ToolKind::ReadFile => status.has_read_file = true,
-            ToolKind::WriteFile => status.has_write_file = true,
-            ToolKind::ReplaceInFile => status.has_replace_in_file = true,
-            ToolKind::MovePath => status.has_move_path = true,
-            ToolKind::RemovePath => status.has_remove_path = true,
-            ToolKind::ListDir => status.has_list_dir = true,
-            ToolKind::SearchText => status.has_search_text = true,
-        }
     }
     status
 }
@@ -540,7 +500,7 @@ fn shell_command_from_message(text: &str) -> Option<&str> {
     }
 }
 
-fn footer_hint(input: &str, commands: &[CommandSpec]) -> String {
+fn hint_line(input: &str, commands: &[CommandSpec]) -> String {
     if input.starts_with('/') {
         let rows = popup_rows(input, commands);
         let best = rows
@@ -548,19 +508,20 @@ fn footer_hint(input: &str, commands: &[CommandSpec]) -> String {
             .map(|command| format!("/{}", command.name))
             .unwrap_or_else(|| "<none>".to_string());
         return format!(
-            "slash={} matches={} best={}  Enter submits  Esc clears",
+            "slash {} · {} matches · best {} · Enter submits · Esc clears",
             truncate(input, 18),
             rows.len(),
             best,
         );
     }
 
-    "/review reviews changes  /usage shows totals  !git status runs via bash".to_string()
+    "? for shortcuts · /help · /review · !pwd".to_string()
 }
 
 fn render_command_popup(
     frame: &mut Frame<'_>,
     transcript_area: Rect,
+    prompt_row: Rect,
     input: &str,
     slash_selection: usize,
     commands: &[CommandSpec],
@@ -569,60 +530,53 @@ fn render_command_popup(
         .into_iter()
         .enumerate()
         .map(|(index, command)| {
-            let alias_suffix = if command.aliases.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", command.aliases.join(", "))
-            };
             let argument_hint = command
                 .argument_hint
-                .map(|value| format!(" {value}"))
+                .map(|value| format!("  {value}"))
                 .unwrap_or_default();
             ListItem::new(format!(
-                "/{:<16} {:<6} {}{}{}",
-                command.name,
-                command_kind_label(command.kind),
-                command.description,
-                argument_hint,
-                alias_suffix,
+                "/{:<16} {}{}",
+                command.name, command.description, argument_hint
             ))
             .style(if index == slash_selection {
                 Style::default()
                     .add_modifier(Modifier::BOLD)
                     .add_modifier(Modifier::REVERSED)
             } else {
-                Style::default().add_modifier(Modifier::BOLD)
+                Style::default()
             })
         })
         .collect::<Vec<_>>();
 
+    let height = matching.len() as u16 + 2;
     let popup_area = Rect {
         x: transcript_area.x + 2,
-        y: transcript_area.y + 2,
-        width: transcript_area.width.saturating_sub(4).min(88),
-        height: matching.len() as u16 + 2,
+        y: prompt_row
+            .y
+            .saturating_sub(height.saturating_add(1))
+            .max(transcript_area.y + 1),
+        width: transcript_area.width.saturating_sub(4).min(72),
+        height,
     };
     frame.render_widget(Clear, popup_area);
     frame.render_widget(
-        List::new(matching).block(Block::default().title("Commands").borders(Borders::ALL)),
+        List::new(matching).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED),
+        ),
         popup_area,
     );
 }
 
-fn command_kind_label(kind: CommandKind) -> &'static str {
-    match kind {
-        CommandKind::Prompt => "prompt",
-        CommandKind::Local => "local",
-        CommandKind::Ui => "ui",
-    }
-}
-
-fn render_overlay(frame: &mut Frame<'_>, transcript_area: Rect, overlay: &OverlayState) {
+fn render_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState) {
+    let width = viewport.width.saturating_sub(8).min(72);
+    let height = overlay_rows(overlay).len() as u16 + 2;
     let area = Rect {
-        x: transcript_area.x + 2,
-        y: transcript_area.y + 1,
-        width: transcript_area.width.saturating_sub(4).min(88),
-        height: overlay_rows(overlay).len() as u16 + 2,
+        x: viewport.x + viewport.width.saturating_sub(width) / 2,
+        y: viewport.y + viewport.height.saturating_sub(height) / 2,
+        width,
+        height,
     };
     let rows = overlay_rows(overlay)
         .into_iter()
@@ -641,7 +595,8 @@ fn render_overlay(frame: &mut Frame<'_>, transcript_area: Rect, overlay: &Overla
         List::new(rows).block(
             Block::default()
                 .title(overlay_title(overlay))
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED),
         ),
         area,
     );

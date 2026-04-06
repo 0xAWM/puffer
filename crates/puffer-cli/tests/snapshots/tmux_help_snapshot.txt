@@ -1,46 +1,47 @@
-┌Header───────────────────────────────────────────────────┐
-│Puffer Code  session=session-<id>            │
-│cwd=workspace  msgs=1                                    │
-│provider=anthropic  model=<unset>  auth=api-key          │
-│remote=local                                             │
-└─────────────────────────────────────────────────────────┘
-┌Transcript─────────────────────────────┐┌Session─────────┐
-│System: Supported commands:            ││Name:           │
-│        /add-dir          Add a new    ││session-<id>│
-│working directory                      ││<id>...      │
-│        /agents           Manage agent ││Id: <id>    │
-│configurations                         ││Parent: root    │
-│        /branch           Create a     ││Dir: workspace  │
-│branch of the current conversation at  ││Transcript: 1   │
-│this point                             │└────────────────┘
-│        /btw              Capture a    │┌Tools───────────┐
-│quick side question or context note    ││Configured: 8   │
-│        /buddy            Show or      ││Executable: 8   │
-│interact with Clawd                    ││Kinds: bash=on  │
-│        /clear            Clear        ││read=on write=on│
-│conversation history and free up       ││replace=on      │
-│context                                ││move=on         │
-│        /color            Set the      ││remove=on       │
-│prompt bar color for this session      ││list=on         │
-│        /compact          Summarize the│└────────────────┘
-│conversation to preserve context budget│┌Inspector───────┐
-│        /config           Open config  ││Provider:       │
-│panel                                  ││anthropic       │
-│        /context          Show current ││Model: <unset>  │
-│context usage                          ││Auth: api-key   │
-│        /copy             Copy the     ││Auth providers: │
-│latest assistant output                ││anthropic       │
-│        /cost             Show the     ││Theme: puffer   │
-│total cost and duration of the current ││Effort: medium  │
-│session                                ││Fast mode: off  │
-│        /diff             View         ││Vim mode: off   │
-│uncommitted changes and per-turn diffs ││Status line: on │
-└───────────────────────────────────────┘└────────────────┘
-┌Composer─────────────────────────────────────────────────┐
-│<type /help, /review, or !pwd>                           │
-└─────────────────────────────────────────────────────────┘
-┌Status Line──────────────────────────────────────────────┐
-│auth=api-key  provider=anthropic  model=<unset>          │
-│transcript=1                                             │
-│tools=8/8 ready  shell-runs=0  fast=off  vim=off         │
-└─────────────────────────────────────────────────────────┘
+
+Puffer Code · session-<id>... · <unset> · auth api-key ·
+· Supported commands:
+  /add-dir          Add a new working directory
+  /agents           Manage agent configurations
+  /branch           Create a branch of the current
+conversation at this point
+  /btw              Capture a quick side question or
+context note
+  /buddy            Show or interact with Clawd
+  /clear            Clear conversation history and free up
+contextuffer Code ────────────────────────────────────╮
+  /color            Set the prompt bar color for this
+session           Welcome to Puffer Code
+  /compact          Summarize the conversation to preserve
+context budget         Clawd on duty
+  /config        /moOpen configspanelodel
+  /context          Show current context usage
+  /copy             Copy the latest assistant output
+  /cost─────────────Show─the─total─cost─and─duration─of the
+current session
+  /diff             View uncommitted changes and per-turn
+diffs
+  /doctor           Diagnose and verify your Puffer Code
+installation and settings
+  /effort           Set effort level for model usage
+  /exit             Exit the REPL
+  /export           Export the current conversation to a
+file or clipboard
+  /fast             Toggle fast mode
+  /help             Show help and available commands
+  /hooks            View hook configurations for tool
+events
+  /ide              Manage IDE integrations and show status
+  /init             Initialize project guidance and
+defaults
+  /keybindings      Open or create your keybindings
+configuration file
+  /login            Sign in to a provider
+  /logout           Sign out from a provider
+  /mcp              Manage MCP servers
+  /memory           Edit memory files
+──/model            Select the active model              ──
+an───────────────────────────────────────────────────────
+wothropic · <unset> · auth api-key · tools 8/8           rk
+? /helphortcuts · /help · /review · !pwd
+? for shortcuts · /help · /review · !pwd
