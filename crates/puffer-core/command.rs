@@ -2,8 +2,9 @@ use crate::command_helpers::{
     append_tool_invocations, copy_last_message, describe_context, describe_git_diff, emit_system,
     execute_skill_command, handle_agents_command, handle_config_command, handle_hooks_command,
     handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_permissions_command, handle_plugin_command, handle_session_command, list_skills,
-    reload_plugins_summary, render_login_guidance, rewind_transcript, run_doctor,
+    handle_permissions_command, handle_plugin_command, handle_sandbox_command,
+    handle_session_command, list_skills, reload_plugins_summary, render_login_guidance,
+    rewind_transcript, run_doctor,
     terminal_setup_advice,
 };
 use crate::{
@@ -732,14 +733,7 @@ fn execute_local_command(
                 )
             }
         }
-        "sandbox" => {
-            if args.is_empty() {
-                emit_system(state, session_store, format!("Current sandbox mode is {}.", state.sandbox_mode))
-            } else {
-                state.sandbox_mode = args.to_string();
-                emit_system(state, session_store, format!("Sandbox mode set to {}.", state.sandbox_mode))
-            }
-        }
+        "sandbox" => handle_sandbox_command(state, session_store, args),
         "rename" => {
             let name = if args.is_empty() { format!("session-{}", &state.session.id.to_string()[..8]) } else { args.to_string() };
             session_store.rename_session(state.session.id, name.clone())?;

@@ -5,6 +5,7 @@ use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_resources::LoadedResources;
 use puffer_session_store::SessionStore;
 use puffer_tools::ToolRegistry;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
@@ -220,6 +221,114 @@ pub(crate) fn handle_hooks_command(
     )
 }
 
+/// Shows or updates the workspace sandbox configuration file.
+pub(crate) fn handle_sandbox_command(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    args: &str,
+) -> Result<()> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let sandbox_path = paths.workspace_config_dir.join("sandbox.toml");
+    let mut settings = load_or_initialize_sandbox_settings(&sandbox_path, state)?;
+    let trimmed = args.trim();
+
+    if trimmed.is_empty() || trimmed == "show" {
+        return emit_system(
+            state,
+            session_store,
+            render_sandbox_summary(&sandbox_path, &settings),
+        );
+    }
+
+    if trimmed == "path" {
+        return emit_system(
+            state,
+            session_store,
+            format!("Sandbox config path: {}", sandbox_path.display()),
+        );
+    }
+
+    if let Some(pattern) = trimmed.strip_prefix("exclude ") {
+        let pattern = pattern.trim().trim_matches('"');
+        if pattern.is_empty() {
+            anyhow::bail!("expected a command pattern after `exclude`");
+        }
+        if !settings
+            .excluded_commands
+            .iter()
+            .any(|existing| existing == pattern)
+        {
+            settings.excluded_commands.push(pattern.to_string());
+        }
+        write_sandbox_settings(&sandbox_path, &settings)?;
+        return emit_system(
+            state,
+            session_store,
+            format!(
+                "Added sandbox exclusion `{pattern}` in {}.",
+                sandbox_path.display()
+            ),
+        );
+    }
+
+    if trimmed == "clear-excludes" {
+        settings.excluded_commands.clear();
+        write_sandbox_settings(&sandbox_path, &settings)?;
+        return emit_system(
+            state,
+            session_store,
+            format!("Cleared sandbox exclusions in {}.", sandbox_path.display()),
+        );
+    }
+
+    if let Some(value) = trimmed.strip_prefix("allow-unsandboxed ") {
+        settings.allow_unsandboxed_fallback = parse_bool(value.trim())?;
+        write_sandbox_settings(&sandbox_path, &settings)?;
+        return emit_system(
+            state,
+            session_store,
+            format!(
+                "allow_unsandboxed_fallback set to {} in {}.",
+                settings.allow_unsandboxed_fallback,
+                sandbox_path.display()
+            ),
+        );
+    }
+
+    if let Some(value) = trimmed.strip_prefix("auto-allow ") {
+        settings.auto_allow = parse_bool(value.trim())?;
+        write_sandbox_settings(&sandbox_path, &settings)?;
+        return emit_system(
+            state,
+            session_store,
+            format!(
+                "auto_allow set to {} in {}.",
+                settings.auto_allow,
+                sandbox_path.display()
+            ),
+        );
+    }
+
+    let mode = trimmed
+        .strip_prefix("mode ")
+        .map(str::trim)
+        .unwrap_or(trimmed)
+        .to_string();
+    settings.mode = mode.clone();
+    state.sandbox_mode = mode;
+    write_sandbox_settings(&sandbox_path, &settings)?;
+    emit_system(
+        state,
+        session_store,
+        format!(
+            "Sandbox mode set to {} in {}.",
+            state.sandbox_mode,
+            sandbox_path.display()
+        ),
+    )
+}
+
 fn parse_bool(value: &str) -> Result<bool> {
     match value {
         "true" | "on" | "1" => Ok(true),
@@ -253,4 +362,50 @@ fn default_hooks_contents() -> &'static str {
     "id: tool-end\n\
 event: tool_end\n\
 command: echo \"$PUFFER_TOOL_ID:$PUFFER_TOOL_SUCCESS\"\n"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SandboxSettings {
+    mode: String,
+    #[serde(default)]
+    auto_allow: bool,
+    #[serde(default)]
+    allow_unsandboxed_fallback: bool,
+    #[serde(default)]
+    excluded_commands: Vec<String>,
+}
+
+fn load_or_initialize_sandbox_settings(path: &PathBuf, state: &AppState) -> Result<SandboxSettings> {
+    if path.exists() {
+        return Ok(toml::from_str(&fs::read_to_string(path)?)?);
+    }
+    let settings = SandboxSettings {
+        mode: state.sandbox_mode.clone(),
+        auto_allow: false,
+        allow_unsandboxed_fallback: false,
+        excluded_commands: Vec::new(),
+    };
+    write_sandbox_settings(path, &settings)?;
+    Ok(settings)
+}
+
+fn write_sandbox_settings(path: &PathBuf, settings: &SandboxSettings) -> Result<()> {
+    fs::write(path, toml::to_string_pretty(settings)?)?;
+    Ok(())
+}
+
+fn render_sandbox_summary(path: &PathBuf, settings: &SandboxSettings) -> String {
+    let exclusions = if settings.excluded_commands.is_empty() {
+        String::from("<none>")
+    } else {
+        settings.excluded_commands.join(", ")
+    };
+    format!(
+        "Sandbox summary:\npath={}\nmode={}\nauto_allow={}\nallow_unsandboxed_fallback={}\nexcluded_commands={}",
+        path.display(),
+        settings.mode,
+        settings.auto_allow,
+        settings.allow_unsandboxed_fallback,
+        exclusions
+    )
 }

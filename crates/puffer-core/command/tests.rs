@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use tempfile::tempdir;
 
 mod login_auth;
+mod sandbox;
 mod usage_buddy;
 
 #[test]
