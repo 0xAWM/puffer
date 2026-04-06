@@ -30,4 +30,3 @@ puffer-config = { path = "../puffer-config" }
 puffer-session-store = { path = "../puffer-session-store" }
 puffer-test-support = { path = "../puffer-test-support" }
 tempfile.workspace = true
-tempfile.workspace = true

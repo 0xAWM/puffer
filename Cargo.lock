@@ -1522,6 +1522,7 @@ dependencies = [
  "puffer-transport-anthropic",
  "puffer-tui",
  "serde_json",
+ "tempfile",
  "url",
  "uuid",
 ]
