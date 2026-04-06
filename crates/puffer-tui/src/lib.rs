@@ -159,7 +159,7 @@ fn handle_key(
                 return Ok(false);
             }
             let current_input = tui.input.clone();
-            if try_open_overlay(providers, session_store, tui, &current_input)? {
+            if try_open_overlay(providers, auth_store, session_store, tui, &current_input)? {
                 return Ok(false);
             }
             let submitted = tui.take_input();
@@ -227,6 +227,7 @@ fn handle_overlay_key(
 
 fn try_open_overlay(
     providers: &ProviderRegistry,
+    auth_store: &AuthStore,
     session_store: &SessionStore,
     tui: &mut TuiState,
     submitted: &str,
@@ -283,6 +284,43 @@ fn try_open_overlay(
                 })
             }
         }
+        "logout" if args.is_empty() => {
+            let entries = auth_store
+                .provider_ids()
+                .map(|provider_id| ModelPickerEntry {
+                    selector: provider_id.to_string(),
+                    description: providers
+                        .provider(provider_id)
+                        .map(|provider| provider.display_name.clone())
+                        .unwrap_or_else(|| provider_id.to_string()),
+                })
+                .collect::<Vec<_>>();
+            if entries.is_empty() {
+                None
+            } else {
+                Some(OverlayState::LogoutPicker {
+                    entries,
+                    selection: 0,
+                })
+            }
+        }
+        "theme" if args.is_empty() => Some(OverlayState::ThemePicker {
+            entries: vec![
+                ModelPickerEntry {
+                    selector: "puffer".to_string(),
+                    description: "Default Puffer theme".to_string(),
+                },
+                ModelPickerEntry {
+                    selector: "harbor".to_string(),
+                    description: "Harbor theme".to_string(),
+                },
+                ModelPickerEntry {
+                    selector: "sunrise".to_string(),
+                    description: "Warm light theme".to_string(),
+                },
+            ],
+            selection: 0,
+        }),
         _ => None,
     };
 
@@ -605,6 +643,14 @@ pub(crate) enum OverlayState {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
     },
+    LogoutPicker {
+        entries: Vec<ModelPickerEntry>,
+        selection: usize,
+    },
+    ThemePicker {
+        entries: Vec<ModelPickerEntry>,
+        selection: usize,
+    },
 }
 
 impl OverlayState {
@@ -612,7 +658,9 @@ impl OverlayState {
         match self {
             Self::SessionPicker { selection, .. }
             | Self::ModelPicker { selection, .. }
-            | Self::LoginPicker { selection, .. } => {
+            | Self::LoginPicker { selection, .. }
+            | Self::LogoutPicker { selection, .. }
+            | Self::ThemePicker { selection, .. } => {
                 *selection = selection.saturating_sub(1);
             }
         }
@@ -630,6 +678,10 @@ impl OverlayState {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
             Self::LoginPicker { entries, selection } => {
+                *selection = (*selection + 1).min(entries.len().saturating_sub(1));
+            }
+            Self::LogoutPicker { entries, selection }
+            | Self::ThemePicker { entries, selection } => {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
         }
@@ -661,6 +713,12 @@ impl OverlayState {
             Self::LoginPicker { entries, selection } => entries
                 .get(*selection)
                 .map(|entry| format!("/login {}", entry.selector)),
+            Self::LogoutPicker { entries, selection } => entries
+                .get(*selection)
+                .map(|entry| format!("/logout {}", entry.selector)),
+            Self::ThemePicker { entries, selection } => entries
+                .get(*selection)
+                .map(|entry| format!("/theme {}", entry.selector)),
         }
     }
 }
