@@ -13,7 +13,7 @@ pub(crate) use command_summary::{
 };
 pub use hooks::run_resource_hooks;
 pub use runtime::execute_user_prompt as execute_user_turn;
-pub use runtime::{ToolInvocation, TurnExecution};
+pub use runtime::{ToolInvocation, TurnExecution, TurnStreamEvent, execute_user_prompt_streaming as execute_user_turn_streaming};
 pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
 
 use anyhow::Result;

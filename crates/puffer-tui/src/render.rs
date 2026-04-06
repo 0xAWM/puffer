@@ -29,12 +29,20 @@ const COMPACT_COMPOSER_BREAKPOINT: u16 = 104;
 
 thread_local! {
     static ACTIVE_OVERLAY: RefCell<Option<OverlayState>> = const { RefCell::new(None) };
+    static ACTIVE_PENDING_SUBMIT: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Sets the active overlay rendered by the TUI on the next draw.
 pub(crate) fn set_active_overlay(overlay: Option<OverlayState>) {
     ACTIVE_OVERLAY.with(|value| {
         *value.borrow_mut() = overlay;
+    });
+}
+
+/// Sets whether the current frame should render a pending submit row.
+pub(crate) fn set_pending_submit_loading(pending: bool) {
+    ACTIVE_PENDING_SUBMIT.with(|value| {
+        *value.borrow_mut() = pending;
     });
 }
 
@@ -106,7 +114,7 @@ pub(crate) fn render(
         render_empty_state(frame, layout[1], state);
     } else {
         frame.render_widget(
-            Paragraph::new(transcript_text(state))
+            Paragraph::new(transcript_text(state, pending_submit_active()))
                 .scroll((scroll_offset, 0))
                 .wrap(Wrap { trim: false }),
             layout[1],
@@ -375,7 +383,7 @@ fn help_pane_active(state: &AppState, active_overlay: &Option<OverlayState>) -> 
     })
 }
 
-fn transcript_text(state: &AppState) -> Text<'static> {
+fn transcript_text(state: &AppState, pending_submit: bool) -> Text<'static> {
     if state.transcript.is_empty() {
         return Text::default();
     }
@@ -387,11 +395,18 @@ fn transcript_text(state: &AppState) -> Text<'static> {
         }
         lines.extend(render_transcript_message(message));
     }
+    if pending_submit {
+        lines.push(Line::default());
+        lines.extend(pending_submit_lines());
+    }
     Text::from(lines)
 }
 
-pub(crate) fn transcript_line_count(state: &AppState) -> u16 {
-    transcript_text(state).lines.len().min(u16::MAX as usize) as u16
+pub(crate) fn transcript_line_count(state: &AppState, pending_submit: bool) -> u16 {
+    transcript_text(state, pending_submit)
+        .lines
+        .len()
+        .min(u16::MAX as usize) as u16
 }
 
 fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
@@ -418,6 +433,17 @@ fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
             }
         })
         .collect()
+}
+
+fn pending_submit_active() -> bool {
+    ACTIVE_PENDING_SUBMIT.with(|value| *value.borrow())
+}
+
+fn pending_submit_lines() -> Vec<Line<'static>> {
+    vec![Line::from(vec![
+        Span::styled("  ⎿ ", Style::default().add_modifier(Modifier::DIM)),
+        Span::styled("Loading...", Style::default().add_modifier(Modifier::DIM)),
+    ])]
 }
 
 fn prompt_line(input: &str) -> Line<'static> {

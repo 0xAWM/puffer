@@ -324,6 +324,44 @@ fn openai_tool_definitions_use_registry_schema() {
 }
 
 #[test]
+fn openai_tool_definitions_fill_missing_array_items() {
+    let mut web_search = loaded_tool("WebSearch", "Search the web", "provider:web_search");
+    web_search.value.input_schema = Some(json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query to execute."
+            },
+            "allowed_domains": {
+                "type": "array",
+                "description": "Optional allowlist of domains to search."
+            },
+            "blocked_domains": {
+                "type": "array",
+                "description": "Optional denylist of domains to exclude."
+            }
+        },
+        "required": ["query"]
+    }));
+    let resources = LoadedResources {
+        tools: vec![web_search],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let tools = openai_tool_definitions(&registry);
+    assert_eq!(tools[0].name, "WebSearch");
+    assert_eq!(
+        tools[0].parameters["properties"]["allowed_domains"]["items"]["type"].as_str(),
+        Some("string")
+    );
+    assert_eq!(
+        tools[0].parameters["properties"]["blocked_domains"]["items"]["type"].as_str(),
+        Some("string")
+    );
+}
+
+#[test]
 fn resolve_openai_execution_config_uses_codex_chatgpt_route_for_builtin_oauth() {
     let mut auth_store = AuthStore::default();
     auth_store.set_oauth(
@@ -411,6 +449,32 @@ fn parse_openai_sse_response_reconstructs_output_items() {
     assert_eq!(parsed["output"].as_array().map(Vec::len), Some(2));
     assert_eq!(parsed["output"][0]["type"], json!("message"));
     assert_eq!(parsed["output"][1]["type"], json!("function_call"));
+}
+
+#[test]
+fn parse_openai_sse_response_streaming_emits_text_deltas() {
+    let stream = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp1\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hey \"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"there\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hey there\"}]}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp1\"}}\n\n"
+    );
+    let mut deltas = Vec::new();
+    let parsed = parse_openai_sse_response_streaming(stream, &mut |event| {
+        if let TurnStreamEvent::TextDelta(delta) = event {
+            deltas.push(delta);
+        }
+    })
+    .unwrap();
+    assert_eq!(deltas, vec!["Hey ".to_string(), "there".to_string()]);
+    assert_eq!(parsed["id"], json!("resp1"));
+    assert_eq!(parsed["output"][0]["content"][0]["text"], json!("Hey there"));
 }
 
 #[test]

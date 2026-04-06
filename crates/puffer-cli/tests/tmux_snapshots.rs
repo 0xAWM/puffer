@@ -1,8 +1,9 @@
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
-use puffer_session_store::SessionStore;
+use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_test_support::{
-    assert_normalized_snapshot, capture_tmux_visible_pane, start_tmux_command_with_size,
-    temp_workspace, tmux_available, wait_for_tmux_text, TerminalSize,
+    assert_normalized_snapshot, capture_tmux_pane, capture_tmux_visible_pane,
+    read_normalized_snapshot, start_tmux_command_with_size, temp_workspace, tmux_available,
+    wait_for_tmux_text, TerminalSize,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -68,6 +69,20 @@ fn tmux_help_compact_wide_matches_snapshot() {
     );
 }
 
+#[test]
+fn tmux_post_send_medium_matches_snapshot() {
+    assert_tmux_turn_snapshot(MEDIUM_TMUX_SIZE, "tmux_post_send_medium_snapshot.txt");
+}
+
+#[test]
+fn tmux_post_send_medium_compared_with_claude_reference_matches_snapshot() {
+    assert_tmux_turn_comparison_snapshot(
+        MEDIUM_TMUX_SIZE,
+        "claude_post_send_medium_reference_snapshot.txt",
+        "tmux_post_send_vs_claude_reference_snapshot.txt",
+    );
+}
+
 fn assert_tmux_home_snapshot(size: TerminalSize, snapshot_name: &str) {
     if !tmux_available() {
         return;
@@ -98,6 +113,69 @@ fn assert_tmux_help_snapshot(size: TerminalSize, snapshot_name: &str) {
         &snapshot_path(snapshot_name),
     )
     .unwrap();
+}
+
+fn assert_tmux_turn_snapshot(size: TerminalSize, snapshot_name: &str) {
+    if !tmux_available() {
+        return;
+    }
+
+    let capture = capture_tmux_turn(size);
+    assert_normalized_snapshot(&capture, &snapshot_path(snapshot_name)).unwrap();
+}
+
+fn assert_tmux_turn_comparison_snapshot(
+    size: TerminalSize,
+    reference_name: &str,
+    snapshot_name: &str,
+) {
+    if !tmux_available() {
+        return;
+    }
+
+    let puffer = capture_tmux_turn(size);
+    let claude = read_normalized_snapshot(&snapshot_path(reference_name)).unwrap();
+    let comparison = tmux_post_send_comparison_report(&claude, &puffer);
+    assert_normalized_snapshot(&comparison, &snapshot_path(snapshot_name)).unwrap();
+}
+
+fn capture_tmux_turn(size: TerminalSize) -> String {
+    let (_tempdir, workspace) = configured_workspace();
+    let cwd = workspace.join("dockyard");
+    let paths = ConfigPaths::discover(&cwd);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(cwd).unwrap();
+    session_store
+        .rename_session(session.id, "dockyard".to_string())
+        .unwrap();
+    session_store
+        .append_event(
+            session.id,
+            TranscriptEvent::UserMessage {
+                text: "Review the current worktree and call out any risks.".to_string(),
+            },
+        )
+        .unwrap();
+    session_store
+        .append_event(
+            session.id,
+            TranscriptEvent::AssistantMessage {
+                text: "The working tree is clean.\n\nNo pending changes are waiting for review."
+                    .to_string(),
+            },
+        )
+        .unwrap();
+    let session_id = session.id.to_string();
+    let session = start_tmux_with_home_args(&workspace, size, &["resume", &session_id]);
+    wait_for_tmux_text(&session, "The working tree is clean.", Duration::from_secs(10))
+        .unwrap_or_else(|error| {
+            let capture =
+                capture_tmux_pane(&session).unwrap_or_else(|_| "<capture failed>".to_string());
+            panic!("{error}\n\n{capture}");
+        });
+    let capture = capture_tmux_visible_pane(&session).unwrap();
+    normalize_tmux_capture(&trim_blank_rows(&capture))
 }
 
 fn configured_workspace() -> (tempfile::TempDir, PathBuf) {
@@ -204,6 +282,53 @@ fn normalize_tmux_capture(capture: &str) -> String {
         .map(normalize_tmux_line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn tmux_post_send_comparison_report(claude: &str, puffer: &str) -> String {
+    let comparisons: [(&str, fn(&str) -> bool); 5] = [
+        ("top_panel", has_top_panel),
+        ("boxed_footer", has_boxed_footer),
+        ("user_prefix", has_user_prefix),
+        ("response_connector", has_response_connector),
+        ("shortcut_rail", has_shortcut_rail),
+    ];
+    let feature_lines = comparisons
+        .into_iter()
+        .map(|(label, detector)| {
+            format!(
+                "{label}: claude={} puffer={}",
+                detector(claude),
+                detector(puffer)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Claude reference pane:\n{claude}\n\nPuffer captured pane:\n{puffer}\n\nFeature comparison:\n{feature_lines}"
+    )
+}
+
+fn has_top_panel(text: &str) -> bool {
+    text.contains("╭ Puffer Code")
+}
+
+fn has_boxed_footer(text: &str) -> bool {
+    text.lines()
+        .rev()
+        .take(4)
+        .any(|line| line.contains("╭") || line.contains("╰"))
+}
+
+fn has_user_prefix(text: &str) -> bool {
+    text.lines().any(|line| line.starts_with("› "))
+}
+
+fn has_response_connector(text: &str) -> bool {
+    text.contains("⎿")
+}
+
+fn has_shortcut_rail(text: &str) -> bool {
+    text.contains("? for shortcuts")
 }
 
 fn focused_tmux_capture(capture: &str, anchor: &str, before: usize, after: usize) -> String {

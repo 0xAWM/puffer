@@ -9,6 +9,7 @@ use puffer_provider_registry::{
 use puffer_transport_anthropic::{AnthropicExtraUsage, AnthropicRateLimit, AnthropicUtilization};
 use puffer_resources::{LoadedItem, SourceInfo, SourceKind, ToolSpec};
 use puffer_session_store::SessionMetadata;
+use puffer_test_support::{assert_normalized_snapshot, read_normalized_snapshot};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::path::PathBuf;
@@ -172,6 +173,74 @@ fn render_layout_includes_header_body_and_composer() {
     assert!(lines.iter().any(|line| line.contains("working tree clean")));
     assert!(rendered.contains("/help · /review · !pwd"));
     assert!(rendered.contains("? for shortcuts"));
+}
+
+#[test]
+fn render_post_send_turn_matches_snapshot() {
+    let terminal = render_post_send_terminal();
+    assert_normalized_snapshot(
+        &terminal,
+        &snapshot_path("render_post_send_turn_snapshot.txt"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn render_pending_submit_shows_loading_below_prompt() {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.transcript.clear();
+    state.push_message(
+        MessageRole::User,
+        "Review the current worktree and call out any risks.",
+    );
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            set_pending_submit_loading(true);
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            );
+            set_pending_submit_loading(false);
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    assert!(rendered.contains("⎿ Loading..."));
+    assert!(rendered.contains("Review the current worktree and call out any risks."));
+    assert!(
+        rendered
+            .find("Review the current worktree and call out any risks.")
+            .unwrap()
+            < rendered.find("Loading...").unwrap()
+    );
+}
+
+#[test]
+fn render_post_send_compared_with_claude_reference_matches_snapshot() {
+    let puffer = render_post_send_terminal();
+    let claude = read_normalized_snapshot(&snapshot_path(
+        "claude_post_send_reference_snapshot.txt",
+    ))
+    .unwrap();
+    assert_normalized_snapshot(
+        &post_send_comparison_report(&claude, &puffer),
+        &snapshot_path("render_post_send_vs_claude_reference_snapshot.txt"),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -752,4 +821,96 @@ fn terminal_view(terminal: &Terminal<TestBackend>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn render_post_send_terminal() -> String {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.transcript.clear();
+    state.push_message(
+        MessageRole::User,
+        "Review the current worktree and call out any risks.",
+    );
+    state.push_message(
+        MessageRole::Assistant,
+        "The working tree is clean.\n\nNo pending changes are waiting for review.",
+    );
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            )
+        })
+        .unwrap();
+
+    terminal_view(&terminal)
+}
+
+fn post_send_comparison_report(claude: &str, puffer: &str) -> String {
+    let comparisons: [(&str, fn(&str) -> bool); 5] = [
+        ("top_panel", has_top_panel),
+        ("boxed_footer", has_boxed_footer),
+        ("user_prefix", has_user_prefix),
+        ("response_connector", has_response_connector),
+        ("shortcut_rail", has_shortcut_rail),
+    ];
+    let feature_lines = comparisons
+        .into_iter()
+        .map(|(label, detector)| {
+            format!(
+                "{label}: claude={} puffer={}",
+                detector(claude),
+                detector(puffer)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "Claude reference (derived from references/claude-code):\n{claude}\n\nPuffer current:\n{puffer}\n\nFeature comparison:\n{feature_lines}"
+    )
+}
+
+fn has_top_panel(text: &str) -> bool {
+    text.contains("╭ Puffer Code")
+}
+
+fn has_boxed_footer(text: &str) -> bool {
+    text.lines()
+        .rev()
+        .take(4)
+        .any(|line| line.contains("╭") || line.contains("╰"))
+}
+
+fn has_user_prefix(text: &str) -> bool {
+    text.lines().any(|line| line.starts_with("› "))
+}
+
+fn has_response_connector(text: &str) -> bool {
+    text.contains("⎿")
+}
+
+fn has_shortcut_rail(text: &str) -> bool {
+    text.contains("? for shortcuts")
+}
+
+fn snapshot_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join(name)
 }

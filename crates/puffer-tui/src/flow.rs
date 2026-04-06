@@ -1,8 +1,9 @@
 use anyhow::Result;
 use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
-    dispatch_command, execute_user_turn, reload_runtime_resources, run_resource_hooks,
-    supported_commands, AppState, MessageRole, ToolInvocation,
+    dispatch_command, execute_user_turn, execute_user_turn_streaming, reload_runtime_resources,
+    run_resource_hooks, supported_commands, AppState, MessageRole, ToolInvocation,
+    TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -11,8 +12,11 @@ use puffer_tools::{ToolInput, ToolRegistry};
 use std::io;
 use std::path::Path;
 use std::process::Command;
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
 
 use crate::onboarding;
+use crate::state::{PendingSubmit, PendingSubmitEvent, PendingSubmitResult};
 use crate::{OverlayState, TuiState};
 
 /// Opens a TUI overlay for slash commands that map to picker UI.
@@ -39,6 +43,157 @@ pub(crate) fn set_overlay_state(tui: &mut TuiState, overlay: Option<OverlayState
     tui.input.clear();
     tui.cursor = 0;
     tui.slash_selection = 0;
+}
+
+/// Returns true when the submitted text should run through the async provider path.
+pub(crate) fn is_provider_prompt_input(submitted: &str) -> bool {
+    let submitted = submitted.trim();
+    !submitted.is_empty()
+        && !submitted.starts_with('/')
+        && parse_shell_shortcut(submitted).is_none()
+        && !is_auth_command_input(submitted)
+}
+
+/// Handles one prompt submission from the interactive composer.
+pub(crate) fn handle_prompt_submit(
+    state: &mut AppState,
+    resources: &mut LoadedResources,
+    providers: &mut ProviderRegistry,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
+    session_store: &SessionStore,
+    tui: &mut TuiState,
+    submitted: String,
+    no_alt_screen: bool,
+) -> Result<()> {
+    let submitted = submitted.trim().to_string();
+    if submitted.is_empty() {
+        return Ok(());
+    }
+    if !is_provider_prompt_input(&submitted) {
+        return handle_submit(
+            state,
+            resources,
+            providers,
+            auth_store,
+            auth_path,
+            session_store,
+            submitted,
+            no_alt_screen,
+        );
+    }
+    if tui.has_pending_submit() {
+        return Ok(());
+    }
+
+    state.push_message(MessageRole::User, submitted.clone());
+    session_store.append_event(
+        state.session.id,
+        TranscriptEvent::UserMessage {
+            text: submitted.clone(),
+        },
+    )?;
+
+    let worker_state = state.clone();
+    let worker_resources = resources.clone();
+    let worker_providers = providers.clone();
+    let worker_prompt = submitted.clone();
+    let mut worker_auth_store = auth_store.clone();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let event_sender = sender.clone();
+        let outcome = execute_user_turn_streaming(
+            &worker_state,
+            &worker_resources,
+            &worker_providers,
+            &mut worker_auth_store,
+            &worker_prompt,
+            |event| match event {
+                TurnStreamEvent::TextDelta(delta) => {
+                    let _ = event_sender.send(PendingSubmitEvent::TextDelta(delta));
+                }
+                TurnStreamEvent::ToolInvocations(invocations) => {
+                    let _ = event_sender.send(PendingSubmitEvent::ToolInvocations(invocations));
+                }
+            },
+        )
+        .map_err(|error| error.to_string());
+        let _ = sender.send(PendingSubmitEvent::Finished(PendingSubmitResult {
+            outcome,
+            auth_store: worker_auth_store,
+        }));
+    });
+    tui.pending_submit = Some(PendingSubmit {
+        prompt: submitted,
+        receiver,
+        rendered_tool_invocations: 0,
+    });
+    Ok(())
+}
+
+/// Applies any completed async provider turn to session and transcript state.
+pub(crate) fn poll_pending_submit(
+    state: &mut AppState,
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
+    session_store: &SessionStore,
+    tui: &mut TuiState,
+) -> Result<bool> {
+    let Some(pending) = tui.pending_submit.as_mut() else {
+        return Ok(false);
+    };
+    let mut completed = false;
+    loop {
+        let event = match pending.receiver.try_recv() {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => PendingSubmitEvent::Finished(PendingSubmitResult {
+                outcome: Err("background request disconnected".to_string()),
+                auth_store: auth_store.clone(),
+            }),
+        };
+        match event {
+            PendingSubmitEvent::TextDelta(delta) => append_assistant_delta(state, &delta),
+            PendingSubmitEvent::ToolInvocations(invocations) => {
+                pending.rendered_tool_invocations += invocations.len();
+                append_tool_messages(state, session_store, &invocations)?;
+            }
+            PendingSubmitEvent::Finished(result) => {
+                completed = true;
+                let rendered_tool_invocations = pending.rendered_tool_invocations;
+                let previous_auth_store = auth_store.clone();
+                *auth_store = result.auth_store;
+                match result.outcome {
+                    Ok(turn) => {
+                        if rendered_tool_invocations < turn.tool_invocations.len() {
+                            append_tool_messages(
+                                state,
+                                session_store,
+                                &turn.tool_invocations[rendered_tool_invocations..],
+                            )?;
+                        }
+                        finalize_assistant_text(state, session_store, &turn.assistant_text)?;
+                    }
+                    Err(error) => {
+                        let message = format!("Provider request failed: {error}");
+                        state.push_message(MessageRole::System, message.clone());
+                        session_store.append_event(
+                            state.session.id,
+                            TranscriptEvent::SystemMessage { text: message },
+                        )?;
+                    }
+                }
+                if *auth_store != previous_auth_store {
+                    auth_store.save(auth_path)?;
+                }
+                break;
+            }
+        }
+    }
+    if completed {
+        tui.pending_submit = None;
+    }
+    Ok(completed)
 }
 
 /// Submits prompt/auth/shell input from the TUI prompt.
@@ -127,6 +282,55 @@ pub(crate) fn handle_submit(
     Ok(())
 }
 
+fn is_auth_command_input(submitted: &str) -> bool {
+    matches!(submit_command_name(submitted), "login" | "logout")
+}
+
+fn append_assistant_delta(state: &mut AppState, delta: &str) {
+    if delta.is_empty() {
+        return;
+    }
+    if let Some(last) = state.transcript.last_mut() {
+        if last.role == MessageRole::Assistant {
+            last.text.push_str(delta);
+            return;
+        }
+    }
+    state.push_message(MessageRole::Assistant, delta.to_string());
+}
+
+fn finalize_assistant_text(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    assistant_text: &str,
+) -> Result<()> {
+    if let Some(last) = state.transcript.last_mut() {
+        if last.role == MessageRole::Assistant {
+            last.text = assistant_text.to_string();
+        } else {
+            state.push_message(MessageRole::Assistant, assistant_text.to_string());
+        }
+    } else {
+        state.push_message(MessageRole::Assistant, assistant_text.to_string());
+    }
+    session_store.append_event(
+        state.session.id,
+        TranscriptEvent::AssistantMessage {
+            text: assistant_text.to_string(),
+        },
+    )?;
+    Ok(())
+}
+
+fn submit_command_name(submitted: &str) -> &str {
+    submitted
+        .trim()
+        .trim_start_matches('/')
+        .split_once(' ')
+        .map(|(name, _)| name)
+        .unwrap_or_else(|| submitted.trim().trim_start_matches('/'))
+}
+
 /// Persists the selected provider and clears any selected model until the user chooses one.
 pub(crate) fn apply_selected_provider(state: &mut AppState, provider_id: &str) -> Result<()> {
     state.current_provider = Some(provider_id.to_string());
@@ -186,6 +390,9 @@ pub(crate) fn submit_queued_prompt_if_ready(
     tui: &mut TuiState,
     no_alt_screen: bool,
 ) -> Result<()> {
+    if tui.has_pending_submit() {
+        return Ok(());
+    }
     if tui
         .deferred_prompt
         .as_deref()
@@ -214,13 +421,14 @@ pub(crate) fn submit_queued_prompt_if_ready(
         return Ok(());
     }
     if let Some(prompt) = tui.take_deferred_prompt() {
-        handle_submit(
+        handle_prompt_submit(
             state,
             resources,
             providers,
             auth_store,
             auth_path,
             session_store,
+            tui,
             prompt,
             no_alt_screen,
         )?;
@@ -490,4 +698,82 @@ pub(crate) fn allow_prompt_before_onboarding(prompt: &str) -> bool {
         prompt.trim(),
         "/help" | "/theme" | "/doctor" | "/status" | "/usage"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
+    use puffer_session_store::SessionMetadata;
+    use tempfile::tempdir;
+
+    fn sample_state(session: SessionMetadata, cwd: &Path) -> AppState {
+        AppState::new(PufferConfig::default(), cwd.to_path_buf(), session)
+    }
+
+    #[test]
+    fn provider_prompt_detection_matches_interactive_surface() {
+        assert!(is_provider_prompt_input("henlo"));
+        assert!(is_provider_prompt_input(" review this diff "));
+        assert!(!is_provider_prompt_input(""));
+        assert!(!is_provider_prompt_input("/help"));
+        assert!(!is_provider_prompt_input("!pwd"));
+        assert!(!is_provider_prompt_input("login openai"));
+        assert!(!is_provider_prompt_input("/logout"));
+    }
+
+    #[test]
+    fn handle_prompt_submit_starts_async_provider_turn_and_polls_result() {
+        let tempdir = tempdir().unwrap();
+        let paths = ConfigPaths::discover(tempdir.path());
+        ensure_workspace_dirs(&paths).unwrap();
+        let session_store = SessionStore::from_paths(&paths).unwrap();
+        let session = session_store.create_session(tempdir.path().to_path_buf()).unwrap();
+        let mut state = sample_state(session, tempdir.path());
+        let mut resources = LoadedResources::default();
+        let mut providers = ProviderRegistry::new();
+        let auth_path = paths.user_config_dir.join("auth.json");
+        let mut auth_store = AuthStore::default();
+        let mut tui = TuiState::default();
+
+        handle_prompt_submit(
+            &mut state,
+            &mut resources,
+            &mut providers,
+            &mut auth_store,
+            &auth_path,
+            &session_store,
+            &mut tui,
+            "henlo".to_string(),
+            true,
+        )
+        .unwrap();
+
+        assert!(tui.has_pending_submit());
+        assert!(matches!(state.transcript.first(), Some(message) if message.text == "henlo"));
+
+        let mut completed = false;
+        for _ in 0..20 {
+            if poll_pending_submit(
+                &mut state,
+                &mut auth_store,
+                &auth_path,
+                &session_store,
+                &mut tui,
+            )
+            .unwrap()
+            {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(completed);
+        assert!(!tui.has_pending_submit());
+        assert!(state.transcript.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.text.starts_with("Provider request failed:")
+        }));
+    }
 }

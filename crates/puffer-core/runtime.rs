@@ -19,7 +19,7 @@ use self::openai::{execute_openai, execute_openai_completions, is_event_stream, 
 #[cfg(test)]
 use self::openai::{
     build_codex_openai_request_body, execute_openai_tool_calls, openai_tool_definitions,
-    resolve_openai_execution_config, transcript_to_openai_chat_messages,
+    parse_openai_sse_response_streaming, resolve_openai_execution_config, transcript_to_openai_chat_messages,
     transcript_to_openai_input,
 };
 
@@ -47,6 +47,14 @@ pub struct TurnExecution {
     pub assistant_text: String,
     pub tool_invocations: Vec<ToolInvocation>,
 }
+
+/// Describes one incremental event emitted while a model turn is running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnStreamEvent {
+    TextDelta(String),
+    ToolInvocations(Vec<ToolInvocation>),
+}
+
 /// Executes one user prompt against the currently selected provider and model.
 pub fn execute_user_prompt(
     state: &AppState,
@@ -73,6 +81,35 @@ pub fn execute_user_prompt(
             "provider {} with api {other} is not executable yet",
             provider.id
         ),
+    }
+}
+
+/// Executes one user prompt and emits incremental stream events when the provider supports them.
+pub fn execute_user_prompt_streaming<F>(
+    state: &AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    mut on_event: F,
+) -> Result<TurnExecution>
+where
+    F: FnMut(TurnStreamEvent),
+{
+    let (provider, model_id) = resolve_provider_and_model(state, providers)?;
+    match resolve_model_api(state, providers, provider, &model_id).as_str() {
+        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
+            openai::execute_openai_streaming(
+                state,
+                resources,
+                provider,
+                model_id,
+                auth_store,
+                input,
+                &mut on_event,
+            )
+        }
+        _ => execute_user_prompt(state, resources, providers, auth_store, input),
     }
 }
 fn resolve_provider_and_model<'a>(

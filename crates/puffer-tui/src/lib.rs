@@ -31,9 +31,9 @@ use state::TuiState;
 pub(crate) use state::{AuthPickerAction, ModelPickerEntry, OverlayState};
 use crate::flow::{
     allow_prompt_before_onboarding, apply_selected_provider, builtin_openai_base_url,
-    builtin_openai_headers, builtin_openai_query_params, emit_system_message, handle_submit,
-    persist_user_config, run_embedded_auth_login, set_overlay_state,
-    submit_queued_prompt_if_ready, try_open_overlay,
+    builtin_openai_headers, builtin_openai_query_params, emit_system_message, handle_prompt_submit,
+    handle_submit, is_provider_prompt_input, persist_user_config, poll_pending_submit,
+    run_embedded_auth_login, set_overlay_state, submit_queued_prompt_if_ready, try_open_overlay,
 };
 
 /// Runs the interactive Puffer TUI until the user exits.
@@ -118,8 +118,26 @@ pub fn run_app(
     }
 
     loop {
+        if poll_pending_submit(state, auth_store, auth_path, session_store, &mut tui)? {
+            submit_queued_prompt_if_ready(
+                state,
+                resources,
+                providers,
+                auth_store,
+                auth_path,
+                session_store,
+                &mut tui,
+                no_alt_screen,
+            )?;
+        }
         terminal.draw(|frame| {
             render::set_active_overlay(tui.overlay.clone());
+            render::set_pending_submit_loading(
+                tui.pending_submit
+                    .as_ref()
+                    .map(|pending| !pending.prompt.is_empty())
+                    .unwrap_or(false),
+            );
             render::render(
                 frame,
                 state,
@@ -214,7 +232,7 @@ fn handle_key(
             if tui.input.starts_with('/') {
                 tui.select_next(commands)
             } else {
-                tui.scroll_down(1, render::transcript_line_count(state));
+                tui.scroll_down(1, render::transcript_line_count(state, tui.has_pending_submit()));
             }
         }
         KeyCode::PageUp => {
@@ -232,7 +250,10 @@ fn handle_key(
                     tui.select_next(commands);
                 }
             } else {
-                tui.scroll_down(10, render::transcript_line_count(state));
+                tui.scroll_down(
+                    10,
+                    render::transcript_line_count(state, tui.has_pending_submit()),
+                );
             }
         }
         KeyCode::Backspace => tui.backspace(commands),
@@ -255,14 +276,18 @@ fn handle_key(
             )? {
                 return Ok(false);
             }
+            if tui.has_pending_submit() && is_provider_prompt_input(&current_input) {
+                return Ok(false);
+            }
             let submitted = tui.take_input();
-            handle_submit(
+            handle_prompt_submit(
                 state,
                 resources,
                 providers,
                 auth_store,
                 auth_path,
                 session_store,
+                tui,
                 submitted,
                 no_alt_screen,
             )?;

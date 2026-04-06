@@ -1,0 +1,20 @@
+Review the current worktree and call out any risks.
+
+  ⎿  The working tree is clean.
+
+     No pending changes are waiting for review.
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯

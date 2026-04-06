@@ -1,0 +1,47 @@
+Claude reference (derived from references/claude-code):
+Review the current worktree and call out any risks.
+
+  ⎿  The working tree is clean.
+
+     No pending changes are waiting for review.
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+
+Puffer current:
+╭ Puffer Code ─────────────────────────────────────────────────────────────────────────────────────╮
+│Mascot    Clawd on duty                   │Session    Shipyard · 12345678                         │
+│User      anthropic via API key           │Model      anthropic/claude-sonn... · tools 3/4        │
+│Provider  anthropic · auth api-key        │Directory  puffer                                      │
+│Mode      effort high · fast · vim        │Activity   2 messages · 2 workdirs · dockyard@staging  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+› Review the current worktree and call out any risks.
+
+The working tree is clean.
+
+
+  No pending changes are waiting for review.
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│anthropic · anthropic/claude-so... · auth api-key · tools 3/4 · puffer                            │
+│? for shortcuts · /help · /review · !pwd                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Feature comparison:
+top_panel: claude=false puffer=true
+boxed_footer: claude=false puffer=true
+user_prefix: claude=false puffer=true
+response_connector: claude=true puffer=false
+shortcut_rail: claude=false puffer=true

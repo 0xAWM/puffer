@@ -1,6 +1,6 @@
 use super::{
     parse_http_json_response, run_tool_hooks, run_turn_hooks, send_http_request_raw,
-    ToolInvocation, APP_VERSION, OPENAI_CHATGPT_BASE_URL,
+    ToolInvocation, TurnStreamEvent, APP_VERSION, OPENAI_CHATGPT_BASE_URL,
 };
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,8 +18,10 @@ use puffer_provider_openai::{
 use puffer_provider_registry::{AuthStore, OAuthCredential, ProviderDescriptor, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
+use reqwest::blocking::{Client, Response};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use std::io::{BufRead, BufReader};
 
 const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
@@ -128,6 +130,81 @@ pub(super) fn execute_openai(
     bail!("openai tool loop exceeded iteration limit")
 }
 
+pub(super) fn execute_openai_streaming<F>(
+    state: &AppState,
+    resources: &LoadedResources,
+    provider: &ProviderDescriptor,
+    model_id: String,
+    auth_store: &mut AuthStore,
+    input: &str,
+    on_event: &mut F,
+) -> Result<super::TurnExecution>
+where
+    F: FnMut(TurnStreamEvent),
+{
+    let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
+    if !execution.codex_style {
+        return execute_openai(state, resources, provider, model_id, auth_store, input);
+    }
+
+    let registry = ToolRegistry::from_resources(resources);
+    let tools = openai_tool_definitions(&registry);
+    let mut previous_response_id = None;
+    let mut next_input = transcript_to_openai_input(state, input)?;
+    let mut invocations = Vec::new();
+    let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
+
+    for _ in 0..8 {
+        let response = send_openai_request_with_refresh_streaming(
+            auth_store,
+            &mut execution,
+            |request_config| {
+                let body = build_codex_openai_request_body(
+                    state,
+                    &model_id,
+                    next_input.clone(),
+                    &tools,
+                    previous_response_id.as_ref(),
+                    supports_reasoning,
+                );
+                build_json_post_request(
+                    request_config,
+                    openai_responses_path(&request_config.base_url),
+                    &body,
+                )
+            },
+            on_event,
+        )?;
+
+        let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
+        let tool_calls = extract_responses_tool_calls(&parsed)?;
+        if tool_calls.is_empty() {
+            let assistant_text = parse_openai_assistant_text(&parsed, &response, state)?;
+            run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
+            return Ok(super::TurnExecution {
+                assistant_text,
+                tool_invocations: invocations,
+            });
+        }
+
+        let response_id = parsed
+            .id
+            .clone()
+            .ok_or_else(|| anyhow!("OpenAI response missing id for tool continuation"))?;
+        let tool_results = execute_openai_tool_calls(resources, &tool_calls, &registry, &state.cwd)?;
+        if !tool_results.invocations.is_empty() {
+            on_event(TurnStreamEvent::ToolInvocations(
+                tool_results.invocations.clone(),
+            ));
+        }
+        invocations.extend(tool_results.invocations);
+        previous_response_id = Some(response_id);
+        next_input = json!(tool_results.outputs);
+    }
+
+    bail!("openai tool loop exceeded iteration limit")
+}
+
 pub(super) fn execute_openai_completions(
     state: &AppState,
     resources: &LoadedResources,
@@ -223,7 +300,7 @@ pub(super) fn openai_tool_definitions(registry: &ToolRegistry) -> Vec<OpenAIResp
             kind: "function".to_string(),
             name: definition.id.clone(),
             description: definition.description.clone(),
-            parameters: definition.input_schema.as_json_schema(),
+            parameters: openai_compatible_schema(definition.input_schema.as_json_schema()),
             filters: None,
             user_location: None,
             external_web_access: None,
@@ -239,10 +316,39 @@ fn openai_chat_completion_tools(registry: &ToolRegistry) -> Vec<OpenAIChatComple
             function: OpenAIChatCompletionToolFunction {
                 name: definition.id.clone(),
                 description: definition.description.clone(),
-                parameters: definition.input_schema.as_json_schema(),
+                parameters: openai_compatible_schema(definition.input_schema.as_json_schema()),
             },
         })
         .collect()
+}
+
+fn openai_compatible_schema(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut object) => {
+            if object.get("type").and_then(Value::as_str) == Some("array") {
+                let items = object
+                    .remove("items")
+                    .map(openai_compatible_schema)
+                    .unwrap_or_else(|| json!({ "type": "string" }));
+                object.insert("items".to_string(), items);
+            }
+
+            if let Some(Value::Object(properties)) = object.get_mut("properties") {
+                for property in properties.values_mut() {
+                    let normalized = openai_compatible_schema(property.take());
+                    *property = normalized;
+                }
+            }
+
+            if let Some(items) = object.get_mut("items") {
+                let normalized = openai_compatible_schema(items.take());
+                *items = normalized;
+            }
+
+            Value::Object(object)
+        }
+        value => value,
+    }
 }
 
 pub(super) fn execute_openai_tool_calls(
@@ -558,6 +664,84 @@ where
     parse_http_json_response(&retry.url, false, retry_response)
 }
 
+fn send_openai_request_with_refresh_streaming<F, G>(
+    auth_store: &mut AuthStore,
+    execution: &mut OpenAIExecutionConfig,
+    build_request: F,
+    on_event: &mut G,
+) -> Result<Value>
+where
+    F: Fn(&OpenAIRequestConfig) -> Result<puffer_provider_openai::BuiltOpenAIRequest>,
+    G: FnMut(TurnStreamEvent),
+{
+    let request = build_request(&execution.request_config)?;
+    let response = send_openai_request_stream_raw(&request.url, &request.headers, &request.body)?;
+    if response.status() != StatusCode::UNAUTHORIZED || execution.refresh_token.is_none() {
+        return parse_openai_stream_response(&request.url, response, on_event);
+    }
+
+    let refresh_token = execution
+        .refresh_token
+        .clone()
+        .ok_or_else(|| anyhow!("missing refresh token for OpenAI OAuth retry"))?;
+    let refreshed = refresh_oauth_token(&refresh_token)
+        .context("failed to refresh OpenAI OAuth credentials after 401")?;
+    let stored = openai_registry_credential(refreshed);
+    execution.request_config.auth = OpenAIAuth::OAuthBearer(stored.access_token.clone());
+    execution.request_config.account_id = stored.account_id.clone();
+    execution.refresh_token = Some(stored.refresh_token.clone());
+    auth_store.set_oauth(execution.provider_id.clone(), stored);
+
+    let retry = build_request(&execution.request_config)?;
+    let retry_response = send_openai_request_stream_raw(&retry.url, &retry.headers, &retry.body)?;
+    parse_openai_stream_response(&retry.url, retry_response, on_event)
+}
+
+fn send_openai_request_stream_raw(
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+) -> Result<Response> {
+    let client = Client::new();
+    let mut request = client.post(url);
+    for (key, value) in headers {
+        request = request.header(key, value);
+    }
+    if !headers
+        .iter()
+        .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+    {
+        request = request.header("content-type", "application/json");
+    }
+    request
+        .body(body.to_string())
+        .send()
+        .with_context(|| format!("request to {url} failed"))
+}
+
+fn parse_openai_stream_response<G>(url: &str, response: Response, on_event: &mut G) -> Result<Value>
+where
+    G: FnMut(TurnStreamEvent),
+{
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    if !status.is_success() {
+        let text = response.text()?;
+        bail!("request failed with status {}: {}", status, text);
+    }
+    if is_event_stream(content_type.as_deref(), "") {
+        return parse_openai_sse_reader(BufReader::new(response), on_event)
+            .with_context(|| format!("failed to parse SSE response from {url}"));
+    }
+    let text = response.text()?;
+    serde_json::from_str::<Value>(&text)
+        .with_context(|| format!("response from {url} was not valid JSON"))
+}
+
 fn append_default_openai_headers(headers: &mut Vec<(String, String)>, provider_id: &str) {
     if provider_id == "openai" && !has_header(headers, "version") {
         headers.push(("version".to_string(), APP_VERSION.to_string()));
@@ -698,33 +882,42 @@ pub(super) fn is_event_stream(content_type: Option<&str>, text: &str) -> bool {
 }
 
 pub(super) fn parse_openai_sse_response(stream: &str) -> Result<Value> {
+    parse_openai_sse_response_streaming(stream, &mut |_| {})
+}
+
+pub(super) fn parse_openai_sse_response_streaming<F>(stream: &str, on_event: &mut F) -> Result<Value>
+where
+    F: FnMut(TurnStreamEvent),
+{
+    parse_openai_sse_reader(BufReader::new(stream.as_bytes()), on_event)
+}
+
+fn parse_openai_sse_reader<R, F>(reader: BufReader<R>, on_event: &mut F) -> Result<Value>
+where
+    R: std::io::Read,
+    F: FnMut(TurnStreamEvent),
+{
     let mut response_id = None;
     let mut output = Vec::new();
+    let mut reader = reader;
+    let mut line = String::new();
+    let mut data_lines = Vec::new();
 
-    for chunk in stream.split("\n\n") {
-        let data = chunk
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(str::trim_start)
-            .collect::<Vec<_>>()
-            .join("\n");
-        if data.is_empty() || data == "[DONE]" {
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            flush_sse_event(&data_lines, &mut response_id, &mut output, on_event)?;
+            break;
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            flush_sse_event(&data_lines, &mut response_id, &mut output, on_event)?;
+            data_lines.clear();
             continue;
         }
-        let event: Value = serde_json::from_str(&data)
-            .with_context(|| format!("invalid SSE payload: {data}"))?;
-        match event.get("type").and_then(Value::as_str).unwrap_or_default() {
-            "response.created" | "response.completed" => {
-                if let Some(id) = event.pointer("/response/id").and_then(Value::as_str) {
-                    response_id = Some(id.to_string());
-                }
-            }
-            "response.output_item.done" => {
-                if let Some(item) = event.get("item") {
-                    output.push(item.clone());
-                }
-            }
-            _ => {}
+        if let Some(data) = trimmed.strip_prefix("data:") {
+            data_lines.push(data.trim_start().to_string());
         }
     }
 
@@ -732,6 +925,42 @@ pub(super) fn parse_openai_sse_response(stream: &str) -> Result<Value> {
         "id": response_id,
         "output": output,
     }))
+}
+
+fn flush_sse_event<F>(
+    data_lines: &[String],
+    response_id: &mut Option<String>,
+    output: &mut Vec<Value>,
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(TurnStreamEvent),
+{
+    let data = data_lines.join("\n");
+    if data.is_empty() || data == "[DONE]" {
+        return Ok(());
+    }
+    let event: Value =
+        serde_json::from_str(&data).with_context(|| format!("invalid SSE payload: {data}"))?;
+    match event.get("type").and_then(Value::as_str).unwrap_or_default() {
+        "response.created" | "response.completed" => {
+            if let Some(id) = event.pointer("/response/id").and_then(Value::as_str) {
+                *response_id = Some(id.to_string());
+            }
+        }
+        "response.output_item.done" => {
+            if let Some(item) = event.get("item") {
+                output.push(item.clone());
+            }
+        }
+        "response.output_text.delta" => {
+            if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                on_event(TurnStreamEvent::TextDelta(delta.to_string()));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn openai_registry_credential(

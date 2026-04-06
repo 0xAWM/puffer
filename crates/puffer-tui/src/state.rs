@@ -2,15 +2,15 @@ use crate::popup::popup_rows;
 use crate::usage::UsageOverlay;
 use anyhow::Result;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
-use puffer_core::CommandSpec;
-use puffer_provider_registry::ExternalImportCandidate;
+use puffer_core::{CommandSpec, ToolInvocation, TurnExecution};
+use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
+use std::sync::mpsc::Receiver;
 
 /// Stores editable TUI input state plus the active overlay and deferred prompt.
-#[derive(Debug, Clone, Default)]
 pub(crate) struct TuiState {
     pub(crate) input: String,
     pub(crate) cursor: usize,
@@ -18,6 +18,48 @@ pub(crate) struct TuiState {
     pub(crate) scroll_offset: u16,
     pub(crate) overlay: Option<OverlayState>,
     pub(crate) deferred_prompt: Option<String>,
+    pub(crate) pending_submit: Option<PendingSubmit>,
+}
+
+/// Carries one completed background provider turn back to the UI thread.
+pub(crate) struct PendingSubmitResult {
+    pub(crate) outcome: std::result::Result<TurnExecution, String>,
+    pub(crate) auth_store: AuthStore,
+}
+
+/// Carries one event emitted while a provider-backed turn is in flight.
+pub(crate) enum PendingSubmitEvent {
+    TextDelta(String),
+    ToolInvocations(Vec<ToolInvocation>),
+    Finished(PendingSubmitResult),
+}
+
+/// Stores one in-flight provider prompt and the receiver for its completion event.
+pub(crate) struct PendingSubmit {
+    pub(crate) prompt: String,
+    pub(crate) receiver: Receiver<PendingSubmitEvent>,
+    pub(crate) rendered_tool_invocations: usize,
+}
+
+impl Default for TuiState {
+    fn default() -> Self {
+        Self {
+            input: String::new(),
+            cursor: 0,
+            slash_selection: 0,
+            scroll_offset: 0,
+            overlay: None,
+            deferred_prompt: None,
+            pending_submit: None,
+        }
+    }
+}
+
+impl TuiState {
+    /// Returns true when a provider-backed prompt is still running.
+    pub(crate) fn has_pending_submit(&self) -> bool {
+        self.pending_submit.is_some()
+    }
 }
 
 impl TuiState {
