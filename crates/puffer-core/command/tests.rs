@@ -329,9 +329,10 @@ fn hooks_command_creates_workspace_file() {
     )
     .unwrap();
 
-    let hooks_path = paths.workspace_config_dir.join("hooks.yaml");
+    let hooks_path = paths.workspace_config_dir.join("resources/hooks/tool_end.yaml");
     let hooks = std::fs::read_to_string(hooks_path).unwrap();
-    assert!(hooks.contains("on_tool_start"));
+    assert!(hooks.contains("tool_end"));
+    assert!(hooks.contains("PUFFER_TOOL_ID"));
     assert!(matches!(
         state.transcript.last(),
         Some(RenderedMessage {

@@ -436,7 +436,9 @@ pub(crate) fn handle_hooks_command(
 ) -> Result<()> {
     let paths = ConfigPaths::discover(&state.cwd);
     ensure_workspace_dirs(&paths)?;
-    let hooks_path = paths.workspace_config_dir.join("hooks.yaml");
+    let hooks_dir = paths.workspace_config_dir.join("resources/hooks");
+    fs::create_dir_all(&hooks_dir)?;
+    let hooks_path = hooks_dir.join("tool_end.yaml");
     if !hooks_path.exists() {
         fs::write(&hooks_path, default_hooks_contents())?;
     }
@@ -444,18 +446,18 @@ pub(crate) fn handle_hooks_command(
         return emit_system(
             state,
             session_store,
-            format!("Hooks file: {}", hooks_path.display()),
+            format!("Hooks directory: {}", hooks_dir.display()),
         );
     }
     emit_system(
         state,
         session_store,
         format!(
-            "Hooks file: {}\nloaded_hooks={}\n{}{}",
-            hooks_path.display(),
+            "Hooks directory: {}\nloaded_hooks={}\n{}{}",
+            hooks_dir.display(),
             resources.hooks.len(),
             if resources.hooks.is_empty() {
-                String::new()
+                format!("Example hook file: {}\n", hooks_path.display())
             } else {
                 let mut summary = String::from("Loaded hooks:\n");
                 for hook in &resources.hooks {
@@ -651,7 +653,9 @@ fn default_keybindings_contents() -> &'static str {
 }
 
 fn default_hooks_contents() -> &'static str {
-    "hooks:\n  on_tool_start: []\n  on_tool_finish: []\n  on_turn_end: []\n"
+    "id: tool-end\n\
+event: tool_end\n\
+command: echo \"$PUFFER_TOOL_ID:$PUFFER_TOOL_SUCCESS\"\n"
 }
 
 fn default_agents_contents(model: Option<&str>) -> String {
