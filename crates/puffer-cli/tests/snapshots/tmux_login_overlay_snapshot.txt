@@ -1,4 +1,4 @@
-╭ Login ──────────────────────────────────────────╮
-│Select Provider                                  │
+╭Select Provider──────────────────────────────────╮
 │anthropic  Anthropic                             │
 │openai  OpenAI                                   │
+│cerebras  Cerebras                               │

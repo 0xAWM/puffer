@@ -1,4 +1,6 @@
 use super::*;
+use super::openai::execute_openai_tool_calls;
+use puffer_provider_registry::OAuthCredential;
 use puffer_provider_mistral::{
     build_chat_request, extract_chat_text, extract_chat_tool_calls, parse_chat_response,
     MistralAuth, MistralChatMessage, MistralChatRequest, MistralRequestConfig, MistralTool,

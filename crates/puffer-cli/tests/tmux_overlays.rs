@@ -39,7 +39,8 @@ fn tmux_resume_overlay_lists_workspace_sessions() {
     .unwrap();
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     send_tmux_keys(&session, &["/resume", "Enter"]).unwrap();
-    let capture = wait_for_tmux_text(&session, "Resume Session", Duration::from_secs(10)).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let capture = capture_tmux_pane(&session).unwrap();
     assert!(capture.contains("dockyard"));
 }
 

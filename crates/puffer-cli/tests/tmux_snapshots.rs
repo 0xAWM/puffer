@@ -37,8 +37,7 @@ fn tmux_login_overlay_matches_snapshot() {
     let session = start_tmux_with_home(&workspace);
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(10)).unwrap();
     send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
-    let capture =
-        wait_for_tmux_text(&session, "Select Provider", Duration::from_secs(10)).unwrap();
+    let capture = wait_for_tmux_text(&session, "Select Provider", Duration::from_secs(10)).unwrap();
     assert_normalized_snapshot(
         &normalize_tmux_capture(&focused_login_capture(&capture)),
         &snapshot_path("tmux_login_overlay_snapshot.txt"),
@@ -144,7 +143,7 @@ fn focused_help_capture(capture: &str) -> String {
 }
 
 fn focused_login_capture(capture: &str) -> String {
-    trim_common_padding(&focused_tmux_capture(capture, " Login ", 0, 4))
+    trim_common_padding(&focused_tmux_capture(capture, "Select Provider", 0, 4))
 }
 
 fn trim_common_padding(capture: &str) -> String {

@@ -1,48 +1,38 @@
+use crate::hooks::run_resource_hooks;
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
-use puffer_provider_openai::{
-    build_chat_completions_request, build_responses_request, build_tool_responses_request,
-    extract_chat_completions_text, extract_chat_completions_tool_calls, extract_responses_text,
-    extract_responses_tool_calls, parse_chat_completions_response, parse_responses_response,
-    OpenAIAuth, OpenAIChatCompletionsRequest, OpenAIChatFunctionCall, OpenAIChatMessage,
-    OpenAIChatToolCall, OpenAIRequestConfig, OpenAIResponsesFunctionCallOutput,
-    OpenAIResponsesRequest, OpenAIResponsesToolChoice, OpenAIResponsesToolChoiceMode,
-    OpenAIResponsesToolRequest,
-};
-use puffer_provider_registry::{
-    AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
-};
+use puffer_provider_registry::{AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
-    build_messages_request, finalize_cch_body, get_session_ingress_auth, AnthropicAuth,
+    build_messages_request, get_session_ingress_auth, AnthropicAuth, AnthropicMessage,
     AnthropicModelRequest, AnthropicRequestConfig,
 };
 use reqwest::blocking::Client;
+use reqwest::StatusCode;
 use serde_json::{json, Value};
 
-mod hook_support;
-mod local_tools;
-mod message_support;
 mod mistral;
-mod tool_support;
-mod web_search;
+mod openai;
 
-use hook_support::{run_tool_hooks, run_turn_hooks};
-use local_tools::{execute_runtime_local_tool, is_runtime_local_tool};
-use message_support::{
-    parse_openai_assistant_text, parse_openai_text_fallback,
-    transcript_to_anthropic_messages, transcript_to_anthropic_request_messages,
-    transcript_to_openai_chat_messages, transcript_to_openai_input,
+use self::openai::{execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response};
+#[cfg(test)]
+use self::openai::{
+    build_codex_openai_request_body, execute_openai_tool_calls, openai_tool_definitions,
+    resolve_openai_execution_config, transcript_to_openai_chat_messages,
+    transcript_to_openai_input,
 };
-use tool_support::{
-    anthropic_tool_definitions, enforce_tool_permission, is_provider_web_search_tool,
-    merge_tool_output, openai_chat_completion_tools, openai_tool_definitions,
-};
-use web_search::{execute_anthropic_web_search, execute_openai_web_search};
-mod oauth;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const OPENAI_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+
+#[derive(Debug)]
+struct RawHttpResponse {
+    status: StatusCode,
+    content_type: Option<String>,
+    text: String,
+}
+
 /// Describes one tool call executed during a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolInvocation {
@@ -62,7 +52,7 @@ pub fn execute_user_prompt(
     state: &AppState,
     resources: &LoadedResources,
     providers: &ProviderRegistry,
-    auth_store: &AuthStore,
+    auth_store: &mut AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
@@ -153,136 +143,56 @@ fn execute_anthropic(
     auth_store: &AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
-    let mut request_auth_store = oauth::load_request_auth_store(state, provider, auth_store)?;
-    let mut auth = anthropic_auth_for_provider(&request_auth_store, provider)?;
+    let auth = anthropic_auth_for_provider(auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
     let mut messages = transcript_to_anthropic_messages(state, input);
     let mut invocations = Vec::new();
-    let request_messages = transcript_to_anthropic_request_messages(state, input);
+    let plan_mode_context = crate::command_helpers::prompt::plan_mode_context_message(state)?;
+    let request = build_messages_request(
+        &AnthropicRequestConfig {
+            base_url: provider.base_url.clone(),
+            session_id: state.session.id.to_string(),
+            custom_headers: provider.headers.clone(),
+            remote_container_id: None,
+            remote_session_id: None,
+            client_app: None,
+            entrypoint: "cli".to_string(),
+            user_type: "external".to_string(),
+            version: APP_VERSION.to_string(),
+            workload: None,
+            additional_protection: false,
+            cch_enabled: true,
+            auth: auth.clone(),
+            beta_header: None,
+            client_request_id: None,
+        },
+        &AnthropicModelRequest {
+            model: model_id.clone(),
+            max_tokens: 1024,
+            messages: transcript_to_anthropic_request_messages(state, input),
+        },
+    )?;
 
     for _ in 0..8 {
-        let request = build_messages_request(
-            &AnthropicRequestConfig {
-                base_url: provider.base_url.clone(),
-                session_id: state.session.id.to_string(),
-                custom_headers: provider.headers.clone(),
-                remote_container_id: None,
-                remote_session_id: None,
-                client_app: None,
-                entrypoint: "cli".to_string(),
-                user_type: "external".to_string(),
-                version: APP_VERSION.to_string(),
-                workload: None,
-                additional_protection: false,
-                cch_enabled: true,
-                auth: auth.clone(),
-                beta_header: None,
-                client_request_id: None,
-            },
-            &AnthropicModelRequest {
-                model: model_id.clone(),
-                max_tokens: 1024,
-                messages: request_messages.clone(),
-            },
-        )?;
         let mut body = json!({
             "model": model_id,
             "max_tokens": 1024,
             "messages": messages,
-            "system": [
-                {
-                    "type": "text",
-                    "text": request.attribution_prefix_block.clone(),
-                }
-            ]
+            "system": anthropic_system_blocks(
+                &request.attribution_prefix_block,
+                plan_mode_context.as_deref(),
+            )
         });
 
-        let tools = anthropic_tool_definitions(&registry, provider, &model_id);
+        let tools = anthropic_tool_definitions(&registry);
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
         }
 
-        let body_text = finalize_cch_body(&body.to_string())?;
-        let response = match send_http_request(&request.url, &request.headers, &body_text, true) {
-            Ok(response) => response,
-            Err(error) => {
-                if oauth_retryable_anthropic_error(&error, &auth) {
-                    let failed_access_token = match &auth {
-                        AnthropicAuth::OAuthBearer(token) => token.as_str(),
-                        _ => unreachable!("retryable errors require OAuth bearer auth"),
-                    };
-                    let recovered_store = oauth::recover_from_oauth_failure(
-                        state,
-                        provider,
-                        &request_auth_store,
-                        failed_access_token,
-                    )?;
-                    let recovered_auth = anthropic_auth_for_provider(&recovered_store, provider)?;
-                    if recovered_auth != auth {
-                        request_auth_store = recovered_store;
-                        auth = recovered_auth;
-                        let retry_request = build_messages_request(
-                            &AnthropicRequestConfig {
-                                base_url: provider.base_url.clone(),
-                                session_id: state.session.id.to_string(),
-                                custom_headers: provider.headers.clone(),
-                                remote_container_id: None,
-                                remote_session_id: None,
-                                client_app: None,
-                                entrypoint: "cli".to_string(),
-                                user_type: "external".to_string(),
-                                version: APP_VERSION.to_string(),
-                                workload: None,
-                                additional_protection: false,
-                                cch_enabled: true,
-                                auth: auth.clone(),
-                                beta_header: None,
-                                client_request_id: None,
-                            },
-                            &AnthropicModelRequest {
-                                model: model_id.clone(),
-                                max_tokens: 1024,
-                                messages: request_messages.clone(),
-                            },
-                        )?;
-                        send_http_request(
-                            &retry_request.url,
-                            &retry_request.headers,
-                            &body_text,
-                            true,
-                        )?
-                    } else {
-                        return Err(error);
-                    }
-                } else {
-                    return Err(error);
-                }
-            }
-        };
-        if let Some(tool_results) = execute_anthropic_tool_calls(
-            resources,
-            &response,
-            &registry,
-            &state.cwd,
-            &AnthropicRequestConfig {
-                base_url: provider.base_url.clone(),
-                session_id: state.session.id.to_string(),
-                custom_headers: provider.headers.clone(),
-                remote_container_id: None,
-                remote_session_id: None,
-                client_app: None,
-                entrypoint: "cli".to_string(),
-                user_type: "external".to_string(),
-                version: APP_VERSION.to_string(),
-                workload: None,
-                additional_protection: false,
-                cch_enabled: true,
-                auth: auth.clone(),
-                beta_header: None,
-                client_request_id: None,
-            },
-            &model_id,
-        )? {
+        let response = send_http_request(&request.url, &request.headers, &body.to_string(), true)?;
+        if let Some(tool_results) =
+            execute_anthropic_tool_calls(resources, &response, &registry, &state.cwd)?
+        {
             invocations.extend(tool_results.invocations);
             messages.push(json!({
                 "role": "assistant",
@@ -308,230 +218,22 @@ fn execute_anthropic(
 
     bail!("anthropic tool loop exceeded iteration limit")
 }
-
-fn oauth_retryable_anthropic_error(error: &anyhow::Error, auth: &AnthropicAuth) -> bool {
-    if !matches!(auth, AnthropicAuth::OAuthBearer(_)) {
-        return false;
-    }
-    let message = error.to_string();
-    message.contains("request failed with status 401:")
-        || (message.contains("request failed with status 403:")
-            && message.contains("OAuth token has been revoked"))
-}
-fn execute_openai(
-    state: &AppState,
-    resources: &LoadedResources,
-    provider: &ProviderDescriptor,
-    model_id: String,
-    auth_store: &AuthStore,
-    input: &str,
-) -> Result<TurnExecution> {
-    let request_auth_store = oauth::load_request_auth_store(state, provider, auth_store)?;
-    let auth = openai_auth_for_provider(&request_auth_store, provider)?;
-    let request_config = OpenAIRequestConfig {
-        base_url: provider.base_url.clone(),
-        version: APP_VERSION.to_string(),
-        auth,
-        originator: "codex_cli_rs".to_string(),
-        session_id: None,
-        account_id: None,
-        custom_headers: Vec::new(),
-        query_params: provider
-            .query_params
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-    };
-    let registry = ToolRegistry::from_resources(resources);
-    let tools = openai_tool_definitions(&registry, provider, &model_id);
-    let mut previous_response_id = None;
-    let mut next_input = transcript_to_openai_input(state, input);
-    let mut invocations = Vec::new();
-
-    for _ in 0..8 {
-        let response = if tools.is_empty()
-            && previous_response_id.is_none()
-            && matches!(next_input, Value::String(_))
-        {
-            let request = build_responses_request(
-                &request_config,
-                &OpenAIResponsesRequest {
-                    model: model_id.clone(),
-                    input: next_input.as_str().unwrap_or_default().to_string(),
-                },
-            )?;
-            send_http_request(&request.url, &request.headers, &request.body, false)?
-        } else {
-            let request = build_tool_responses_request(
-                &request_config,
-                &OpenAIResponsesToolRequest {
-                    model: model_id.clone(),
-                    input: next_input.clone(),
-                    tools: tools.clone(),
-                    include: Vec::new(),
-                    tool_choice: if tools.is_empty() {
-                        None
-                    } else {
-                        Some(OpenAIResponsesToolChoice::Mode(
-                            OpenAIResponsesToolChoiceMode::Auto,
-                        ))
-                    },
-                    previous_response_id: previous_response_id.clone(),
-                },
-            )?;
-            send_http_request(&request.url, &request.headers, &request.body, false)?
-        };
-
-        let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
-        let tool_calls = extract_responses_tool_calls(&parsed)?;
-        if tool_calls.is_empty() {
-            let assistant_text = parse_openai_assistant_text(
-                &parsed,
-                &response,
-                state,
-                parse_openai_text,
-                extract_responses_text,
-            )?;
-            run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
-            return Ok(TurnExecution {
-                assistant_text,
-                tool_invocations: invocations,
-            });
-        }
-
-        let response_id = parsed
-            .id
-            .clone()
-            .ok_or_else(|| anyhow!("OpenAI response missing id for tool continuation"))?;
-        let tool_results = execute_openai_tool_calls(
-            resources,
-            &tool_calls,
-            &registry,
-            &state.cwd,
-            &request_config,
-            &model_id,
-        )?;
-        invocations.extend(tool_results.invocations);
-        previous_response_id = Some(response_id);
-        next_input = json!(tool_results.outputs);
-    }
-
-    bail!("openai tool loop exceeded iteration limit")
-}
-
-fn execute_openai_completions(
-    state: &AppState,
-    resources: &LoadedResources,
-    provider: &ProviderDescriptor,
-    model_id: String,
-    auth_store: &AuthStore,
-    input: &str,
-) -> Result<TurnExecution> {
-    let request_auth_store = oauth::load_request_auth_store(state, provider, auth_store)?;
-    let auth = openai_auth_for_provider(&request_auth_store, provider)?;
-    let request_config = OpenAIRequestConfig {
-        base_url: provider.base_url.clone(),
-        version: APP_VERSION.to_string(),
-        auth,
-        originator: "codex_cli_rs".to_string(),
-        session_id: None,
-        account_id: None,
-        custom_headers: Vec::new(),
-        query_params: provider
-            .query_params
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-    };
-    let registry = ToolRegistry::from_resources(resources);
-    let tools = openai_chat_completion_tools(&registry, provider, &model_id);
-    let mut messages = transcript_to_openai_chat_messages(state, input);
-    let mut invocations = Vec::new();
-
-    for _ in 0..8 {
-        let request = build_chat_completions_request(
-            &request_config,
-            &OpenAIChatCompletionsRequest {
-                model: model_id.clone(),
-                messages: messages.clone(),
-                tools: tools.clone(),
-                tool_choice: if tools.is_empty() {
-                    None
-                } else {
-                    Some(OpenAIResponsesToolChoiceMode::Auto)
-                },
-            },
-        )?;
-        let response = send_http_request(&request.url, &request.headers, &request.body, false)?;
-        let parsed = parse_chat_completions_response(&serde_json::to_string(&response)?)?;
-        let tool_calls = extract_chat_completions_tool_calls(&parsed)?;
-        let choice = parsed
-            .choices
-            .first()
-            .ok_or_else(|| anyhow!("OpenAI Chat Completions response did not contain choices"))?;
-        if tool_calls.is_empty() {
-            let text = extract_chat_completions_text(&parsed);
-            let assistant_text = if text.trim().is_empty() {
-                parse_openai_text(&response)
-                    .or_else(|_| parse_openai_text_fallback(&response, state))?
-            } else {
-                text
-            };
-            run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
-            return Ok(TurnExecution {
-                assistant_text,
-                tool_invocations: invocations,
-            });
-        }
-
-        let tool_results = execute_openai_tool_calls(
-            resources,
-            &tool_calls,
-            &registry,
-            &state.cwd,
-            &request_config,
-            &model_id,
-        )?;
-        invocations.extend(tool_results.invocations);
-        messages.push(OpenAIChatMessage {
-            role: choice
-                .message
-                .role
-                .clone()
-                .unwrap_or_else(|| "assistant".to_string()),
-            content: choice.message.content.clone(),
-            tool_call_id: None,
-            tool_calls: tool_calls
-                .iter()
-                .map(|tool_call| OpenAIChatToolCall {
-                    id: tool_call.call_id.clone(),
-                    kind: "function".to_string(),
-                    function: OpenAIChatFunctionCall {
-                        name: tool_call.name.clone(),
-                        arguments: serde_json::to_string(&tool_call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    },
-                })
-                .collect(),
-        });
-        for output in tool_results.outputs {
-            messages.push(OpenAIChatMessage {
-                role: "tool".to_string(),
-                content: Some(json!(output.output)),
-                tool_call_id: Some(output.call_id),
-                tool_calls: Vec::new(),
-            });
-        }
-    }
-
-    bail!("openai chat completions tool loop exceeded iteration limit")
-}
 fn send_http_request(
     url: &str,
     headers: &[(String, String)],
     body: &str,
     anthropic: bool,
 ) -> Result<Value> {
+    let response = send_http_request_raw(url, headers, body, anthropic)?;
+    parse_http_json_response(url, anthropic, response)
+}
+
+fn send_http_request_raw(
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+    anthropic: bool,
+) -> Result<RawHttpResponse> {
     let client = Client::new();
     let mut request = client.post(url);
     for (key, value) in headers {
@@ -555,14 +257,35 @@ fn send_http_request(
         .send()
         .with_context(|| format!("request to {url} failed"))?;
     let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
     let text = response.text()?;
-    if !status.is_success() {
-        bail!("request failed with status {}: {}", status, text);
-    }
-    let json = serde_json::from_str::<Value>(&text)
-        .with_context(|| format!("response from {url} was not valid JSON"))?;
-    Ok(json)
+    Ok(RawHttpResponse {
+        status,
+        content_type,
+        text,
+    })
 }
+
+fn parse_http_json_response(url: &str, anthropic: bool, response: RawHttpResponse) -> Result<Value> {
+    if !response.status.is_success() {
+        bail!(
+            "request failed with status {}: {}",
+            response.status,
+            response.text
+        );
+    }
+    if !anthropic && is_event_stream(response.content_type.as_deref(), &response.text) {
+        return parse_openai_sse_response(&response.text)
+            .with_context(|| format!("failed to parse SSE response from {url}"));
+    }
+    serde_json::from_str::<Value>(&response.text)
+        .with_context(|| format!("response from {url} was not valid JSON"))
+}
+
 fn anthropic_auth_for_provider(
     auth_store: &AuthStore,
     provider: &ProviderDescriptor,
@@ -580,23 +303,6 @@ fn anthropic_auth_for_provider(
                 provider.id
             )
         }),
-    }
-}
-fn openai_auth_for_provider(
-    auth_store: &AuthStore,
-    provider: &ProviderDescriptor,
-) -> Result<OpenAIAuth> {
-    match auth_store.get(&provider.id) {
-        Some(StoredCredential::ApiKey { key }) => Ok(OpenAIAuth::ApiKey(key.clone())),
-        Some(StoredCredential::OAuth(OAuthCredential { access_token, .. })) => {
-            Ok(OpenAIAuth::OAuthBearer(access_token.clone()))
-        }
-        None if provider.auth_modes.is_empty() => Ok(OpenAIAuth::None),
-        None => bail!(
-            "no credentials configured for provider {}; use `puffer auth set-api-key {}` first",
-            provider.id,
-            provider.id
-        ),
     }
 }
 fn parse_anthropic_text(response: &Value) -> Result<String> {
@@ -619,13 +325,79 @@ fn parse_anthropic_text(response: &Value) -> Result<String> {
     }
     Ok(parts.join("\n"))
 }
+fn anthropic_tool_definitions(registry: &ToolRegistry) -> Vec<Value> {
+    registry
+        .tools()
+        .map(|tool| {
+            json!({
+                "name": tool.spec.id,
+                "description": tool.spec.description,
+                "input_schema": tool.spec.input_schema.as_json_schema(),
+            })
+        })
+        .collect()
+}
+#[cfg(test)]
+fn anthropic_tool_schema(handler: &str) -> Value {
+    match handler {
+        "bash" => json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string" }
+            },
+            "required": ["command"],
+        }),
+        "read_file" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": ["path"],
+        }),
+        "write_file" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "contents": { "type": "string" }
+            },
+            "required": ["path", "contents"],
+        }),
+        "replace_in_file" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "old": { "type": "string" },
+                "new": { "type": "string" },
+                "replace_all": { "type": "boolean" }
+            },
+            "required": ["path", "old", "new"],
+        }),
+        "list_dir" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": [],
+        }),
+        "search_text" => json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "path": { "type": "string" }
+            },
+            "required": ["query"],
+        }),
+        _ => json!({
+            "type": "object",
+            "properties": {},
+        }),
+    }
+}
 fn execute_anthropic_tool_calls(
     resources: &LoadedResources,
     response: &Value,
     registry: &ToolRegistry,
     cwd: &std::path::Path,
-    request_config: &AnthropicRequestConfig,
-    model_id: &str,
 ) -> Result<Option<AnthropicToolResults>> {
     let Some(content) = response.get("content").and_then(Value::as_array) else {
         return Ok(None);
@@ -648,92 +420,6 @@ fn execute_anthropic_tool_calls(
         let input = item
             .get("input")
             .ok_or_else(|| anyhow!("anthropic tool_use block missing input"))?;
-        if let Err(error) = enforce_tool_permission(registry, tool_id) {
-            let output_text = error.to_string();
-            run_tool_hooks(
-                resources,
-                cwd,
-                "tool_end",
-                tool_id,
-                input,
-                false,
-                "",
-                &output_text,
-            );
-            results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": output_text,
-                "is_error": true,
-            }));
-            invocations.push(ToolInvocation {
-                tool_id: tool_id.to_string(),
-                input: serde_json::to_string(input)?,
-                output: output_text,
-                success: false,
-            });
-            continue;
-        }
-        let definition = registry
-            .definition(tool_id)
-            .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?;
-        if is_runtime_local_tool(definition) {
-            let output_text =
-                execute_runtime_local_tool(resources, registry, definition, cwd, input.clone())?;
-            run_tool_hooks(
-                resources,
-                cwd,
-                "tool_end",
-                tool_id,
-                input,
-                true,
-                &output_text,
-                "",
-            );
-            results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": output_text,
-                "is_error": false,
-            }));
-            invocations.push(ToolInvocation {
-                tool_id: tool_id.to_string(),
-                input: serde_json::to_string(input)?,
-                output: output_text,
-                success: true,
-            });
-            continue;
-        }
-        if registry
-            .definition(tool_id)
-            .is_some_and(is_provider_web_search_tool)
-        {
-            let output_text =
-                execute_anthropic_web_search(request_config, model_id, input.clone())?;
-            run_tool_hooks(
-                resources,
-                cwd,
-                "tool_end",
-                tool_id,
-                input,
-                true,
-                &output_text,
-                "",
-            );
-            results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": output_text,
-                "is_error": false,
-            }));
-            invocations.push(ToolInvocation {
-                tool_id: tool_id.to_string(),
-                input: serde_json::to_string(input)?,
-                output: output_text,
-                success: true,
-            });
-            continue;
-        }
         let execution = registry.execute_json(tool_id, cwd, input.clone())?;
         run_tool_hooks(
             resources,
@@ -745,7 +431,13 @@ fn execute_anthropic_tool_calls(
             &execution.output.stdout,
             &execution.output.stderr,
         );
-        let output_text = merge_tool_output(execution.output.stdout, execution.output.stderr);
+        let output_text = if execution.output.stderr.is_empty() {
+            execution.output.stdout
+        } else if execution.output.stdout.is_empty() {
+            execution.output.stderr
+        } else {
+            format!("{}\n{}", execution.output.stdout, execution.output.stderr)
+        };
         results.push(json!({
             "type": "tool_result",
             "tool_use_id": tool_use_id,
@@ -775,166 +467,114 @@ struct AnthropicToolResults {
     invocations: Vec<ToolInvocation>,
 }
 
-struct OpenAIToolResults {
-    outputs: Vec<OpenAIResponsesFunctionCallOutput>,
-    invocations: Vec<ToolInvocation>,
-}
-
-fn execute_openai_tool_calls(
+fn run_tool_hooks(
     resources: &LoadedResources,
-    tool_calls: &[puffer_provider_openai::OpenAIResponseToolCall],
-    registry: &ToolRegistry,
     cwd: &std::path::Path,
-    request_config: &OpenAIRequestConfig,
-    model_id: &str,
-) -> Result<OpenAIToolResults> {
-    let mut outputs = Vec::new();
-    let mut invocations = Vec::new();
-    for tool_call in tool_calls {
-        if let Err(error) = enforce_tool_permission(registry, &tool_call.name) {
-            let output = error.to_string();
-            run_tool_hooks(
-                resources,
-                cwd,
-                "tool_end",
-                &tool_call.name,
-                &tool_call.arguments,
-                false,
-                "",
-                &output,
-            );
-            outputs.push(OpenAIResponsesFunctionCallOutput {
-                kind: "function_call_output".to_string(),
-                call_id: tool_call.call_id.clone(),
-                output: output.clone(),
-            });
-            invocations.push(ToolInvocation {
-                tool_id: tool_call.name.clone(),
-                input: serde_json::to_string(&tool_call.arguments)?,
-                output,
-                success: false,
-            });
-            continue;
-        }
-        let definition = registry
-            .definition(&tool_call.name)
-            .ok_or_else(|| anyhow!("unknown tool {}", tool_call.name))?;
-        if is_runtime_local_tool(definition) {
-            let output = execute_runtime_local_tool(
-                resources,
-                registry,
-                definition,
-                cwd,
-                tool_call.arguments.clone(),
-            )?;
-            run_tool_hooks(
-                resources,
-                cwd,
-                "tool_end",
-                &tool_call.name,
-                &tool_call.arguments,
-                true,
-                &output,
-                "",
-            );
-            outputs.push(OpenAIResponsesFunctionCallOutput {
-                kind: "function_call_output".to_string(),
-                call_id: tool_call.call_id.clone(),
-                output: output.clone(),
-            });
-            invocations.push(ToolInvocation {
-                tool_id: tool_call.name.clone(),
-                input: serde_json::to_string(&tool_call.arguments)?,
-                output,
-                success: true,
-            });
-            continue;
-        }
-        if registry
-            .definition(&tool_call.name)
-            .is_some_and(is_provider_web_search_tool)
-        {
-            let output =
-                execute_openai_web_search(request_config, model_id, tool_call.arguments.clone())?;
-            run_tool_hooks(
-                resources,
-                cwd,
-                "tool_end",
-                &tool_call.name,
-                &tool_call.arguments,
-                true,
-                &output,
-                "",
-            );
-            outputs.push(OpenAIResponsesFunctionCallOutput {
-                kind: "function_call_output".to_string(),
-                call_id: tool_call.call_id.clone(),
-                output: output.clone(),
-            });
-            invocations.push(ToolInvocation {
-                tool_id: tool_call.name.clone(),
-                input: serde_json::to_string(&tool_call.arguments)?,
-                output,
-                success: true,
-            });
-            continue;
-        }
-        let execution = registry.execute_json(&tool_call.name, cwd, tool_call.arguments.clone())?;
-        run_tool_hooks(
-            resources,
-            cwd,
-            "tool_end",
-            &tool_call.name,
-            &tool_call.arguments,
-            execution.success,
-            &execution.output.stdout,
-            &execution.output.stderr,
-        );
-        let output = merge_tool_output(execution.output.stdout, execution.output.stderr);
-        outputs.push(OpenAIResponsesFunctionCallOutput {
-            kind: "function_call_output".to_string(),
-            call_id: tool_call.call_id.clone(),
-            output: output.clone(),
-        });
-        invocations.push(ToolInvocation {
-            tool_id: tool_call.name.clone(),
-            input: serde_json::to_string(&tool_call.arguments)?,
-            output,
-            success: execution.success,
-        });
-    }
-    Ok(OpenAIToolResults {
-        outputs,
-        invocations,
-    })
+    event: &str,
+    tool_id: &str,
+    input: &Value,
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) {
+    run_resource_hooks(
+        resources,
+        cwd,
+        event,
+        &[
+            ("PUFFER_TOOL_ID", tool_id.to_string()),
+            ("PUFFER_TOOL_INPUT", input.to_string()),
+            (
+                "PUFFER_TOOL_SUCCESS",
+                if success { "true" } else { "false" }.to_string(),
+            ),
+            ("PUFFER_TOOL_STDOUT", stdout.to_string()),
+            ("PUFFER_TOOL_STDERR", stderr.to_string()),
+        ],
+    );
 }
-fn parse_openai_text(response: &Value) -> Result<String> {
-    if let Some(text) = response.get("output_text").and_then(Value::as_str) {
-        return Ok(text.to_string());
+fn run_turn_hooks(
+    resources: &LoadedResources,
+    cwd: &std::path::Path,
+    text: &str,
+    tool_count: usize,
+) {
+    run_resource_hooks(
+        resources,
+        cwd,
+        "turn_end",
+        &[
+            ("PUFFER_TURN_TEXT", text.to_string()),
+            ("PUFFER_TURN_TOOL_COUNT", tool_count.to_string()),
+        ],
+    );
+}
+fn transcript_to_anthropic_messages(state: &AppState, input: &str) -> Vec<Value> {
+    let mut messages = state
+        .transcript
+        .iter()
+        .map(|message| match message.role {
+            crate::MessageRole::User => json!({
+                "role": "user",
+                "content": message.text,
+            }),
+            crate::MessageRole::Assistant => json!({
+                "role": "assistant",
+                "content": message.text,
+            }),
+            crate::MessageRole::System => json!({
+                "role": "user",
+                "content": format!("[system]\n{}", message.text),
+            }),
+        })
+        .collect::<Vec<_>>();
+    if messages.is_empty() {
+        messages.push(json!({
+            "role": "user",
+            "content": input,
+        }));
     }
+    messages
+}
+fn transcript_to_anthropic_request_messages(
+    state: &AppState,
+    input: &str,
+) -> Vec<AnthropicMessage> {
+    let mut messages = state
+        .transcript
+        .iter()
+        .map(|message| AnthropicMessage {
+            role: match message.role {
+                crate::MessageRole::Assistant => "assistant".to_string(),
+                crate::MessageRole::User | crate::MessageRole::System => "user".to_string(),
+            },
+            content: match message.role {
+                crate::MessageRole::System => format!("[system]\n{}", message.text),
+                _ => message.text.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    if messages.is_empty() {
+        messages.push(AnthropicMessage {
+            role: "user".to_string(),
+            content: input.to_string(),
+        });
+    }
+    messages
+}
+fn anthropic_system_blocks(attribution_prefix_block: &str, plan_mode_context: Option<&str>) -> Vec<Value> {
+    let mut blocks = vec![json!({
+        "type": "text",
+        "text": attribution_prefix_block,
+    })];
+    if let Some(plan_mode_context) = plan_mode_context {
+        blocks.push(json!({
+            "type": "text",
+            "text": plan_mode_context,
+        }));
+    }
+    blocks
+}
 
-    let mut parts = Vec::new();
-    if let Some(items) = response.get("output").and_then(Value::as_array) {
-        for item in items {
-            if let Some(content) = item.get("content").and_then(Value::as_array) {
-                for block in content {
-                    let block_type = block
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    if matches!(block_type, "output_text" | "text") {
-                        if let Some(text) = block.get("text").and_then(Value::as_str) {
-                            parts.push(text.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if parts.is_empty() {
-        bail!("openai response did not contain output text");
-    }
-    Ok(parts.join("\n"))
-}
 #[cfg(test)]
 mod tests;
