@@ -19,6 +19,7 @@ use puffer_transport_anthropic::{
 };
 use serde::Serialize;
 use std::fmt::Write as _;
+use std::fs;
 use std::process::Command;
 use std::path::PathBuf;
 
@@ -1192,6 +1193,44 @@ fn terminal_setup_advice(state: &AppState) -> String {
         state.config.ui.no_alt_screen,
         state.config.ui.tmux_golden_mode
     )
+}
+
+fn describe_agent_files(state: &AppState) -> String {
+    let mut matches = Vec::new();
+    let mut current = Some(state.cwd.as_path());
+    while let Some(path) = current {
+        for filename in ["AGENTS.md", "CLAUDE.md"] {
+            let candidate = path.join(filename);
+            if candidate.exists() {
+                matches.push(candidate);
+            }
+        }
+        current = path.parent();
+    }
+
+    if matches.is_empty() {
+        "No AGENTS.md or CLAUDE.md files were found between the current directory and filesystem root.".to_string()
+    } else {
+        let mut text = String::from("Agent instruction files:\n");
+        for path in matches {
+            let _ = writeln!(&mut text, "- {}", path.display());
+        }
+        text
+    }
+}
+
+fn ensure_keybindings_file(state: &AppState) -> Result<String> {
+    let path = state.cwd.join(".puffer").join("keybindings.toml");
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(
+            &path,
+            "# Puffer keybindings\n# Add custom mappings here when keybinding customization is implemented.\n",
+        )?;
+    }
+    Ok(format!("Keybindings file: {}", path.display()))
 }
 
 fn describe_plugin(
