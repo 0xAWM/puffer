@@ -1,5 +1,5 @@
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 8/8
-                                                                                                                                                                                                                                                  │               anthropic/claude-sonnet-4-5              │
-                                                                                                                                                                                                                                           ╭Select Provider───────────────────────────────────────────────────────╮
-                                                                                                                                                                                                                                           │anthropic  Anthropic                                                  │
-                                                                                                                                                                                                                                           │openai  OpenAI                                                        │
+Puffer Code
+Welcome to Puffer Code
+Clawd on duty
+anthropic/claude-sonnet-4-5
+workspace
