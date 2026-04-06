@@ -19,6 +19,8 @@ use puffer_transport_anthropic::{
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Describes one tool call executed during a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolInvocation {
@@ -110,7 +112,7 @@ fn execute_anthropic(
             client_app: None,
             entrypoint: "cli".to_string(),
             user_type: "external".to_string(),
-            version: "0.1.0".to_string(),
+            version: APP_VERSION.to_string(),
             workload: None,
             additional_protection: false,
             cch_enabled: true,
@@ -184,7 +186,7 @@ fn execute_openai(
     let auth = openai_auth_for_provider(auth_store, &provider.id)?;
     let request_config = OpenAIRequestConfig {
         base_url: provider.base_url.clone(),
-        version: "0.1.0".to_string(),
+        version: APP_VERSION.to_string(),
         auth,
     };
     let registry = ToolRegistry::from_resources(resources);
