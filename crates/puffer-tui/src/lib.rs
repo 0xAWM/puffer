@@ -9,6 +9,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_core::{
     dispatch_command, execute_user_turn, run_resource_hooks, supported_commands, AppState,
     CommandSpec, MessageRole, ToolInvocation,
@@ -19,6 +20,8 @@ use puffer_session_store::{SessionStore, SessionSummary, TranscriptEvent};
 use puffer_tools::{ToolInput, ToolRegistry};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use serde::Deserialize;
+use std::fs;
 use std::io;
 use std::path::Path;
 use std::process::Command;
@@ -169,7 +172,8 @@ fn handle_key(
                 return Ok(false);
             }
             let current_input = tui.input.clone();
-            if try_open_overlay(providers, auth_store, session_store, tui, &current_input)? {
+            if try_open_overlay(state, providers, auth_store, session_store, tui, &current_input)?
+            {
                 return Ok(false);
             }
             let submitted = tui.take_input();
@@ -240,6 +244,7 @@ fn handle_overlay_key(
 }
 
 fn try_open_overlay(
+    state: &AppState,
     providers: &ProviderRegistry,
     auth_store: &AuthStore,
     session_store: &SessionStore,
@@ -276,6 +281,17 @@ fn try_open_overlay(
                 None
             } else {
                 Some(OverlayState::ModelPicker {
+                    entries,
+                    selection: 0,
+                })
+            }
+        }
+        "agents" if args.is_empty() => {
+            let entries = load_agent_picker_entries(&state.cwd, state.current_model.as_deref())?;
+            if entries.is_empty() {
+                None
+            } else {
+                Some(OverlayState::AgentPicker {
                     entries,
                     selection: 0,
                 })
@@ -762,6 +778,10 @@ pub(crate) enum OverlayState {
         sessions: Vec<SessionSummary>,
         selection: usize,
     },
+    AgentPicker {
+        entries: Vec<ModelPickerEntry>,
+        selection: usize,
+    },
     ModelPicker {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
@@ -784,6 +804,7 @@ impl OverlayState {
     fn select_previous(&mut self) {
         match self {
             Self::SessionPicker { selection, .. }
+            | Self::AgentPicker { selection, .. }
             | Self::ModelPicker { selection, .. }
             | Self::LoginPicker { selection, .. }
             | Self::LogoutPicker { selection, .. }
@@ -800,6 +821,9 @@ impl OverlayState {
                 selection,
             } => {
                 *selection = (*selection + 1).min(sessions.len().saturating_sub(1));
+            }
+            Self::AgentPicker { entries, selection } => {
+                *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
             Self::ModelPicker { entries, selection } => {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
@@ -834,6 +858,9 @@ impl OverlayState {
             } => sessions
                 .get(*selection)
                 .map(|session| format!("/resume {}", session.id)),
+            Self::AgentPicker { entries, selection } => entries
+                .get(*selection)
+                .map(|entry| format!("/agents use {}", entry.selector)),
             Self::ModelPicker { entries, selection } => entries
                 .get(*selection)
                 .map(|entry| format!("/model {}", entry.selector)),
@@ -854,6 +881,47 @@ impl OverlayState {
 pub(crate) struct ModelPickerEntry {
     pub selector: String,
     pub description: String,
+}
+
+fn load_agent_picker_entries(
+    cwd: &Path,
+    current_model: Option<&str>,
+) -> Result<Vec<ModelPickerEntry>> {
+    let paths = ConfigPaths::discover(cwd);
+    ensure_workspace_dirs(&paths)?;
+    let agents_path = paths.workspace_config_dir.join("agents.yaml");
+    if !agents_path.exists() {
+        fs::write(&agents_path, default_agents_contents(current_model))?;
+    }
+    let raw = fs::read_to_string(&agents_path)?;
+    let parsed: AgentFile = serde_yaml::from_str(&raw)?;
+    Ok(parsed
+        .agents
+        .into_iter()
+        .map(|agent| ModelPickerEntry {
+            selector: agent.id,
+            description: format!("role={} model={}", agent.role, agent.model),
+        })
+        .collect())
+}
+
+fn default_agents_contents(model: Option<&str>) -> String {
+    format!(
+        "agents:\n  - id: default\n    role: coding\n    model: {}\n",
+        model.unwrap_or("anthropic/claude-sonnet-4-5")
+    )
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AgentFile {
+    agents: Vec<AgentPickerRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AgentPickerRecord {
+    id: String,
+    role: String,
+    model: String,
 }
 
 fn previous_boundary(input: &str, cursor: usize) -> usize {

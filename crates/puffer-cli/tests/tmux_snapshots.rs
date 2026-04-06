@@ -15,18 +15,13 @@ fn tmux_help_matches_snapshot() {
     }
 
     let (_tempdir, workspace) = configured_workspace();
-    let session = start_tmux_command(
-        env!("CARGO_BIN_EXE_puffer"),
-        &[],
-        Some(workspace.as_path()),
-    )
-    .unwrap();
+    let session = start_tmux_with_home(&workspace);
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
     send_tmux_keys(&session, &["/help", "Enter"]).unwrap();
     let capture =
         wait_for_tmux_text(&session, "Supported commands:", Duration::from_secs(5)).unwrap();
     assert_normalized_snapshot(
-        &capture,
+        &normalize_tmux_capture(&capture),
         &snapshot_path("tmux_help_snapshot.txt"),
     )
     .unwrap();
@@ -39,18 +34,13 @@ fn tmux_login_overlay_matches_snapshot() {
     }
 
     let (_tempdir, workspace) = configured_workspace();
-    let session = start_tmux_command(
-        env!("CARGO_BIN_EXE_puffer"),
-        &[],
-        Some(workspace.as_path()),
-    )
-    .unwrap();
+    let session = start_tmux_with_home(&workspace);
     wait_for_tmux_text(&session, "Puffer Code", Duration::from_secs(5)).unwrap();
     send_tmux_keys(&session, &["/login", "Enter"]).unwrap();
     let capture =
         wait_for_tmux_text(&session, "Login Provider", Duration::from_secs(5)).unwrap();
     assert_normalized_snapshot(
-        &capture,
+        &normalize_tmux_capture(&capture),
         &snapshot_path("tmux_login_overlay_snapshot.txt"),
     )
     .unwrap();
@@ -89,6 +79,18 @@ tmux_golden_mode = true
 "#,
     )
     .unwrap();
+    fs::write(
+        workspace.join(".puffer/auth.json"),
+        r#"{
+  "providers": {
+    "anthropic": {
+      "kind": "api_key",
+      "key": "tmux-test-key"
+    }
+  }
+}"#,
+    )
+    .unwrap();
     (tempdir, workspace)
 }
 
@@ -97,4 +99,102 @@ fn snapshot_path(name: &str) -> PathBuf {
         .join("tests")
         .join("snapshots")
         .join(name)
+}
+
+fn start_tmux_with_home(workspace: &std::path::Path) -> puffer_test_support::TmuxSession {
+    start_tmux_command(
+        "sh",
+        &[
+            "-lc",
+            &format!(
+                "HOME='{}' '{}'",
+                workspace.display(),
+                env!("CARGO_BIN_EXE_puffer")
+            ),
+        ],
+        Some(workspace),
+    )
+    .unwrap()
+}
+
+fn normalize_tmux_capture(capture: &str) -> String {
+    capture
+        .lines()
+        .map(normalize_tmux_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_tmux_line(line: &str) -> String {
+    let line = replace_session_marker(line);
+    let line = replace_id_line(&line);
+    replace_hex_runs(&line)
+}
+
+fn replace_session_marker(line: &str) -> String {
+    for marker in ["session=session-", "│session-"] {
+        if let Some(index) = line.find(marker) {
+            let start = index + marker.len();
+            let mut end = start;
+            let bytes = line.as_bytes();
+            while end < line.len() {
+                let byte = bytes[end];
+                if byte.is_ascii_alphanumeric() || byte == b'.' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            let mut normalized = line.to_string();
+            normalized.replace_range(start..end, "<id>");
+            return normalized;
+        }
+    }
+    line.to_string()
+}
+
+fn replace_id_line(line: &str) -> String {
+    let Some(index) = line.find("Id: ") else {
+        return line.to_string();
+    };
+    let start = index + 4;
+    let mut end = start;
+    let bytes = line.as_bytes();
+    while end < line.len() {
+        let byte = bytes[end];
+        if byte.is_ascii_alphanumeric() {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    let mut normalized = line.to_string();
+    normalized.replace_range(start..end, "<id>");
+    normalized
+}
+
+fn replace_hex_runs(line: &str) -> String {
+    let mut output = String::new();
+    let mut hex_run = String::new();
+
+    for ch in line.chars() {
+        if ch.is_ascii_hexdigit() {
+            hex_run.push(ch);
+            continue;
+        }
+
+        flush_hex_run(&mut output, &mut hex_run);
+        output.push(ch);
+    }
+    flush_hex_run(&mut output, &mut hex_run);
+    output
+}
+
+fn flush_hex_run(output: &mut String, hex_run: &mut String) {
+    if hex_run.len() >= 6 {
+        output.push_str("<id>");
+    } else {
+        output.push_str(hex_run);
+    }
+    hex_run.clear();
 }

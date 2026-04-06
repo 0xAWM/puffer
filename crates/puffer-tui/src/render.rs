@@ -645,6 +645,7 @@ fn render_overlay(frame: &mut Frame<'_>, transcript_area: Rect, overlay: &Overla
 fn overlay_title(overlay: &OverlayState) -> &'static str {
     match overlay {
         OverlayState::SessionPicker { .. } => "Resume Session",
+        OverlayState::AgentPicker { .. } => "Select Agent",
         OverlayState::ModelPicker { .. } => "Select Model",
         OverlayState::LoginPicker { .. } => "Login Provider",
         OverlayState::LogoutPicker { .. } => "Logout Provider",
@@ -669,23 +670,10 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
                 ),
             })
             .collect(),
-        OverlayState::ModelPicker { entries, selection } => entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| OverlayRow {
-                selected: index == *selection,
-                text: render_model_entry(entry),
-            })
-            .collect(),
-        OverlayState::LoginPicker { entries, selection } => entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| OverlayRow {
-                selected: index == *selection,
-                text: render_model_entry(entry),
-            })
-            .collect(),
-        OverlayState::LogoutPicker { entries, selection }
+        OverlayState::AgentPicker { entries, selection }
+        | OverlayState::ModelPicker { entries, selection }
+        | OverlayState::LoginPicker { entries, selection }
+        | OverlayState::LogoutPicker { entries, selection }
         | OverlayState::ThemePicker { entries, selection } => entries
             .iter()
             .enumerate()

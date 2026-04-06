@@ -1663,7 +1663,9 @@ dependencies = [
  "puffer-test-support",
  "puffer-tools",
  "ratatui",
+ "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "uuid",
 ]

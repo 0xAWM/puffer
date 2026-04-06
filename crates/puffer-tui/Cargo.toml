@@ -8,7 +8,9 @@ license.workspace = true
 anyhow.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 puffer-config = { path = "../puffer-config" }
 puffer-core = { path = "../puffer-core" }
 puffer-provider-registry = { path = "../puffer-provider-registry" }

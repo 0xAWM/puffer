@@ -93,13 +93,34 @@ fn try_open_overlay_builds_resume_picker() {
         .create_session(tempdir.path().join("dockyard"))
         .unwrap();
 
+    let state = sample_state();
     let providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/resume")
-        .unwrap();
+    let opened =
+        try_open_overlay(&state, &providers, &auth_store, &session_store, &mut tui, "/resume")
+            .unwrap();
     assert!(opened);
     assert!(matches!(tui.overlay, Some(OverlayState::SessionPicker { .. })));
+}
+
+#[test]
+fn try_open_overlay_builds_agent_picker() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+
+    let mut state = sample_state();
+    state.cwd = tempdir.path().to_path_buf();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let mut tui = TuiState::default();
+    let opened =
+        try_open_overlay(&state, &providers, &auth_store, &session_store, &mut tui, "/agents")
+            .unwrap();
+    assert!(opened);
+    assert!(matches!(tui.overlay, Some(OverlayState::AgentPicker { .. })));
 }
 
 #[test]
@@ -109,11 +130,13 @@ fn try_open_overlay_builds_login_picker() {
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
 
+    let state = sample_state();
     let providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/login")
-        .unwrap();
+    let opened =
+        try_open_overlay(&state, &providers, &auth_store, &session_store, &mut tui, "/login")
+            .unwrap();
     assert!(opened);
     assert!(matches!(tui.overlay, Some(OverlayState::LoginPicker { .. })));
 }
@@ -125,11 +148,13 @@ fn try_open_overlay_builds_logout_picker() {
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
 
+    let state = sample_state();
     let providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/logout")
-        .unwrap();
+    let opened =
+        try_open_overlay(&state, &providers, &auth_store, &session_store, &mut tui, "/logout")
+            .unwrap();
     assert!(opened);
     assert!(matches!(tui.overlay, Some(OverlayState::LogoutPicker { .. })));
 }
@@ -141,11 +166,13 @@ fn try_open_overlay_builds_theme_picker() {
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
 
+    let state = sample_state();
     let providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
-    let opened = try_open_overlay(&providers, &auth_store, &session_store, &mut tui, "/theme")
-        .unwrap();
+    let opened =
+        try_open_overlay(&state, &providers, &auth_store, &session_store, &mut tui, "/theme")
+            .unwrap();
     assert!(opened);
     assert!(matches!(tui.overlay, Some(OverlayState::ThemePicker { .. })));
 }
