@@ -260,7 +260,12 @@ fn handle_key(
                 let viewport = render::current_transcript_viewport();
                 tui.scroll_up(
                     1,
-                    render::transcript_line_count(state, tui.has_pending_submit()),
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
                     viewport.height,
                 );
             }
@@ -272,7 +277,12 @@ fn handle_key(
                 let viewport = render::current_transcript_viewport();
                 tui.scroll_down(
                     1,
-                    render::transcript_line_count(state, tui.has_pending_submit()),
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
                     viewport.height,
                 );
             }
@@ -286,7 +296,12 @@ fn handle_key(
                 let viewport = render::current_transcript_viewport();
                 tui.scroll_up(
                     10,
-                    render::transcript_line_count(state, tui.has_pending_submit()),
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
                     viewport.height,
                 );
             }
@@ -300,7 +315,12 @@ fn handle_key(
                 let viewport = render::current_transcript_viewport();
                 tui.scroll_down(
                     10,
-                    render::transcript_line_count(state, tui.has_pending_submit()),
+                    render::transcript_line_count(
+                        state,
+                        resources,
+                        auth_store,
+                        tui.has_pending_submit(),
+                    ),
                     viewport.height,
                 );
             }
