@@ -194,10 +194,10 @@
     min-width: 420px;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
-    border-left: 1px solid var(--border);
+    border-left: 1px solid rgba(92, 73, 50, 0.1);
     background:
-      linear-gradient(180deg, rgba(243, 237, 228, 0.9), rgba(239, 232, 220, 0.72)),
-      rgba(239, 232, 220, 0.68);
+      linear-gradient(180deg, rgba(239, 233, 224, 0.94), rgba(233, 225, 214, 0.86)),
+      var(--canvas-muted);
   }
 
   .inspector.closed {
@@ -210,19 +210,23 @@
     gap: 0.75rem;
     align-items: center;
     padding: 0.95rem 1rem;
-    border-bottom: 1px solid var(--border);
-    background: rgba(255, 252, 246, 0.8);
+    border-bottom: 1px solid rgba(92, 73, 50, 0.12);
+    background: rgba(249, 244, 237, 0.8);
   }
 
   .tabs {
     display: flex;
     gap: 0.45rem;
     flex-wrap: wrap;
+    padding: 0.3rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.5);
+    border: 1px solid rgba(102, 83, 62, 0.08);
   }
 
   .tabs button,
   .toggle {
-    border: 1px solid rgba(111, 101, 89, 0.18);
+    border: 1px solid rgba(102, 83, 62, 0.12);
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.76);
     padding: 0.48rem 0.8rem;
@@ -231,15 +235,15 @@
   }
 
   .tabs button.active {
-    background: var(--accent-soft);
-    border-color: rgba(20, 99, 86, 0.16);
-    color: var(--accent);
+    background: rgba(220, 234, 224, 0.88);
+    border-color: rgba(36, 105, 81, 0.14);
+    color: var(--accent-strong);
   }
 
   .panel {
     min-width: 0;
     overflow: auto;
-    padding: 1rem;
+    padding: 1rem 1.05rem 1.1rem;
   }
 
   .collapsed-panel {
@@ -256,15 +260,15 @@
   }
 
   .collapsed-panel:hover {
-    background: rgba(255, 252, 246, 0.44);
+    background: rgba(255, 255, 255, 0.14);
   }
 
   .collapsed-chip {
     padding: 0.38rem 0.56rem;
     border-radius: 999px;
-    border: 1px solid rgba(111, 101, 89, 0.18);
+    border: 1px solid rgba(102, 83, 62, 0.12);
     background: rgba(255, 255, 255, 0.74);
-    color: var(--text-muted);
+    color: var(--text-soft);
     font-size: 0.74rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -308,10 +312,11 @@
 
   .eyebrow {
     margin: 0;
-    color: var(--text-muted);
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
+    color: var(--text-soft);
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
+    font-weight: 600;
   }
 
   h3 {
@@ -321,7 +326,7 @@
 
   .section-summary {
     margin: 0.7rem 0 0;
-    color: var(--text-muted);
+    color: var(--text-soft);
     font-size: 0.82rem;
     line-height: 1.45;
   }
@@ -335,19 +340,20 @@
   .history-item {
     width: 100%;
     text-align: left;
-    border: 1px solid rgba(111, 101, 89, 0.18);
-    background: rgba(255, 255, 255, 0.68);
+    border: 1px solid rgba(102, 83, 62, 0.12);
+    background: rgba(255, 255, 255, 0.72);
     border-radius: 18px;
-    padding: 0.85rem 0.95rem;
+    padding: 0.9rem 0.98rem;
     display: flex;
     justify-content: space-between;
     gap: 0.8rem;
     cursor: pointer;
+    box-shadow: var(--shadow-edge);
   }
 
   .history-item.selected {
-    border-color: rgba(20, 99, 86, 0.24);
-    box-shadow: 0 0 0 2px rgba(20, 99, 86, 0.1);
+    border-color: rgba(36, 105, 81, 0.22);
+    box-shadow: 0 0 0 2px rgba(36, 105, 81, 0.08);
   }
 
   .history-item strong {
@@ -366,9 +372,9 @@
   .choice-row span {
     padding: 0.32rem 0.54rem;
     border-radius: 999px;
-    border: 1px solid rgba(111, 101, 89, 0.16);
+    border: 1px solid rgba(102, 83, 62, 0.12);
     background: rgba(255, 255, 255, 0.72);
-    color: var(--text-muted);
+    color: var(--text-soft);
     font-size: 0.76rem;
   }
 
@@ -382,23 +388,25 @@
   .detail-block {
     display: grid;
     gap: 0.45rem;
-    padding: 0.95rem;
+    padding: 0.98rem;
     border-radius: 18px;
-    background: rgba(255, 252, 246, 0.8);
-    border: 1px solid rgba(111, 101, 89, 0.14);
+    background: rgba(255, 251, 246, 0.8);
+    border: 1px solid rgba(102, 83, 62, 0.12);
+    box-shadow: var(--shadow-edge);
   }
 
   .detail-block.emphasis {
-    background: rgba(255, 248, 234, 0.82);
-    border-color: rgba(138, 91, 42, 0.14);
+    background: rgba(244, 230, 208, 0.8);
+    border-color: rgba(141, 97, 48, 0.14);
   }
 
   .label {
     margin: 0;
-    color: var(--text-muted);
-    font-size: 0.72rem;
-    letter-spacing: 0.08em;
+    color: var(--text-soft);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
+    font-weight: 600;
   }
 
   .detail-block p {
@@ -418,8 +426,8 @@
   .empty {
     padding: 1rem;
     border-radius: 18px;
-    border: 1px dashed rgba(111, 101, 89, 0.24);
-    background: rgba(255, 252, 246, 0.66);
+    border: 1px dashed rgba(102, 83, 62, 0.18);
+    background: rgba(255, 251, 246, 0.66);
     color: var(--text-muted);
   }
 </style>

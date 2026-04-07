@@ -97,23 +97,23 @@
   .overview {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0.8rem;
-    padding: 0.95rem 1rem;
-    border-bottom: 1px solid rgba(111, 101, 89, 0.12);
-    background: rgba(255, 252, 246, 0.68);
+    gap: 0.9rem;
+    padding: 1rem 1.1rem 1.05rem;
+    border-bottom: 1px solid rgba(92, 73, 50, 0.12);
+    background: rgba(245, 239, 230, 0.58);
   }
 
   .card {
     display: grid;
-    gap: 0.35rem;
+    gap: 0.42rem;
     text-align: left;
-    border: 1px solid rgba(111, 101, 89, 0.16);
-    border-radius: 20px;
-    padding: 0.95rem 1rem;
-    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid rgba(102, 83, 62, 0.12);
+    border-radius: 18px;
+    padding: 1rem 1.05rem;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(251, 247, 241, 0.92));
     cursor: pointer;
     transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
-    box-shadow: var(--shadow-soft);
+    box-shadow: var(--shadow-soft), var(--shadow-edge);
   }
 
   .card:hover {
@@ -122,26 +122,31 @@
   }
 
   .card.emphasis {
-    background: linear-gradient(180deg, rgba(222, 238, 232, 0.72), rgba(255, 255, 255, 0.82));
-    border-color: rgba(20, 99, 86, 0.2);
+    background:
+      linear-gradient(180deg, rgba(220, 234, 224, 0.96), rgba(250, 253, 250, 0.9)),
+      var(--surface);
+    border-color: rgba(36, 105, 81, 0.16);
   }
 
   .card.alert {
-    background: linear-gradient(180deg, rgba(247, 225, 220, 0.68), rgba(255, 255, 255, 0.82));
-    border-color: rgba(157, 58, 43, 0.18);
+    background:
+      linear-gradient(180deg, rgba(244, 224, 218, 0.94), rgba(255, 252, 249, 0.9)),
+      var(--surface);
+    border-color: rgba(157, 74, 55, 0.16);
   }
 
   .eyebrow {
     margin: 0;
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--text-muted);
+    color: var(--text-soft);
+    font-weight: 600;
   }
 
   strong {
-    font-size: 0.96rem;
-    line-height: 1.35;
+    font-size: 1rem;
+    line-height: 1.3;
   }
 
   span {
@@ -152,6 +157,7 @@
 
   .secondary-line {
     font-size: 0.78rem;
+    color: var(--text-soft);
   }
 
   @media (max-width: 1200px) {

@@ -103,15 +103,15 @@
   .card {
     width: 100%;
     text-align: left;
-    border: 1px solid rgba(111, 101, 89, 0.18);
-    background: rgba(255, 255, 255, 0.74);
-    border-radius: 24px;
+    border: 1px solid rgba(102, 83, 62, 0.12);
+    background: rgba(255, 255, 255, 0.82);
+    border-radius: 20px;
     padding: 1rem;
     display: grid;
     gap: 0.8rem;
     cursor: pointer;
     transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
-    box-shadow: var(--shadow-soft);
+    box-shadow: var(--shadow-soft), var(--shadow-edge);
   }
 
   .card:hover,
@@ -121,24 +121,24 @@
   }
 
   .card.selected {
-    border-color: rgba(20, 99, 86, 0.34);
-    box-shadow: 0 0 0 2px rgba(20, 99, 86, 0.12), var(--shadow);
+    border-color: rgba(36, 105, 81, 0.28);
+    box-shadow: 0 0 0 2px rgba(36, 105, 81, 0.08), var(--shadow);
   }
 
   .card.user {
-    background: linear-gradient(180deg, rgba(255, 252, 246, 0.92), rgba(255, 255, 255, 0.76));
+    background: linear-gradient(180deg, rgba(255, 252, 246, 0.95), rgba(255, 255, 255, 0.84));
   }
 
   .card.assistant {
-    background: linear-gradient(180deg, rgba(245, 249, 247, 0.92), rgba(255, 255, 255, 0.8));
+    background: linear-gradient(180deg, rgba(240, 248, 243, 0.96), rgba(255, 255, 255, 0.84));
   }
 
   .card.tool {
-    background: linear-gradient(180deg, rgba(247, 245, 240, 0.94), rgba(255, 255, 255, 0.78));
+    background: linear-gradient(180deg, rgba(247, 244, 238, 0.96), rgba(255, 255, 255, 0.84));
   }
 
   .card.permission {
-    background: linear-gradient(180deg, rgba(252, 241, 238, 0.94), rgba(255, 255, 255, 0.78));
+    background: linear-gradient(180deg, rgba(250, 239, 234, 0.96), rgba(255, 255, 255, 0.84));
   }
 
   .card.diff {
@@ -159,10 +159,11 @@
   }
 
   .kind {
-    color: var(--text-muted);
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
+    color: var(--text-soft);
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
+    font-weight: 600;
   }
 
   .kind.assistant,
@@ -190,18 +191,18 @@
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    background: rgba(228, 221, 208, 0.42);
-    color: var(--text-muted);
+    background: rgba(231, 223, 210, 0.72);
+    color: var(--text-soft);
   }
 
   .status.ok {
-    background: rgba(220, 238, 232, 0.8);
-    color: var(--accent);
+    background: rgba(220, 234, 224, 0.84);
+    color: var(--accent-strong);
   }
 
   .status.ask,
   .status.required {
-    background: rgba(247, 225, 220, 0.82);
+    background: rgba(244, 224, 218, 0.84);
     color: var(--danger);
   }
 
@@ -215,9 +216,9 @@
   .permission-actions span {
     padding: 0.35rem 0.58rem;
     border-radius: 999px;
-    border: 1px solid rgba(111, 101, 89, 0.15);
+    border: 1px solid rgba(102, 83, 62, 0.12);
     background: rgba(255, 255, 255, 0.72);
-    color: var(--text-muted);
+    color: var(--text-soft);
     font-size: 0.76rem;
   }
 
@@ -246,8 +247,8 @@
     font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
     padding: 0.8rem;
     border-radius: 16px;
-    background: rgba(247, 243, 235, 0.82);
-    border: 1px solid rgba(111, 101, 89, 0.14);
+    background: rgba(245, 239, 231, 0.9);
+    border: 1px solid rgba(102, 83, 62, 0.12);
     overflow: auto;
   }
 
@@ -269,8 +270,8 @@
     margin: 0;
     padding: 0.8rem;
     border-radius: 16px;
-    background: rgba(247, 243, 235, 0.82);
-    border: 1px solid rgba(111, 101, 89, 0.14);
+    background: rgba(245, 239, 231, 0.9);
+    border: 1px solid rgba(102, 83, 62, 0.12);
     font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
     font-size: 0.8rem;
     line-height: 1.55;
@@ -289,8 +290,8 @@
     gap: 0.2rem;
     padding: 0.8rem 0.85rem;
     border-radius: 16px;
-    background: rgba(255, 248, 234, 0.8);
-    border: 1px solid rgba(138, 91, 42, 0.14);
+    background: rgba(244, 230, 208, 0.8);
+    border: 1px solid rgba(141, 97, 48, 0.14);
   }
 
   .inline-banner strong {
@@ -303,8 +304,8 @@
   }
 
   .permission-banner {
-    background: rgba(247, 225, 220, 0.64);
-    border-color: rgba(157, 58, 43, 0.16);
+    background: rgba(244, 224, 218, 0.72);
+    border-color: rgba(157, 74, 55, 0.16);
   }
 
   @media (max-width: 900px) {

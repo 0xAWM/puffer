@@ -167,18 +167,17 @@
   .header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 1.25rem;
-    padding: 1.35rem 1.5rem 1.1rem;
-    border-bottom: 1px solid var(--border);
+    gap: 1.4rem;
+    padding: 1.4rem 1.5rem 1.2rem;
+    border-bottom: 1px solid rgba(92, 73, 50, 0.12);
     background:
-      linear-gradient(135deg, rgba(255, 252, 245, 0.96), rgba(248, 244, 237, 0.88)),
-      rgba(255, 252, 245, 0.92);
-    backdrop-filter: blur(18px);
+      radial-gradient(circle at top right, rgba(36, 105, 81, 0.08), transparent 26%),
+      linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(247, 241, 233, 0.92));
   }
 
   .identity {
     display: grid;
-    gap: 0.95rem;
+    gap: 1rem;
     min-width: 0;
   }
 
@@ -188,61 +187,67 @@
 
   .eyebrow {
     margin: 0 0 0.3rem;
-    color: var(--text-muted);
-    font-size: 0.72rem;
-    letter-spacing: 0.16em;
+    color: var(--text-soft);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
+    font-weight: 600;
   }
 
   h1 {
     margin: 0;
-    font-size: 1.42rem;
-    line-height: 1.15;
-    letter-spacing: -0.02em;
+    font-size: 1.6rem;
+    line-height: 1.05;
+    letter-spacing: -0.035em;
   }
 
   .path {
-    margin: 0.3rem 0 0;
+    margin: 0.4rem 0 0;
     color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: 0.94rem;
   }
 
   .session-summary {
-    margin: 0.45rem 0 0;
+    margin: 0.55rem 0 0;
     color: var(--text-muted);
-    font-size: 0.88rem;
+    font-size: 0.9rem;
+    max-width: 56rem;
+    line-height: 1.5;
   }
 
   .repo-pills {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.55rem;
   }
 
   .pill {
     display: inline-flex;
     align-items: center;
-    padding: 0.42rem 0.7rem;
+    gap: 0.35rem;
+    padding: 0.46rem 0.74rem;
     border-radius: 999px;
-    border: 1px solid rgba(112, 99, 82, 0.18);
-    background: rgba(255, 255, 255, 0.66);
-    color: var(--text-muted);
+    border: 1px solid rgba(102, 83, 62, 0.14);
+    background: rgba(255, 255, 255, 0.64);
+    color: var(--text-soft);
     text-decoration: none;
-    font-size: 0.82rem;
+    font-size: 0.77rem;
+    box-shadow: var(--shadow-edge);
   }
 
   .pill.ok {
-    background: rgba(220, 238, 232, 0.85);
-    color: var(--accent);
-    border-color: rgba(20, 99, 86, 0.16);
+    background: rgba(220, 234, 224, 0.88);
+    color: var(--accent-strong);
+    border-color: rgba(36, 105, 81, 0.14);
   }
 
   .pill.warning {
-    background: rgba(246, 232, 215, 0.85);
-    color: #8a5b2a;
-    border-color: rgba(138, 91, 42, 0.14);
+    background: rgba(244, 230, 208, 0.88);
+    color: var(--warning);
+    border-color: rgba(141, 97, 48, 0.14);
   }
 
   .pill.link:hover {
@@ -250,37 +255,45 @@
   }
 
   .pill.tag {
-    background: rgba(255, 248, 234, 0.92);
+    background: rgba(246, 240, 230, 0.92);
   }
 
   .pill.remote {
-    background: rgba(232, 239, 250, 0.9);
-    color: #35598a;
-    border-color: rgba(53, 89, 138, 0.14);
+    background: rgba(226, 235, 244, 0.92);
+    color: #34526d;
+    border-color: rgba(52, 82, 109, 0.14);
   }
 
   .actions {
     display: grid;
-    gap: 0.8rem;
+    gap: 0.9rem;
     align-content: start;
+    justify-items: end;
   }
 
   .action-group {
     display: flex;
     justify-content: flex-end;
-    gap: 0.65rem;
+    gap: 0.6rem;
     flex-wrap: wrap;
+    padding: 0.35rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.55);
+    border: 1px solid rgba(102, 83, 62, 0.1);
+    box-shadow: var(--shadow-edge);
   }
 
   button {
-    border: 1px solid var(--border);
+    border: 1px solid rgba(102, 83, 62, 0.12);
     border-radius: 999px;
-    padding: 0.68rem 0.98rem;
-    background: rgba(255, 255, 255, 0.78);
+    padding: 0.62rem 0.96rem;
+    background: rgba(255, 255, 255, 0.76);
     color: var(--text);
     cursor: pointer;
-    transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
-    box-shadow: var(--shadow-soft);
+    font-weight: 600;
+    transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease,
+      border-color 120ms ease, background 120ms ease;
+    box-shadow: 0 8px 18px rgba(22, 26, 32, 0.08);
   }
 
   button:hover:not(:disabled) {
@@ -295,25 +308,29 @@
   }
 
   .primary {
-    background: var(--accent);
+    background: linear-gradient(180deg, #2e7a61, #225d49);
     color: #fcfffd;
-    border-color: var(--accent);
+    border-color: rgba(34, 93, 73, 0.28);
+    box-shadow: 0 12px 24px rgba(35, 93, 73, 0.2);
   }
 
   .secondary {
-    background: var(--accent-soft);
-    color: var(--accent);
-    border-color: rgba(20, 99, 86, 0.16);
+    background: rgba(245, 237, 225, 0.96);
+    color: var(--warning);
+    border-color: rgba(141, 97, 48, 0.12);
   }
 
   .link-button {
     display: inline-flex;
     align-items: center;
     text-decoration: none;
-    border: 1px solid var(--border);
+    border: 1px solid rgba(141, 97, 48, 0.12);
     border-radius: 999px;
-    padding: 0.68rem 0.98rem;
-    box-shadow: var(--shadow-soft);
+    padding: 0.62rem 0.96rem;
+    font-weight: 600;
+    background: rgba(245, 237, 225, 0.96);
+    color: var(--warning);
+    box-shadow: 0 8px 18px rgba(22, 26, 32, 0.08);
     transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
   }
 
@@ -323,7 +340,7 @@
   }
 
   .ghost {
-    background: transparent;
+    background: rgba(255, 255, 255, 0.76);
   }
 
   .status-copy {
@@ -334,18 +351,20 @@
 
   .status-line {
     margin: 0;
-    color: var(--text-muted);
+    color: var(--text);
     text-align: right;
     max-width: 24rem;
     justify-self: end;
+    font-size: 0.86rem;
+    font-weight: 600;
   }
 
   .repo-summary {
     margin: 0;
-    color: var(--text-muted);
+    color: var(--text-soft);
     text-align: right;
     max-width: 28rem;
-    font-size: 0.86rem;
+    font-size: 0.8rem;
     line-height: 1.45;
   }
 
@@ -365,6 +384,10 @@
       justify-content: flex-start;
       justify-self: start;
       text-align: left;
+    }
+
+    .action-group {
+      border-radius: 18px;
     }
   }
 </style>
