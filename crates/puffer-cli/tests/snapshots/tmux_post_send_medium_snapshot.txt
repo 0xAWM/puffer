@@ -2,7 +2,7 @@
 │Mascot    Clawd on duty                   │Session    dockyard · <id>                         │
 │User      anthropic via API key           │Model      anthropic/claude-sonn... · tools 0/0        │
 │Provider  anthropic · auth api-key        │Directory  dockyard                                    │
-│Mode      effort medium                   │Activity   2 messages · 0 workdirs · sandbox           │
+│Mode      effort auto                     │Activity   2 messages · 0 workdirs · sandbox           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 › Review the current worktree and call out any risks.

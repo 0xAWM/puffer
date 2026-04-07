@@ -2,7 +2,7 @@
 │Mascot    Clawd on duty                                               │
 │User      anthropic via API key                                       │
 │Provider  anthropic · auth api-key                                    │
-│Mode      effort medium                                               │
+│Mode      effort auto                                                 │
 │Session    session-<id> · <id>                          │
 │Model      anthropic/claude-sonn... · tools 0/0                       │
 ╰──────────────────────────────────────────────────────────────────────╯

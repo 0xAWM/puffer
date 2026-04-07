@@ -74,7 +74,7 @@ fn onboarding_model_picker_enter_preserves_current_effort_selection() {
         }) => {
             assert_eq!(provider_id, "openai");
             assert_eq!(model_id, "gpt-5");
-            assert_eq!(entries[*selection].selector, "medium");
+            assert_eq!(entries[*selection].selector, "high");
             assert!(entries.iter().any(|entry| entry.selector == "xhigh"));
             assert!(entries.iter().any(|entry| entry.selector == "minimal"));
         }
@@ -83,7 +83,7 @@ fn onboarding_model_picker_enter_preserves_current_effort_selection() {
 }
 
 #[test]
-fn slash_command_model_picker_enter_opens_effort_picker_for_selected_model() {
+fn slash_command_model_picker_enter_applies_selected_model_immediately() {
     let tempdir = tempdir().unwrap();
     let session_store = temp_session_store(&tempdir);
     let session = session_store
@@ -106,8 +106,8 @@ fn slash_command_model_picker_enter_opens_effort_picker_for_selected_model() {
     tui.overlay = Some(OverlayState::ModelPicker {
         provider_id: "openai".to_string(),
         entries: vec![ModelPickerEntry {
-            selector: "gpt-5-mini".to_string(),
-            description: "GPT-5 Mini".to_string(),
+            selector: "gpt-5".to_string(),
+            description: "GPT-5".to_string(),
             command: None,
         }],
         selection: 0,
@@ -128,23 +128,9 @@ fn slash_command_model_picker_enter_opens_effort_picker_for_selected_model() {
     )
     .unwrap();
 
-    match &tui.overlay {
-        Some(OverlayState::EffortPicker {
-            provider_id,
-            model_id,
-            entries,
-            selection,
-            onboarding,
-        }) => {
-            assert_eq!(provider_id, "openai");
-            assert_eq!(model_id, "gpt-5-mini");
-            assert_eq!(entries[*selection].selector, "medium");
-            assert!(!onboarding);
-        }
-        other => panic!("overlay={other:?}"),
-    }
-    assert_eq!(state.current_provider.as_deref(), None);
-    assert_eq!(state.current_model.as_deref(), None);
+    assert!(tui.overlay.is_none(), "overlay={:?}", tui.overlay);
+    assert_eq!(state.current_provider.as_deref(), Some("openai"));
+    assert_eq!(state.current_model.as_deref(), Some("openai/gpt-5"));
 }
 
 #[test]

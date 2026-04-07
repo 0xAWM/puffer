@@ -85,7 +85,7 @@ impl AppState {
         let effort_level = config
             .effort_level
             .clone()
-            .unwrap_or_else(|| "medium".to_string());
+            .unwrap_or_else(|| "auto".to_string());
         let fast_mode = config.fast_mode;
         let vim_mode = config.editor_mode == "vim";
         Self {

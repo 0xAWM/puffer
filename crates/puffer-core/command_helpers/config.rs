@@ -424,7 +424,7 @@ pub(crate) fn reload_config_from_disk(state: &mut AppState) -> Result<()> {
         .config
         .effort_level
         .clone()
-        .unwrap_or_else(|| "medium".to_string());
+        .unwrap_or_else(|| "auto".to_string());
     Ok(())
 }
 

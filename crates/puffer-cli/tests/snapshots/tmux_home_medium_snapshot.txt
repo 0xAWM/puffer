@@ -2,7 +2,7 @@
 │Mascot    Clawd on duty                   │Session    session-<id> · <id>           │
 │User      anthropic via API key           │Model      anthropic/claude-sonn... · tools 0/0        │
 │Provider  anthropic · auth api-key        │Directory  dockyard                                    │
-│Mode      effort medium                   │Activity   0 messages · 0 workdirs · sandbox           │
+│Mode      effort auto                     │Activity   0 messages · 0 workdirs · sandbox           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
    Welcome to Puffer Code                                │Tips to get started
                                                          │
