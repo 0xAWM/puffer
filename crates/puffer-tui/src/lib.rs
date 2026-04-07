@@ -84,7 +84,7 @@ pub fn run_app(
         execute!(io::stdout(), EnterAlternateScreen)?;
     }
 
-    let mut terminal = if no_alt_screen {
+    let mut terminal = if should_use_inline_viewport(no_alt_screen) {
         let (_, height) = terminal_size()?;
         Terminal::with_options(
             CrosstermBackend::new(io::stdout()),
@@ -208,6 +208,12 @@ pub fn run_app(
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
     Ok(())
+}
+
+fn should_use_inline_viewport(no_alt_screen: bool) -> bool {
+    no_alt_screen
+        && std::env::var_os("SSH_CONNECTION").is_none()
+        && std::env::var_os("SSH_TTY").is_none()
 }
 
 fn handle_key(

@@ -1,68 +1,102 @@
 use crate::dtos::{
-    DiffSnapshotDto, FolderGroupDto, PermissionDialogDto, SessionListItemDto, SessionViewDto,
-    TimelineItemDto,
+    DiffSummaryDto, FolderGroupDto, SessionDetailDto, SessionListItemDto, TimelineItemDto,
 };
-use crate::repo_actions::load_repo_status;
-use anyhow::{anyhow, Context, Result};
-use puffer_config::{ensure_workspace_dirs, ConfigPaths};
-use puffer_session_store::{
-    GitDiffSnapshot, SessionRecord, SessionStore, SessionSummary, TranscriptEvent,
-};
+use crate::repo_actions;
+use anyhow::{Context, Result};
+use puffer_config::ConfigPaths;
+use puffer_session_store::{GitDiffSnapshot, SessionRecord, SessionStore, TranscriptEvent};
+use serde_json::Value;
 use std::collections::BTreeMap;
+use std::env;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-/// Lists desktop sessions grouped by their top-level workspace folder.
-pub(crate) fn list_session_groups(workspace_root: Option<String>) -> Result<Vec<FolderGroupDto>> {
-    let workspace_root = resolve_workspace_root(workspace_root)?;
-    let store = open_store(&workspace_root)?;
-    let mut groups: BTreeMap<String, FolderGroupDto> = BTreeMap::new();
+/// Lists sessions grouped by their containing project folder for the desktop sidebar.
+pub(crate) fn list_grouped_sessions() -> Result<Vec<FolderGroupDto>> {
+    let root = workspace_root()?;
+    let paths = ConfigPaths::discover(&root);
+    let store = SessionStore::from_paths(&paths)?;
+    let sessions = store.list_sessions()?;
+    let mut groups = BTreeMap::<String, Vec<SessionListItemDto>>::new();
 
-    for session in store.list_sessions()? {
-        let folder_path = session_group_path(&session.cwd, &workspace_root);
-        let folder_key = folder_path.display().to_string();
-        let entry = groups.entry(folder_key.clone()).or_insert_with(|| FolderGroupDto {
-            id: sanitize_folder_id(&folder_key),
-            label: folder_label(&folder_path),
-            path: folder_key.clone(),
-            sessions: Vec::new(),
-        });
-        entry.sessions.push(session_summary_dto(&session));
+    for session in sessions {
+        let folder_path = session_group_root(&session.cwd).display().to_string();
+        groups
+            .entry(folder_path.clone())
+            .or_default()
+            .push(SessionListItemDto {
+                session_id: session.id.to_string(),
+                display_name: session.display_name.clone(),
+                title: session_title(
+                    session.display_name.as_ref(),
+                    session.slug.as_ref(),
+                    &session.cwd,
+                    &session.id.to_string(),
+                ),
+                cwd: session.cwd.display().to_string(),
+                folder_path: folder_path.clone(),
+                updated_at_ms: session.updated_at_ms,
+                created_at_ms: session.created_at_ms,
+                event_count: session.event_count,
+                slug: session.slug.clone(),
+                tags: session.tags.clone(),
+                note: session.note.clone(),
+                parent_session_id: session.parent_session_id.map(|value| value.to_string()),
+            });
     }
 
-    for group in groups.values_mut() {
-        group.sessions.sort_by(|left, right| {
-            right
-                .updated_at_ms
-                .cmp(&left.updated_at_ms)
-                .then_with(|| left.title.cmp(&right.title))
-        });
-    }
-
-    Ok(groups.into_values().collect())
+    let mut folders = groups
+        .into_iter()
+        .map(|(folder_path, mut sessions)| {
+            sessions.sort_by(|left, right| right.updated_at_ms.cmp(&left.updated_at_ms));
+            FolderGroupDto {
+                folder_id: folder_path.clone(),
+                folder_label: folder_label(Path::new(&folder_path)),
+                folder_path: folder_path.clone(),
+                session_count: sessions.len(),
+                sessions,
+            }
+        })
+        .collect::<Vec<_>>();
+    folders.sort_by(|left, right| left.folder_label.cmp(&right.folder_label));
+    Ok(folders)
 }
 
-/// Loads the desktop session view for a single session id.
-pub(crate) fn load_session_view(
-    workspace_root: Option<String>,
-    session_id: String,
-) -> Result<SessionViewDto> {
-    let workspace_root = resolve_workspace_root(workspace_root)?;
-    let store = open_store(&workspace_root)?;
-    let session_uuid = Uuid::parse_str(&session_id)
-        .with_context(|| format!("invalid session id `{session_id}`"))?;
+/// Loads one session and returns desktop-oriented timeline, diff, and repo metadata.
+pub(crate) fn load_session_detail(session_id: &str) -> Result<SessionDetailDto> {
+    let root = workspace_root()?;
+    let paths = ConfigPaths::discover(&root);
+    let store = SessionStore::from_paths(&paths)?;
+    let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = store.load_session(session_uuid)?;
-    let summary = store
-        .list_sessions()?
-        .into_iter()
-        .find(|session| session.id == session_uuid)
-        .ok_or_else(|| anyhow!("session `{session_id}` not found"))?;
+    let folder_path = session_group_root(&record.metadata.cwd)
+        .display()
+        .to_string();
     let diff_history = diff_history(&record);
     let latest_diff = diff_history.first().cloned();
-    let repo_status = load_repo_status(record.metadata.cwd.clone())?;
+    let repo_status =
+        repo_actions::repo_status(&record.metadata.id.to_string(), &record.metadata.cwd);
 
-    Ok(SessionViewDto {
-        session: session_summary_dto(&summary),
+    Ok(SessionDetailDto {
+        session_id: record.metadata.id.to_string(),
+        display_name: record.metadata.display_name.clone(),
+        title: session_title(
+            record.metadata.display_name.as_ref(),
+            record.metadata.slug.as_ref(),
+            &record.metadata.cwd,
+            &record.metadata.id.to_string(),
+        ),
+        cwd: record.metadata.cwd.display().to_string(),
+        folder_path,
+        updated_at_ms: record.metadata.updated_at_ms,
+        created_at_ms: record.metadata.created_at_ms,
+        slug: record.metadata.slug.clone(),
+        tags: record.metadata.tags.clone(),
+        note: record.metadata.note.clone(),
+        parent_session_id: record
+            .metadata
+            .parent_session_id
+            .map(|value| value.to_string()),
         timeline: timeline_items(&record),
         latest_diff,
         diff_history,
@@ -70,390 +104,262 @@ pub(crate) fn load_session_view(
     })
 }
 
-/// Loads the working directory for a session id.
-pub(crate) fn load_session_cwd(workspace_root: Option<String>, session_id: &str) -> Result<PathBuf> {
-    let workspace_root = resolve_workspace_root(workspace_root)?;
-    let store = open_store(&workspace_root)?;
-    let session_uuid = Uuid::parse_str(session_id)
-        .with_context(|| format!("invalid session id `{session_id}`"))?;
-    let session = store.load_session(session_uuid)?;
-    Ok(session.metadata.cwd)
+/// Resolves the current working directory for one stored session id.
+pub(crate) fn load_session_cwd(session_id: &str) -> Result<PathBuf> {
+    let root = workspace_root()?;
+    let paths = ConfigPaths::discover(&root);
+    let store = SessionStore::from_paths(&paths)?;
+    let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
+    let record = store.load_session(session_uuid)?;
+    Ok(record.metadata.cwd)
 }
 
-fn open_store(workspace_root: &Path) -> Result<SessionStore> {
-    let paths = ConfigPaths::discover(workspace_root);
-    ensure_workspace_dirs(&paths)?;
-    SessionStore::from_paths(&paths).context("failed to open session store")
-}
-
-fn resolve_workspace_root(workspace_root: Option<String>) -> Result<PathBuf> {
-    workspace_root
-        .map(PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(|| {
-            std::env::current_dir().context("failed to resolve current working directory")
-        })
-}
-
-fn session_summary_dto(session: &SessionSummary) -> SessionListItemDto {
-    SessionListItemDto {
-        id: session.id.to_string(),
-        title: session
-            .display_name
-            .clone()
-            .or_else(|| session.slug.clone())
-            .or_else(|| session.cwd.file_name().map(|name| name.to_string_lossy().to_string()))
-            .unwrap_or_else(|| session.id.to_string()),
-        display_name: session.display_name.clone(),
-        cwd: session.cwd.display().to_string(),
-        updated_at_ms: session.updated_at_ms,
-        created_at_ms: session.created_at_ms,
-        event_count: session.event_count,
-        slug: session.slug.clone(),
-        tags: session.tags.clone(),
-        note: session.note.clone(),
-    }
-}
-
-fn session_group_path(cwd: &Path, workspace_root: &Path) -> PathBuf {
-    if let Ok(relative) = cwd.strip_prefix(workspace_root) {
-        if let Some(first) = relative.components().next() {
-            return workspace_root.join(first.as_os_str());
+fn workspace_root() -> Result<PathBuf> {
+    if let Ok(value) = env::var("PUFFER_DESKTOP_ROOT") {
+        let path = PathBuf::from(value);
+        if path.exists() {
+            return Ok(path);
         }
     }
-    cwd.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| cwd.to_path_buf())
+
+    let current_dir = env::current_dir().context("failed to read current directory")?;
+    if let Some(path) = find_workspace_root(&current_dir) {
+        return Ok(path);
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(path) = find_workspace_root(&manifest_dir) {
+        return Ok(path);
+    }
+
+    Ok(current_dir)
+}
+
+fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|ancestor| ancestor.join(".puffer").exists() || ancestor.join(".git").exists())
+        .map(PathBuf::from)
+}
+
+fn session_group_root(cwd: &Path) -> PathBuf {
+    find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+}
+
+fn session_title(
+    display_name: Option<&String>,
+    slug: Option<&String>,
+    cwd: &Path,
+    fallback: &str,
+) -> String {
+    display_name
+        .cloned()
+        .or_else(|| slug.cloned())
+        .or_else(|| {
+            cwd.file_name()
+                .map(|value| value.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn folder_label(path: &Path) -> String {
     path.file_name()
-        .map(|name| name.to_string_lossy().to_string())
+        .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
+        .map(str::to_string)
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn sanitize_folder_id(path: &str) -> String {
-    path.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
-}
-
-fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
-    record
-        .events
-        .iter()
-        .enumerate()
-        .flat_map(|(index, event)| timeline_item(index, event))
-        .collect()
-}
-
-fn timeline_item(index: usize, event: &TranscriptEvent) -> Vec<TimelineItemDto> {
-    match event {
-        TranscriptEvent::UserMessage { text } => vec![message_item(
-            format!("user-{index}"),
-            "user",
-            "User",
-            text.clone(),
-        )],
-        TranscriptEvent::AssistantMessage { text } => vec![message_item(
-            format!("assistant-{index}"),
-            "assistant",
-            "Assistant",
-            text.clone(),
-        )],
-        TranscriptEvent::SystemMessage { text } => parse_system_message(index, text),
-        TranscriptEvent::GitDiffSnapshot { snapshot } => vec![TimelineItemDto {
-            id: format!("diff-{index}"),
-            kind: "diff".to_string(),
-            title: snapshot.command.clone(),
-            summary: snapshot.status.clone(),
-            body: snapshot.patch_excerpt.clone(),
-            meta: vec![snapshot.command.clone()],
-            status: None,
-            input: None,
-            output: None,
-            tool_name: None,
-            permission_dialog: None,
-        }],
-        TranscriptEvent::SessionRenamed { name } => vec![message_item(
-            format!("rename-{index}"),
-            "system",
-            "Session Renamed",
-            format!("Renamed to {name}"),
-        )],
-        TranscriptEvent::CommandInvoked { name, args } => vec![TimelineItemDto {
-            id: format!("command-{index}"),
-            kind: "command".to_string(),
-            title: format!("/{name}"),
-            summary: args.clone(),
-            body: args.clone(),
-            meta: vec!["slash-command".to_string()],
-            status: None,
-            input: None,
-            output: None,
-            tool_name: None,
-            permission_dialog: None,
-        }],
-        TranscriptEvent::StateSnapshot {
-            current_model,
-            current_provider,
-            sandbox_mode,
-            plan_mode,
-            working_dirs,
-            ..
-        } => {
-            let mut lines = Vec::new();
-            if let Some(provider) = current_provider {
-                lines.push(format!("Provider: {provider}"));
-            }
-            if let Some(model) = current_model {
-                lines.push(format!("Model: {model}"));
-            }
-            lines.push(format!("Sandbox: {sandbox_mode}"));
-            lines.push(format!("Plan mode: {plan_mode}"));
-            if !working_dirs.is_empty() {
-                lines.push(format!("Working dirs: {}", working_dirs.join(", ")));
-            }
-            vec![message_item(
-                format!("state-{index}"),
-                "system",
-                "Runtime State",
-                lines.join("\n"),
-            )]
-        }
-        TranscriptEvent::TranscriptRewritten { .. } => Vec::new(),
-    }
-}
-
-fn message_item(id: String, kind: &str, title: &str, body: String) -> TimelineItemDto {
-    TimelineItemDto {
-        id,
-        kind: kind.to_string(),
-        title: title.to_string(),
-        summary: body.lines().next().unwrap_or(title).to_string(),
-        body,
-        meta: Vec::new(),
-        status: None,
-        input: None,
-        output: None,
-        tool_name: None,
-        permission_dialog: None,
-    }
-}
-
-fn parse_system_message(index: usize, text: &str) -> Vec<TimelineItemDto> {
-    let Some(header) = text.lines().next() else {
-        return Vec::new();
-    };
-    if let Some(rest) = header.strip_prefix("Tool ") {
-        let Some((tool_id, status_suffix)) = rest.rsplit_once(" [") else {
-            return vec![message_item(
-                format!("system-{index}"),
-                "system",
-                "System",
-                text.to_string(),
-            )];
-        };
-        let status = status_suffix.trim_end_matches(']').to_string();
-        let remaining = text.lines().skip(1).collect::<Vec<_>>().join("\n");
-        let (input, output) = parse_tool_io(&remaining);
-        let output_text = output.clone().unwrap_or_default();
-        let permission_dialog = permission_dialog_for_output(&output_text);
-        let mut items = vec![TimelineItemDto {
-            id: format!("tool-{index}"),
-            kind: "tool".to_string(),
-            title: format!("Tool call: {tool_id}"),
-            summary: format!("{tool_id} returned {status}"),
-            body: if output_text.is_empty() {
-                "No tool output recorded.".to_string()
-            } else {
-                output_text.clone()
-            },
-            meta: vec![tool_id.to_string(), status.clone()],
-            status: Some(status),
-            input,
-            output,
-            tool_name: Some(tool_id.to_string()),
-            permission_dialog: permission_dialog.clone(),
-        }];
-        if let Some(dialog) = permission_dialog {
-            items.push(TimelineItemDto {
-                id: format!("permission-{index}"),
-                kind: "permission".to_string(),
-                title: "Permission request".to_string(),
-                summary: dialog.message.clone(),
-                body: [
-                    Some(format!("Tool: {tool_id}")),
-                    dialog
-                        .scope_label
-                        .as_ref()
-                        .map(|scope| format!("Scope: {scope}")),
-                    Some(dialog.message.clone()),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join("\n"),
-                meta: vec![dialog.status.clone()],
-                status: Some(dialog.status.clone()),
-                input: None,
-                output: None,
-                tool_name: Some(tool_id.to_string()),
-                permission_dialog: Some(dialog),
-            });
-        }
-        return items;
-    }
-
-    vec![message_item(
-        format!("system-{index}"),
-        "system",
-        "System",
-        text.to_string(),
-    )]
-}
-
-fn parse_tool_io(body: &str) -> (Option<String>, Option<String>) {
-    let Some(input) = body.strip_prefix("input: ") else {
-        let output = if body.trim().is_empty() {
-            None
-        } else {
-            Some(body.to_string())
-        };
-        return (None, output);
-    };
-    match input.split_once('\n') {
-        Some((input_text, output)) => {
-            let output = if output.trim().is_empty() {
-                None
-            } else {
-                Some(output.to_string())
-            };
-            (Some(input_text.to_string()), output)
-        }
-        None => (Some(input.to_string()), None),
-    }
-}
-
-fn permission_dialog_for_output(output: &str) -> Option<PermissionDialogDto> {
-    if output.starts_with("Permission required:") {
-        return Some(PermissionDialogDto {
-            status: "required".to_string(),
-            message: output.to_string(),
-            scope_label: Some("workspace".to_string()),
-            choices: default_permission_choices(),
-        });
-    }
-    if output.starts_with("Permission denied:") {
-        return Some(PermissionDialogDto {
-            status: "denied".to_string(),
-            message: output.to_string(),
-            scope_label: Some("workspace".to_string()),
-            choices: default_permission_choices(),
-        });
-    }
-    None
-}
-
-fn default_permission_choices() -> Vec<String> {
-    vec![
-        "Allow once".to_string(),
-        "Allow for session".to_string(),
-        "Deny".to_string(),
-    ]
-}
-
-fn diff_history(record: &SessionRecord) -> Vec<DiffSnapshotDto> {
+fn diff_history(record: &SessionRecord) -> Vec<DiffSummaryDto> {
     record
         .events
         .iter()
         .enumerate()
         .filter_map(|(index, event)| match event {
-            TranscriptEvent::GitDiffSnapshot { snapshot } => Some(diff_snapshot(index, snapshot)),
+            TranscriptEvent::GitDiffSnapshot { snapshot } => Some(diff_summary(index, snapshot)),
             _ => None,
         })
         .rev()
         .collect()
 }
 
-fn diff_snapshot(index: usize, snapshot: &GitDiffSnapshot) -> DiffSnapshotDto {
-    DiffSnapshotDto {
+fn diff_summary(index: usize, snapshot: &GitDiffSnapshot) -> DiffSummaryDto {
+    DiffSummaryDto {
         id: format!("diff-{index}"),
-        title: snapshot.command.clone(),
-        command: snapshot.command.clone(),
-        status: snapshot.status.clone(),
+        source: "session_history".to_string(),
+        command_label: snapshot.command.clone(),
+        status_text: snapshot.status.clone(),
         unstaged_diffstat: snapshot.unstaged_diffstat.clone(),
         staged_diffstat: snapshot.staged_diffstat.clone(),
         patch_excerpt: snapshot.patch_excerpt.clone(),
     }
 }
 
+fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
+    let mut items = Vec::new();
+    for (index, event) in record.events.iter().enumerate() {
+        match event {
+            TranscriptEvent::UserMessage { text } => items.push(TimelineItemDto::UserMessage {
+                id: format!("timeline-{index}"),
+                text: text.clone(),
+            }),
+            TranscriptEvent::AssistantMessage { text } => {
+                items.push(TimelineItemDto::AssistantMessage {
+                    id: format!("timeline-{index}"),
+                    text: text.clone(),
+                })
+            }
+            TranscriptEvent::SystemMessage { text } => {
+                items.extend(parse_system_message(index, text));
+            }
+            TranscriptEvent::CommandInvoked { name, args } => {
+                items.push(TimelineItemDto::Command {
+                    id: format!("timeline-{index}"),
+                    command_name: name.clone(),
+                    command_args: args.clone(),
+                })
+            }
+            TranscriptEvent::GitDiffSnapshot { snapshot } => {
+                items.push(TimelineItemDto::DiffSnapshot {
+                    id: format!("timeline-{index}"),
+                    snapshot: diff_summary(index, snapshot),
+                })
+            }
+            TranscriptEvent::SessionRenamed { name } => {
+                items.push(TimelineItemDto::SystemMessage {
+                    id: format!("timeline-{index}"),
+                    text: format!("Session renamed to {name}."),
+                })
+            }
+            TranscriptEvent::TranscriptRewritten { .. } | TranscriptEvent::StateSnapshot { .. } => {
+            }
+        }
+    }
+    items
+}
+
+fn parse_system_message(index: usize, text: &str) -> Vec<TimelineItemDto> {
+    if let Some(parsed) = parse_tool_message(text) {
+        let summary = summarize_tool_input(&parsed.tool_id, &parsed.input_text);
+        let mut items = vec![TimelineItemDto::ToolCall {
+            id: format!("timeline-{index}"),
+            tool_id: parsed.tool_id.clone(),
+            status: parsed.status,
+            summary: summary.clone(),
+            input_text: parsed.input_text.clone(),
+            input_json: parsed.input_json,
+            output_text: parsed.output_text.clone(),
+        }];
+
+        if let Some((state, reason)) = permission_state(&parsed.output_text) {
+            items.push(TimelineItemDto::PermissionDialog {
+                id: format!("timeline-{index}-permission"),
+                tool_id: parsed.tool_id,
+                state: state.to_string(),
+                summary,
+                reason: reason.to_string(),
+                input_text: Some(parsed.input_text),
+            });
+        }
+        return items;
+    }
+
+    vec![TimelineItemDto::SystemMessage {
+        id: format!("timeline-{index}"),
+        text: text.to_string(),
+    }]
+}
+
+struct ParsedToolMessage {
+    tool_id: String,
+    status: String,
+    input_text: String,
+    input_json: Option<Value>,
+    output_text: String,
+}
+
+fn parse_tool_message(text: &str) -> Option<ParsedToolMessage> {
+    let (header, rest) = text.split_once('\n')?;
+    let header = header.strip_prefix("Tool ")?;
+    let (tool_id, status) = header.rsplit_once(" [")?;
+    let status = status.strip_suffix(']')?;
+    let input = rest.strip_prefix("input: ")?;
+    let (input_text, output_text) = input
+        .split_once('\n')
+        .map(|(left, right)| (left.to_string(), right.to_string()))
+        .unwrap_or_else(|| (input.to_string(), String::new()));
+    Some(ParsedToolMessage {
+        tool_id: tool_id.to_string(),
+        status: status.to_string(),
+        input_json: serde_json::from_str(&input_text).ok(),
+        input_text,
+        output_text,
+    })
+}
+
+fn permission_state(output_text: &str) -> Option<(&'static str, &str)> {
+    let trimmed = output_text.trim();
+    if let Some(reason) = trimmed.strip_prefix("Permission required:") {
+        return Some(("required", reason.trim()));
+    }
+    if let Some(reason) = trimmed.strip_prefix("Permission denied:") {
+        return Some(("denied", reason.trim()));
+    }
+    None
+}
+
+fn summarize_tool_input(tool_id: &str, input_text: &str) -> Option<String> {
+    let parsed = serde_json::from_str::<Value>(input_text).ok()?;
+    match tool_id {
+        "Bash" | "PowerShell" => parsed
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|value| format!("Command: {value}")),
+        "Config" => parsed
+            .get("setting")
+            .and_then(Value::as_str)
+            .map(|value| format!("Setting: {value}")),
+        "WebSearch" => parsed
+            .get("query")
+            .and_then(Value::as_str)
+            .map(|value| format!("Query: {value}")),
+        "SendMessage" => parsed
+            .get("to")
+            .and_then(Value::as_str)
+            .map(|value| format!("Recipient: {value}")),
+        "AskUserQuestion" => parsed
+            .get("questions")
+            .and_then(Value::as_array)
+            .map(|value| format!("Questions: {}", value.len())),
+        "Read" | "Edit" | "Write" => parsed
+            .get("file_path")
+            .or_else(|| parsed.get("path"))
+            .and_then(Value::as_str)
+            .map(|value| format!("Path: {value}")),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{diff_history, parse_system_message, session_group_path};
-    use puffer_session_store::{GitDiffSnapshot, SessionMetadata, SessionRecord, TranscriptEvent};
-    use std::path::Path;
-    use uuid::Uuid;
+    use super::{parse_tool_message, permission_state, summarize_tool_input};
 
     #[test]
-    fn groups_session_by_first_workspace_segment() {
-        let path = session_group_path(
-            Path::new("/tmp/workspace/repo/src"),
-            Path::new("/tmp/workspace"),
+    fn parses_tool_messages() {
+        let parsed = parse_tool_message(
+            "Tool Config [error]\ninput: {\"setting\":\"theme\"}\nPermission required: config writes require approval",
+        )
+        .expect("tool message");
+        assert_eq!(parsed.tool_id, "Config");
+        assert_eq!(parsed.status, "error");
+        assert_eq!(parsed.input_text, "{\"setting\":\"theme\"}");
+        assert_eq!(
+            permission_state(&parsed.output_text),
+            Some(("required", "config writes require approval"))
         );
-        assert_eq!(path, Path::new("/tmp/workspace/repo"));
-    }
-
-    #[test]
-    fn parses_permission_tool_message_into_tool_and_permission_cards() {
-        let items = parse_system_message(
-            4,
-            "Tool Edit [error]\ninput: {\"path\":\"src/lib.rs\"}\nPermission required: workspace permission rule requires approval",
+        assert_eq!(
+            summarize_tool_input(&parsed.tool_id, &parsed.input_text),
+            Some("Setting: theme".to_string())
         );
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].kind, "tool");
-        assert_eq!(items[1].kind, "permission");
-        assert_eq!(items[1].tool_name.as_deref(), Some("Edit"));
-    }
-
-    #[test]
-    fn diff_history_returns_latest_snapshot_first() {
-        let record = SessionRecord {
-            metadata: SessionMetadata {
-                id: Uuid::new_v4(),
-                cwd: "/tmp/workspace".into(),
-                created_at_ms: 0,
-                updated_at_ms: 0,
-                display_name: None,
-                parent_session_id: None,
-                slug: None,
-                tags: Vec::new(),
-                note: None,
-            },
-            events: vec![
-                TranscriptEvent::GitDiffSnapshot {
-                    snapshot: GitDiffSnapshot {
-                        command: "/diff".to_string(),
-                        status: "first".to_string(),
-                        unstaged_diffstat: String::new(),
-                        staged_diffstat: String::new(),
-                        patch_excerpt: "first".to_string(),
-                    },
-                },
-                TranscriptEvent::GitDiffSnapshot {
-                    snapshot: GitDiffSnapshot {
-                        command: "/review".to_string(),
-                        status: "second".to_string(),
-                        unstaged_diffstat: String::new(),
-                        staged_diffstat: String::new(),
-                        patch_excerpt: "second".to_string(),
-                    },
-                },
-            ],
-        };
-        let history = diff_history(&record);
-        assert_eq!(history[0].status, "second");
-        assert_eq!(history[1].status, "first");
     }
 }
