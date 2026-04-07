@@ -51,6 +51,7 @@ pub(super) fn execute_openai_web_search(
                 kind: "web_search".to_string(),
                 name: String::new(),
                 description: String::new(),
+                strict: false,
                 parameters: Value::Null,
                 filters: (!input.allowed_domains.is_empty())
                     .then(|| json!({ "allowed_domains": input.allowed_domains })),
@@ -62,6 +63,7 @@ pub(super) fn execute_openai_web_search(
                 OpenAIResponsesToolChoiceMode::Auto,
             )),
             previous_response_id: None,
+            text: None,
         },
     )?;
 

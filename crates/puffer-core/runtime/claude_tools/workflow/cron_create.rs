@@ -11,7 +11,7 @@ use super::store::{
 };
 
 /// Executes the Claude-compatible `CronCreate` workflow tool.
-pub fn execute_cron_create(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
+pub fn execute_cron_create(state: &mut AppState, _cwd: &Path, input: Value) -> Result<String> {
     let parsed: CronCreateInput =
         serde_json::from_value(input).context("invalid CronCreate input")?;
     validate_cron_expression(&parsed.cron)?;

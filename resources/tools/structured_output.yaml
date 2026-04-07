@@ -4,7 +4,9 @@ description: |-
   Return the final response in a caller-provided structured JSON format.
 
   Use this only for the final structured result when the caller has supplied
-  the expected schema.
+  the expected schema. Call it exactly once at the end of the response when the
+  caller requires structured output. Do not add extra prose outside the
+  structured payload.
 handler: runtime:workflow:structured_output
 approval_policy: auto
 sandbox_policy: read-only

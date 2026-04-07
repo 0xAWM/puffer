@@ -36,6 +36,7 @@ pub(super) fn openai_tool_definitions(
             kind: "function".to_string(),
             name: definition.id.clone(),
             description: definition.description.clone(),
+            strict: false,
             parameters: definition.input_schema.as_json_schema(),
             filters: None,
             user_location: None,
@@ -58,6 +59,7 @@ pub(super) fn openai_chat_completion_tools(
                 name: definition.id.clone(),
                 description: definition.description.clone(),
                 parameters: definition.input_schema.as_json_schema(),
+                strict: false,
             },
         })
         .collect()

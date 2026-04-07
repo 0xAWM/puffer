@@ -3,7 +3,8 @@ use crate::AppState;
 use anyhow::Result;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_resources::{
-    load_resources, plugin_by_id, plugin_mcp_servers, LoadedResources, SourceKind,
+    load_resources, plugin_by_id, plugin_lsp_servers, plugin_mcp_servers, LoadedResources,
+    SourceKind,
 };
 use puffer_session_store::SessionStore;
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,16 @@ pub(crate) fn describe_plugin(
             .collect::<Vec<_>>()
             .join(", ");
         let _ = writeln!(&mut text, "MCP servers: {ids}");
+    }
+    if !plugin.value.lsp_servers.is_empty() {
+        let ids = plugin
+            .value
+            .lsp_servers
+            .iter()
+            .map(|server| server.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(&mut text, "LSP servers: {ids}");
     }
     emit_system(state, session_store, text)
 }
@@ -471,10 +482,11 @@ pub(crate) fn reload_plugins_summary(
     let paths = ConfigPaths::discover(&state.cwd);
     let plugins_dir = paths.workspace_config_dir.join("resources/plugins");
     Ok(format!(
-        "Reloaded plugin registry for this session.\nplugins={}\nskills={}\nmcp_servers={}\nsource_dir={}",
+        "Reloaded plugin registry for this session.\nplugins={}\nskills={}\nmcp_servers={}\nlsp_servers={}\nsource_dir={}",
         resources.plugins.len(),
         resources.skills.len(),
-        resources.mcp_servers.len(),
+        resources.mcp_servers.len() + plugin_mcp_servers(resources).len(),
+        plugin_lsp_servers(resources).len(),
         plugins_dir.display()
     ))
 }
@@ -747,6 +759,7 @@ mod tests {
                     target: "logs".to_string(),
                     description: String::new(),
                 }],
+                lsp_servers: Vec::new(),
             },
             source_info: SourceInfo {
                 path: root.join("resources/plugins/workspace.yaml"),

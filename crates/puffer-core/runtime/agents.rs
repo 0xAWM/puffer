@@ -7,6 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::thread;
 use uuid::Uuid;
 
@@ -26,6 +27,10 @@ struct AgentToolInput {
     isolation: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    team_name: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +47,16 @@ struct AgentCompletedOutput {
     cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "teamName")]
+    team_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isolation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "worktreePath")]
+    worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "worktreeBranch")]
+    worktree_branch: Option<String>,
     #[serde(rename = "toolUses")]
     tool_uses: usize,
     result: String,
@@ -61,10 +76,28 @@ struct AgentAsyncOutput {
     cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "teamName")]
+    team_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isolation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "worktreePath")]
+    worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "worktreeBranch")]
+    worktree_branch: Option<String>,
     #[serde(rename = "outputFile")]
     output_file: String,
     #[serde(rename = "canReadOutputFile")]
     can_read_output_file: bool,
+}
+
+#[derive(Debug)]
+struct AgentWorktree {
+    repo_root: PathBuf,
+    path: PathBuf,
+    branch: String,
+    preserve_on_completion: bool,
 }
 
 #[derive(Debug)]
@@ -79,6 +112,10 @@ struct PreparedAgentExecution {
     nested_state: AppState,
     nested_resources: LoadedResources,
     resolved_model: Option<String>,
+    isolation: Option<String>,
+    team_name: Option<String>,
+    mode: Option<String>,
+    worktree: Option<AgentWorktree>,
 }
 
 /// Executes the runtime-backed `Agent` tool by running a nested model turn.
@@ -94,8 +131,17 @@ pub(super) fn execute_agent_tool(
     if input.prompt.trim().is_empty() {
         bail!("Agent prompt cannot be empty");
     }
-    if input.isolation.is_some() {
-        bail!("agent isolation is not implemented in this runtime");
+    if input.cwd.is_some() && input.isolation.as_deref() == Some("worktree") {
+        bail!("agent cwd override is incompatible with isolation=worktree");
+    }
+    if let Some(isolation) = input
+        .isolation
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if isolation != "worktree" {
+            bail!("unsupported agent isolation `{isolation}`");
+        }
     }
 
     let prepared = prepare_agent_execution(state, resources, providers, cwd, input)?;
@@ -145,9 +191,19 @@ fn prepare_agent_execution(
     let nested_cwd = resolve_agent_cwd(cwd, input.cwd.as_deref())?;
     let nested_resources = filter_resources_for_agent(resources, &agent.value.tools);
     let mut nested_state = state.clone();
+    let mut nested_cwd = nested_cwd;
+    let mut worktree = None;
+    if input.isolation.as_deref() == Some("worktree") {
+        let created = create_agent_worktree(cwd, &Uuid::new_v4().simple().to_string())?;
+        nested_cwd = created.path.clone();
+        worktree = Some(created);
+    }
     nested_state.cwd = nested_cwd.clone();
     nested_state.transcript.clear();
     nested_state.push_message(MessageRole::System, agent.value.prompt.trim().to_string());
+    if input.mode.as_deref() == Some("plan") {
+        nested_state.plan_mode = true;
+    }
 
     if let Some(model) = input
         .model
@@ -180,6 +236,16 @@ fn prepare_agent_execution(
         resolved_model: nested_state.current_model.clone(),
         nested_state,
         nested_resources,
+        isolation: input.isolation,
+        team_name: input
+            .team_name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        mode: input
+            .mode
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        worktree,
     })
 }
 
@@ -204,17 +270,34 @@ fn run_agent_synchronously(
         name: prepared.name,
         cwd: prepared.nested_cwd.display().to_string(),
         model: prepared.resolved_model,
+        team_name: prepared.team_name,
+        mode: prepared.mode,
+        isolation: prepared.isolation.clone(),
+        worktree_path: prepared
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.path.display().to_string()),
+        worktree_branch: prepared
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.branch.clone()),
         tool_uses: turn.tool_invocations.len(),
         result: turn.assistant_text.trim().to_string(),
     };
+    if let Some(worktree) = prepared.worktree.take() {
+        cleanup_agent_worktree(worktree)?;
+    }
     Ok(serde_json::to_string_pretty(&payload)?)
 }
 
 fn launch_background_agent(
-    prepared: PreparedAgentExecution,
+    mut prepared: PreparedAgentExecution,
     providers: ProviderRegistry,
     auth_store: AuthStore,
 ) -> Result<String> {
+    if let Some(worktree) = prepared.worktree.as_mut() {
+        worktree.preserve_on_completion = true;
+    }
     let output_file = agent_output_path(&prepared.nested_state.session.cwd, &prepared.agent_id)?;
     fs::write(
         &output_file,
@@ -240,6 +323,17 @@ fn launch_background_agent(
         name: prepared.name.clone(),
         cwd: prepared.nested_cwd.display().to_string(),
         model: prepared.resolved_model.clone(),
+        team_name: prepared.team_name.clone(),
+        mode: prepared.mode.clone(),
+        isolation: prepared.isolation.clone(),
+        worktree_path: prepared
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.path.display().to_string()),
+        worktree_branch: prepared
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.branch.clone()),
         output_file: output_file.display().to_string(),
         can_read_output_file: true,
     };
@@ -268,6 +362,17 @@ fn launch_background_agent(
                 name: prepared.name,
                 cwd: prepared.nested_cwd.display().to_string(),
                 model: prepared.resolved_model,
+                team_name: prepared.team_name,
+                mode: prepared.mode,
+                isolation: prepared.isolation,
+                worktree_path: prepared
+                    .worktree
+                    .as_ref()
+                    .map(|worktree| worktree.path.display().to_string()),
+                worktree_branch: prepared
+                    .worktree
+                    .as_ref()
+                    .map(|worktree| worktree.branch.clone()),
                 tool_uses: turn.tool_invocations.len(),
                 result: turn.assistant_text.trim().to_string(),
             }),
@@ -280,6 +385,17 @@ fn launch_background_agent(
                 "name": prepared.name,
                 "cwd": prepared.nested_cwd.display().to_string(),
                 "model": prepared.resolved_model,
+                "teamName": prepared.team_name,
+                "mode": prepared.mode,
+                "isolation": prepared.isolation,
+                "worktreePath": prepared
+                    .worktree
+                    .as_ref()
+                    .map(|worktree| worktree.path.display().to_string()),
+                "worktreeBranch": prepared
+                    .worktree
+                    .as_ref()
+                    .map(|worktree| worktree.branch.clone()),
                 "error": error.to_string(),
             }),
         };
@@ -309,6 +425,91 @@ fn resolve_agent_cwd(parent_cwd: &Path, override_cwd: Option<&str>) -> Result<Pa
         bail!("agent cwd {} is not a directory", resolved.display());
     }
     Ok(resolved)
+}
+
+fn create_agent_worktree(parent_cwd: &Path, suffix: &str) -> Result<AgentWorktree> {
+    let repo_root = git_toplevel(parent_cwd)
+        .ok_or_else(|| anyhow!("agent worktree isolation requires a git repository"))?;
+    let worktree_root = repo_root.join(".worktree").join("agents");
+    fs::create_dir_all(&worktree_root)
+        .with_context(|| format!("failed to create {}", worktree_root.display()))?;
+    let branch = format!("puffer-agent-{suffix}");
+    let path = worktree_root.join(suffix);
+    let status = Command::new("git")
+        .args([
+            "-C",
+            repo_root.to_string_lossy().as_ref(),
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            path.to_string_lossy().as_ref(),
+        ])
+        .status()
+        .with_context(|| format!("failed to launch git worktree add for {}", path.display()))?;
+    if !status.success() {
+        bail!("git worktree add failed for {}", path.display());
+    }
+    Ok(AgentWorktree {
+        repo_root,
+        path,
+        branch,
+        preserve_on_completion: false,
+    })
+}
+
+fn cleanup_agent_worktree(worktree: AgentWorktree) -> Result<()> {
+    if worktree.preserve_on_completion {
+        return Ok(());
+    }
+    let status = Command::new("git")
+        .args([
+            "-C",
+            worktree.path.to_string_lossy().as_ref(),
+            "status",
+            "--porcelain",
+        ])
+        .output()
+        .with_context(|| format!("failed to inspect {}", worktree.path.display()))?;
+    if !status.status.success() || !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
+        return Ok(());
+    }
+    let remove = Command::new("git")
+        .args([
+            "-C",
+            worktree.repo_root.to_string_lossy().as_ref(),
+            "worktree",
+            "remove",
+            "--force",
+            worktree.path.to_string_lossy().as_ref(),
+        ])
+        .status()
+        .with_context(|| format!("failed to remove {}", worktree.path.display()))?;
+    if !remove.success() {
+        bail!("git worktree remove failed for {}", worktree.path.display());
+    }
+    let _ = Command::new("git")
+        .args([
+            "-C",
+            worktree.repo_root.to_string_lossy().as_ref(),
+            "branch",
+            "-D",
+            &worktree.branch,
+        ])
+        .status();
+    Ok(())
+}
+
+fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["-C", cwd.to_string_lossy().as_ref(), "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
 fn agent_output_path(session_cwd: &Path, agent_id: &str) -> Result<PathBuf> {

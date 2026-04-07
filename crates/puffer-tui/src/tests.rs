@@ -813,6 +813,7 @@ fn sample_resources() -> LoadedResources {
                     target: "git".to_string(),
                     description: "Git bridge".to_string(),
                 }],
+                lsp_servers: Vec::new(),
             },
         )],
         mcp_servers: vec![loaded_item(

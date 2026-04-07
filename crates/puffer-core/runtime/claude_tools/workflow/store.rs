@@ -5,6 +5,7 @@ use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -304,15 +305,6 @@ pub(super) struct ConfigInput {
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct LspInput {
-    pub(super) operation: String,
-    #[serde(rename = "filePath")]
-    pub(super) file_path: String,
-    pub(super) line: usize,
-    pub(super) character: usize,
-}
-
-#[derive(Debug, Deserialize)]
 pub(super) struct PowerShellInput {
     pub(super) command: String,
     #[serde(default)]
@@ -360,6 +352,10 @@ pub(super) fn append_agent_message(output_file: &Path, message: &Value) -> Resul
 }
 
 pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Ok(Vec::new());
+    }
     if target == "*" {
         let agents = load_store::<AgentStore>(&agents_path(cwd))?;
         return Ok(agents
@@ -370,7 +366,11 @@ pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>
     }
 
     let teams = load_store::<TeamStore>(&teams_path(cwd))?;
-    if let Some(team) = teams.teams.iter().find(|team| team.team_name == target) {
+    if let Some(team) = teams
+        .teams
+        .iter()
+        .find(|team| team.team_name.eq_ignore_ascii_case(target))
+    {
         return Ok(team.members.clone());
     }
 
@@ -378,7 +378,13 @@ pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>
     if let Some(agent) = agents
         .agents
         .iter()
-        .find(|agent| agent.agent_id == target || agent.name.as_deref() == Some(target))
+        .find(|agent| {
+            agent.agent_id.eq_ignore_ascii_case(target)
+                || agent
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(target))
+        })
     {
         return Ok(vec![agent.agent_id.clone()]);
     }
@@ -390,9 +396,12 @@ pub(super) fn get_config_value(state: &AppState, setting: &str) -> Result<Value>
     match setting {
         "theme" => Ok(json!(state.config.theme)),
         "model" => Ok(json!(state.current_model)),
+        "editorMode" => Ok(json!(if state.vim_mode { "vim" } else { "default" })),
         "default_provider" => Ok(json!(state.config.default_provider)),
         "default_model" => Ok(json!(state.config.default_model)),
         "openai_base_url" => Ok(json!(state.config.openai_base_url)),
+        "openai_headers" => Ok(json!(state.config.openai_headers)),
+        "openai_query_params" => Ok(json!(state.config.openai_query_params)),
         "no_alt_screen" => Ok(json!(state.config.ui.no_alt_screen)),
         "tmux_golden_mode" => Ok(json!(state.config.ui.tmux_golden_mode)),
         other => bail!("Unsupported config setting `{other}`"),
@@ -419,19 +428,31 @@ pub(super) fn set_config_value(state: &mut AppState, setting: &str, value: Value
                 .or_else(|| state.current_provider.clone());
             state.config.default_model = Some(model);
         }
+        "editorMode" => {
+            let mode = value
+                .as_str()
+                .ok_or_else(|| anyhow!("editorMode must be a string"))?;
+            match mode {
+                "vim" => state.vim_mode = true,
+                "default" | "normal" => state.vim_mode = false,
+                other => bail!("unsupported editorMode `{other}`"),
+            }
+        }
         "default_provider" => {
             state.config.default_provider = match value {
                 Value::Null => None,
                 Value::String(text) => Some(text),
                 _ => bail!("default_provider must be a string"),
-            }
+            };
+            state.current_provider = state.config.default_provider.clone();
         }
         "default_model" => {
             state.config.default_model = match value {
                 Value::Null => None,
                 Value::String(text) => Some(text),
                 _ => bail!("default_model must be a string"),
-            }
+            };
+            state.current_model = state.config.default_model.clone();
         }
         "openai_base_url" => {
             state.config.openai_base_url = match value {
@@ -439,6 +460,13 @@ pub(super) fn set_config_value(state: &mut AppState, setting: &str, value: Value
                 Value::String(text) => Some(text),
                 _ => bail!("openai_base_url must be a string"),
             }
+        }
+        "openai_headers" => {
+            state.config.openai_headers = value_to_string_map(value, "openai_headers")?;
+        }
+        "openai_query_params" => {
+            state.config.openai_query_params =
+                value_to_string_map(value, "openai_query_params")?;
         }
         "no_alt_screen" => {
             state.config.ui.no_alt_screen = value
@@ -453,6 +481,19 @@ pub(super) fn set_config_value(state: &mut AppState, setting: &str, value: Value
         other => bail!("Unsupported config setting `{other}`"),
     }
     Ok(())
+}
+fn value_to_string_map(value: Value, setting: &str) -> Result<BTreeMap<String, String>> {
+    match value {
+        Value::Null => Ok(BTreeMap::new()),
+        Value::Object(entries) => entries
+            .into_iter()
+            .map(|(key, value)| match value {
+                Value::String(text) => Ok((key, text)),
+                _ => bail!("{setting} must be an object with string values"),
+            })
+            .collect(),
+        _ => bail!("{setting} must be an object with string values"),
+    }
 }
 
 pub(super) fn detect_powershell_binary() -> Result<String> {
@@ -472,102 +513,6 @@ pub(super) fn detect_powershell_binary() -> Result<String> {
     bail!("PowerShell is not installed on this system")
 }
 
-pub(super) fn identifier_at_position(
-    content: &str,
-    line: usize,
-    character: usize,
-) -> Option<String> {
-    let line_text = content.lines().nth(line.saturating_sub(1))?;
-    if line_text.is_empty() {
-        return None;
-    }
-    let chars = line_text.chars().collect::<Vec<_>>();
-    let mut index = character
-        .saturating_sub(1)
-        .min(chars.len().saturating_sub(1));
-    if !is_identifier_char(chars[index]) && index > 0 {
-        index -= 1;
-    }
-    if !is_identifier_char(chars[index]) {
-        return None;
-    }
-    let mut start = index;
-    while start > 0 && is_identifier_char(chars[start - 1]) {
-        start -= 1;
-    }
-    let mut end = index + 1;
-    while end < chars.len() && is_identifier_char(chars[end]) {
-        end += 1;
-    }
-    Some(chars[start..end].iter().collect())
-}
-
-pub(super) fn line_text(content: &str, line: usize) -> String {
-    content
-        .lines()
-        .nth(line.saturating_sub(1))
-        .unwrap_or_default()
-        .to_string()
-}
-
-pub(super) fn document_symbols(content: &str) -> Vec<Value> {
-    content
-        .lines()
-        .enumerate()
-        .filter_map(|(index, line)| detect_symbol_name(line).map(|name| (index + 1, name)))
-        .map(|(line, name)| {
-            json!({
-                "name": name,
-                "line": line
-            })
-        })
-        .collect()
-}
-
-pub(super) fn workspace_symbols(cwd: &Path) -> Result<Vec<Value>> {
-    let mut files = Vec::new();
-    collect_workspace_files(cwd, cwd, &mut files)?;
-    let mut symbols = Vec::new();
-    for file in files {
-        let content = match fs::read_to_string(&file) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        for symbol in document_symbols(&content) {
-            symbols.push(json!({
-                "filePath": file.display().to_string(),
-                "symbol": symbol
-            }));
-        }
-    }
-    Ok(symbols)
-}
-
-pub(super) fn search_workspace_identifier(cwd: &Path, identifier: &str) -> Result<Vec<Value>> {
-    let mut files = Vec::new();
-    collect_workspace_files(cwd, cwd, &mut files)?;
-    let mut matches = Vec::new();
-    for file in files {
-        let content = match fs::read_to_string(&file) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        for (index, line) in content.lines().enumerate() {
-            if let Some(character) = line.find(identifier) {
-                matches.push(json!({
-                    "filePath": file.display().to_string(),
-                    "line": index + 1,
-                    "character": character + 1,
-                    "text": line.trim()
-                }));
-                if matches.len() >= 50 {
-                    return Ok(matches);
-                }
-            }
-        }
-    }
-    Ok(matches)
-}
 
 pub(super) fn load_store<T>(path: &Path) -> Result<T>
 where
@@ -855,13 +800,24 @@ pub(super) fn validate_ask_user_questions(items: &[AskUserQuestionItem]) -> Resu
     if items.is_empty() || items.len() > 4 {
         bail!("AskUserQuestion requires between 1 and 4 questions");
     }
+    let mut seen_headers = std::collections::BTreeSet::new();
     for item in items {
+        if item.question.trim().is_empty() {
+            bail!("AskUserQuestion questions must not be empty");
+        }
+        if item.header.trim().is_empty() {
+            bail!("AskUserQuestion headers must not be empty");
+        }
+        if !seen_headers.insert(item.header.to_ascii_lowercase()) {
+            bail!("AskUserQuestion headers must be unique");
+        }
         if item.options.len() < 2 || item.options.len() > 4 {
             bail!(
                 "AskUserQuestion question `{}` must provide between 2 and 4 options",
                 item.header
             );
         }
+        let mut seen_labels = std::collections::BTreeSet::new();
         if item.multi_select && item.options.iter().any(|option| option.preview.is_some()) {
             bail!(
                 "AskUserQuestion question `{}` cannot use previews with multiSelect",
@@ -875,59 +831,13 @@ pub(super) fn validate_ask_user_questions(items: &[AskUserQuestionItem]) -> Resu
                     item.header
                 );
             }
+            if !seen_labels.insert(option.label.to_ascii_lowercase()) {
+                bail!(
+                    "AskUserQuestion question `{}` has duplicate option labels",
+                    item.header
+                );
+            }
         }
     }
     Ok(())
-}
-
-fn collect_workspace_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(current)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        let relative = path.strip_prefix(root).unwrap_or(&path);
-        let relative_text = relative.to_string_lossy();
-        if relative_text.starts_with(".git")
-            || relative_text.starts_with("target")
-            || relative_text.starts_with(".worktree")
-            || relative_text.starts_with(".puffer/runtime/claude_workflow")
-        {
-            continue;
-        }
-        if file_type.is_dir() {
-            collect_workspace_files(root, &path, files)?;
-        } else if file_type.is_file() {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn detect_symbol_name(line: &str) -> Option<String> {
-    let trimmed = line.trim_start();
-    for prefix in [
-        "pub fn ",
-        "fn ",
-        "pub struct ",
-        "struct ",
-        "pub enum ",
-        "enum ",
-        "pub trait ",
-        "trait ",
-        "class ",
-        "function ",
-        "impl ",
-    ] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            let name = rest
-                .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-                .find(|part| !part.is_empty())?;
-            return Some(name.to_string());
-        }
-    }
-    None
-}
-
-fn is_identifier_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
 }

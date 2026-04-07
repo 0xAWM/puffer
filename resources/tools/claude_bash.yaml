@@ -30,6 +30,8 @@ description: |-
   - If multiple independent commands can run in parallel, make multiple Bash
     tool calls in a single message.
   - If commands depend on each other, use a single Bash call with `&&`.
+  - Do not separate dependent commands with multiple tool calls when one shell
+    invocation is clearer.
   - For git commands, prefer new commits over amend, avoid destructive
     operations unless clearly justified, and never skip hooks or signing
     unless the User explicitly requests it.
@@ -38,6 +40,9 @@ description: |-
   - Commands run in a sandbox by default. Use
     `dangerouslyDisableSandbox: true` only when you explicitly need to bypass
     sandbox restrictions.
+  - The result of a foreground Bash command should generally be trusted.
+  - Do not use Bash for file search, file reads, or file edits when the
+    dedicated tools are a better fit.
 handler: runtime:claude_bash
 approval_policy: on-request
 sandbox_policy: workspace-write
@@ -75,7 +80,7 @@ input_schema:
           array elements"
     run_in_background:
       type: boolean
-      description: Set to true to run this command in the background. Use Read to read the output later.
+      description: Set to true to run this command in the background. Only use this when you do not need the result immediately and are okay being notified later.
     dangerouslyDisableSandbox:
       type: boolean
       description: Set this to true to dangerously override sandbox mode and run commands without sandboxing.

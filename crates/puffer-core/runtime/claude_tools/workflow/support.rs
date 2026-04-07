@@ -1,20 +1,19 @@
 use super::store::{
-    agents_path, append_agent_message, detect_powershell_binary, document_symbols,
-    ensure_plan_file, get_config_value, git_ahead_count, git_dirty, git_head_commit, git_toplevel,
-    identifier_at_position, is_git_repo, line_text, load_store, messages_path, next_task_id,
-    now_ms, process_is_running, resolve_path, resolve_recipients, save_store,
-    search_workspace_identifier, set_config_value, task_output_path, tasks_path, teams_path,
+    agents_path, append_agent_message, detect_powershell_binary, ensure_plan_file,
+    get_config_value, git_ahead_count, git_dirty, git_head_commit, git_toplevel, is_git_repo,
+    load_store, messages_path, next_task_id, now_ms, process_is_running, resolve_recipients,
+    save_store, set_config_value, task_output_path, tasks_path, teams_path,
     terminate_process, todos_path, validate_ask_user_questions, wait_for_process_exit,
-    workflow_root, workspace_symbols, worktrees_path, AgentInput, AgentStore, AskUserQuestionInput,
-    ConfigInput, EnterWorktreeInput, ExitPlanModeInput, ExitWorktreeInput, LspInput, MessageStore,
-    PowerShellInput, SendMessageInput, StoredAgent, StoredMessage, StoredTask, StoredTeam,
-    StoredTodo, StoredWorktree, TaskCreateInput, TaskIdInput, TaskOutputInput, TaskStopInput,
-    TaskStore, TaskUpdateInput, TeamCreateInput, TeamStore, TodoStore, TodoWriteInput,
-    WorktreeStore,
+    workflow_root, worktrees_path, AgentInput, AgentStore, AskUserQuestionInput, ConfigInput,
+    EnterWorktreeInput, ExitPlanModeInput, ExitWorktreeInput, MessageStore, PowerShellInput,
+    SendMessageInput, StoredAgent, StoredMessage, StoredTask, StoredTeam, StoredTodo,
+    StoredWorktree, TaskCreateInput, TaskIdInput, TaskOutputInput, TaskStopInput, TaskStore,
+    TaskUpdateInput, TeamCreateInput, TeamStore, TodoStore, TodoWriteInput, WorktreeStore,
 };
 use super::task_runtime::{
-    read_task_output, refresh_stored_task, terminal_task_status, wait_for_child_output,
-    wait_for_stored_task,
+    read_task_output, read_runtime_agent_output, refresh_stored_task, runtime_agent_terminal_status,
+    runtime_agent_output_path, terminal_task_status, validate_todos, wait_for_child_output,
+    wait_for_runtime_agent_output, wait_for_stored_task,
 };
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
@@ -24,10 +23,11 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// Executes the live `Agent` workflow tool.
-pub(super) fn execute_agent(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
+pub(super) fn execute_agent(state: &mut AppState, _cwd: &Path, input: Value) -> Result<String> {
     let parsed: AgentInput = serde_json::from_value(input).context("invalid Agent input")?;
     let agent_id = format!("agent-{}", Uuid::new_v4().simple());
     let store_cwd = state.session.cwd.as_path();
@@ -94,8 +94,19 @@ pub(super) fn execute_send_message(
     cwd: &Path,
     input: Value,
 ) -> Result<String> {
+    let _ = cwd;
     let parsed: SendMessageInput =
         serde_json::from_value(input).context("invalid SendMessage input")?;
+    if parsed.to.trim().is_empty() {
+        bail!("SendMessage requires a non-empty recipient");
+    }
+    if parsed
+        .message
+        .as_str()
+        .is_some_and(|text| text.trim().is_empty())
+    {
+        bail!("SendMessage plain-text messages must not be empty");
+    }
     let store_cwd = state.session.cwd.as_path();
     let recipients = resolve_recipients(store_cwd, &parsed.to)?;
     if recipients.is_empty() {
@@ -141,16 +152,21 @@ pub(super) fn execute_team_create(
     cwd: &Path,
     input: Value,
 ) -> Result<String> {
-    let parsed: TeamCreateInput =
-        serde_json::from_value(input).context("invalid TeamCreate input")?;
+    let _ = cwd;
+    let parsed: TeamCreateInput = serde_json::from_value(input).context("invalid TeamCreate input")?;
     let mut teams = load_store::<TeamStore>(&teams_path(state.session.cwd.as_path()))?;
     if teams
         .teams
         .iter()
-        .any(|team| team.team_name == parsed.team_name)
+            .any(|team| team.team_name == parsed.team_name)
     {
         bail!("team `{}` already exists", parsed.team_name);
     }
+    let workflow = workflow_root(state.session.cwd.as_path())?;
+    let team_dir = workflow.join("teams").join(&parsed.team_name);
+    let task_dir = workflow.join("team_tasks").join(&parsed.team_name);
+    fs::create_dir_all(&team_dir)?;
+    fs::create_dir_all(&task_dir)?;
     teams.teams.push(StoredTeam {
         team_name: parsed.team_name.clone(),
         description: parsed.description.clone(),
@@ -162,7 +178,9 @@ pub(super) fn execute_team_create(
         "team_name": parsed.team_name,
         "description": parsed.description,
         "agent_type": parsed.agent_type,
-        "members": []
+        "members": [],
+        "teamDir": team_dir.display().to_string(),
+        "taskDir": task_dir.display().to_string(),
     }))?)
 }
 
@@ -172,6 +190,7 @@ pub(super) fn execute_team_delete(
     cwd: &Path,
     _input: Value,
 ) -> Result<String> {
+    let _ = cwd;
     let mut teams = load_store::<TeamStore>(&teams_path(state.session.cwd.as_path()))?;
     let agents = load_store::<AgentStore>(&agents_path(state.session.cwd.as_path()))?;
     let teams_with_active_members = teams
@@ -200,15 +219,25 @@ pub(super) fn execute_team_delete(
         .map(|team| team.team_name)
         .collect::<Vec<_>>();
     save_store(&teams_path(state.session.cwd.as_path()), &teams)?;
+    let workflow = workflow_root(state.session.cwd.as_path())?;
+    for name in &deleted {
+        let _ = fs::remove_dir_all(workflow.join("teams").join(name));
+        let _ = fs::remove_dir_all(workflow.join("team_tasks").join(name));
+    }
     Ok(serde_json::to_string_pretty(&json!({
         "deleted": deleted
     }))?)
 }
 
 /// Executes the live `TodoWrite` workflow tool.
-pub(super) fn execute_todo_write(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
+pub(super) fn execute_todo_write(
+    state: &mut AppState,
+    _cwd: &Path,
+    input: Value,
+) -> Result<String> {
     let parsed: TodoWriteInput =
         serde_json::from_value(input).context("invalid TodoWrite input")?;
+    validate_todos(&parsed.todos)?;
     let mut store = load_store::<TodoStore>(&todos_path(state.session.cwd.as_path()))?;
     let old = store.todos.clone();
     store.todos = parsed
@@ -230,7 +259,7 @@ pub(super) fn execute_todo_write(state: &mut AppState, cwd: &Path, input: Value)
 /// Executes the live `TaskCreate` workflow tool.
 pub(super) fn execute_task_create(
     state: &mut AppState,
-    cwd: &Path,
+    _cwd: &Path,
     input: Value,
 ) -> Result<String> {
     let parsed: TaskCreateInput =
@@ -261,7 +290,11 @@ pub(super) fn execute_task_create(
 }
 
 /// Executes the live `TaskGet` workflow tool.
-pub(super) fn execute_task_get(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
+pub(super) fn execute_task_get(
+    state: &mut AppState,
+    _cwd: &Path,
+    input: Value,
+) -> Result<String> {
     let parsed: TaskIdInput = serde_json::from_value(input).context("invalid TaskGet input")?;
     let task = refresh_stored_task(state.session.cwd.as_path(), &parsed.task_id)?
         .ok_or_else(|| anyhow!("unknown task `{}`", parsed.task_id))?;
@@ -269,7 +302,11 @@ pub(super) fn execute_task_get(state: &mut AppState, cwd: &Path, input: Value) -
 }
 
 /// Executes the live `TaskList` workflow tool.
-pub(super) fn execute_task_list(state: &mut AppState, cwd: &Path, _input: Value) -> Result<String> {
+pub(super) fn execute_task_list(
+    state: &mut AppState,
+    _cwd: &Path,
+    _input: Value,
+) -> Result<String> {
     let store_cwd = state.session.cwd.as_path();
     let mut store = load_store::<TaskStore>(&tasks_path(store_cwd))?;
     let mut changed = false;
@@ -289,7 +326,7 @@ pub(super) fn execute_task_list(state: &mut AppState, cwd: &Path, _input: Value)
 /// Executes the live `TaskUpdate` workflow tool.
 pub(super) fn execute_task_update(
     state: &mut AppState,
-    cwd: &Path,
+    _cwd: &Path,
     input: Value,
 ) -> Result<String> {
     let parsed: TaskUpdateInput =
@@ -311,6 +348,12 @@ pub(super) fn execute_task_update(
     }
     if let Some(status) = parsed.status {
         task.status = status;
+        if task.status == "in_progress" && task.started_at_ms.is_none() {
+            task.started_at_ms = Some(now_ms());
+        }
+        if matches!(task.status.as_str(), "completed" | "failed" | "stopped" | "deleted") {
+            task.process_id = None;
+        }
     }
     if let Some(owner) = parsed.owner {
         task.owner = Some(owner);
@@ -338,13 +381,18 @@ pub(super) fn execute_task_update(
             }
         }
     }
+    task.updated_at_ms = Some(now_ms());
     let output = task.clone();
     save_store(&tasks_path(state.session.cwd.as_path()), &store)?;
     Ok(serde_json::to_string_pretty(&output)?)
 }
 
 /// Executes the live `TaskStop` workflow tool.
-pub(super) fn execute_task_stop(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
+pub(super) fn execute_task_stop(
+    state: &mut AppState,
+    _cwd: &Path,
+    input: Value,
+) -> Result<String> {
     let parsed: TaskStopInput = serde_json::from_value(input).context("invalid TaskStop input")?;
     let target = parsed
         .task_id
@@ -390,9 +438,12 @@ pub(super) fn execute_task_stop(state: &mut AppState, cwd: &Path, input: Value) 
             &json!("Stopped by TaskStop."),
         )?;
         let output = json!({
+            "message": format!("Successfully stopped task: {target}"),
             "task_id": target,
+            "task_type": "agent",
             "status": agent.status,
-            "output_file": agent.output_file
+            "output_file": agent.output_file,
+            "command": agent.prompt,
         });
         save_store(&agents_path(store_cwd), &agents)?;
         return Ok(serde_json::to_string_pretty(&output)?);
@@ -417,7 +468,7 @@ pub(super) fn execute_task_stop(state: &mut AppState, cwd: &Path, input: Value) 
 /// Executes the live `TaskOutput` workflow tool.
 pub(super) fn execute_task_output(
     state: &mut AppState,
-    cwd: &Path,
+    _cwd: &Path,
     input: Value,
 ) -> Result<String> {
     let parsed: TaskOutputInput =
@@ -448,13 +499,59 @@ pub(super) fn execute_task_output(
         .iter()
         .find(|agent| agent.agent_id == parsed.task_id)
     {
+        let mut status = agent.status.clone();
+        let deadline = Instant::now() + Duration::from_millis(timeout);
+        while block && !terminal_task_status(&status) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            status = load_store::<AgentStore>(&agents_path(store_cwd))?
+                .agents
+                .into_iter()
+                .find(|candidate| candidate.agent_id == parsed.task_id)
+                .map(|candidate| candidate.status)
+                .unwrap_or(status);
+        }
         let output = fs::read_to_string(&agent.output_file).unwrap_or_default();
         return Ok(serde_json::to_string_pretty(&json!({
-            "retrieval_status": "success",
+            "retrieval_status": if terminal_task_status(&status) { "success" } else if block { "timeout" } else { "not_ready" },
             "task_id": agent.agent_id,
-            "status": agent.status,
+            "task_type": "agent",
+            "status": status,
             "output": output,
             "outputFile": agent.output_file,
+            "block": block,
+            "timeout": timeout
+        }))?);
+    }
+
+    let (agent_payload, timed_out) = if block {
+        wait_for_runtime_agent_output(store_cwd, &parsed.task_id, timeout)
+    } else {
+        (read_runtime_agent_output(store_cwd, &parsed.task_id), false)
+    };
+    if let Some(agent_payload) = agent_payload {
+        let status = agent_payload
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("running");
+        let output = agent_payload
+            .get("result")
+            .and_then(Value::as_str)
+            .or_else(|| agent_payload.get("error").and_then(Value::as_str))
+            .map(str::to_string)
+            .unwrap_or_else(|| serde_json::to_string_pretty(&agent_payload).unwrap_or_default());
+        return Ok(serde_json::to_string_pretty(&json!({
+            "retrieval_status": if timed_out {
+                "timeout"
+            } else if runtime_agent_terminal_status(status) {
+                "success"
+            } else {
+                "not_ready"
+            },
+            "task_id": parsed.task_id,
+            "task_type": "agent",
+            "status": status,
+            "output": output,
+            "outputFile": runtime_agent_output_path(store_cwd, &parsed.task_id).display().to_string(),
             "block": block,
             "timeout": timeout
         }))?);
@@ -536,23 +633,28 @@ pub(super) fn execute_exit_plan_mode(
 /// Executes the live `AskUserQuestion` workflow tool.
 pub(super) fn execute_ask_user_question(
     state: &mut AppState,
-    cwd: &Path,
+    _cwd: &Path,
     input: Value,
 ) -> Result<String> {
     let parsed: AskUserQuestionInput =
         serde_json::from_value(input).context("invalid AskUserQuestion input")?;
     validate_ask_user_questions(&parsed.questions)?;
     let pending_path = workflow_root(state.session.cwd.as_path())?.join("pending_questions.json");
-    fs::write(
-        &pending_path,
-        serde_json::to_string_pretty(&parsed.questions)?,
-    )?;
+    let pending = parsed.answers.is_empty();
+    if pending {
+        fs::write(
+            &pending_path,
+            serde_json::to_string_pretty(&parsed.questions)?,
+        )?;
+    } else if pending_path.exists() {
+        let _ = fs::remove_file(&pending_path);
+    }
     Ok(serde_json::to_string_pretty(&json!({
         "questions": parsed.questions,
         "answers": parsed.answers,
         "annotations": parsed.annotations,
         "metadata": parsed.metadata,
-        "pending": parsed.answers.is_empty(),
+        "pending": pending,
         "pendingFile": pending_path.display().to_string()
     }))?)
 }
@@ -697,18 +799,21 @@ pub(super) fn execute_exit_worktree(
     Ok(serde_json::to_string_pretty(&json!({
         "action": parsed.action,
         "returnedTo": base_cwd.display().to_string(),
-        "worktreePath": worktree_path.display().to_string()
+        "worktreePath": worktree_path.display().to_string(),
+        "worktreeBranch": entry.branch,
     }))?)
 }
 
 /// Executes the live `Config` workflow tool.
 pub(super) fn execute_config(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
+    let has_value = input.get("value").is_some();
     let parsed: ConfigInput = serde_json::from_value(input).context("invalid Config input")?;
     let paths = ConfigPaths::discover(cwd);
     ensure_workspace_dirs(&paths)?;
     let previous = get_config_value(state, &parsed.setting)?;
-    let operation = if parsed.value.is_some() { "set" } else { "get" };
-    if let Some(value) = parsed.value {
+    let operation = if has_value { "set" } else { "get" };
+    if has_value {
+        let value = parsed.value.unwrap_or(Value::Null);
         set_config_value(state, &parsed.setting, value)?;
         save_workspace_config(&paths, &state.config)?;
     }
@@ -719,58 +824,9 @@ pub(super) fn execute_config(state: &mut AppState, cwd: &Path, input: Value) -> 
         "setting": parsed.setting,
         "value": current,
         "previousValue": previous,
+        "newValue": if operation == "set" { current.clone() } else { Value::Null },
         "path": paths.workspace_config_file().display().to_string()
     }))?)
-}
-
-/// Executes the live `LSP` workflow tool.
-pub(super) fn execute_lsp(_state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
-    let parsed: LspInput = serde_json::from_value(input).context("invalid LSP input")?;
-    let file_path = resolve_path(cwd, &parsed.file_path);
-    let content = fs::read_to_string(&file_path)
-        .with_context(|| format!("failed to read {}", file_path.display()))?;
-    let identifier = identifier_at_position(&content, parsed.line, parsed.character);
-    let output = match parsed.operation.as_str() {
-        "hover" => json!({
-            "operation": parsed.operation,
-            "filePath": file_path.display().to_string(),
-            "line": parsed.line,
-            "character": parsed.character,
-            "identifier": identifier,
-            "lineText": line_text(&content, parsed.line),
-        }),
-        "diagnostics" => json!({
-            "operation": parsed.operation,
-            "filePath": file_path.display().to_string(),
-            "items": [],
-        }),
-        "documentSymbol" => json!({
-            "operation": parsed.operation,
-            "filePath": file_path.display().to_string(),
-            "symbols": document_symbols(&content),
-        }),
-        "workspaceSymbol" => json!({
-            "operation": parsed.operation,
-            "symbols": workspace_symbols(cwd)?,
-        }),
-        "goToDefinition"
-        | "findReferences"
-        | "goToImplementation"
-        | "prepareCallHierarchy"
-        | "incomingCalls"
-        | "outgoingCalls" => json!({
-            "operation": parsed.operation,
-            "filePath": file_path.display().to_string(),
-            "identifier": identifier,
-            "matches": identifier
-                .as_deref()
-                .map(|value| search_workspace_identifier(cwd, value))
-                .transpose()?
-                .unwrap_or_default(),
-        }),
-        other => bail!("unsupported LSP operation `{other}`"),
-    };
-    Ok(serde_json::to_string_pretty(&output)?)
 }
 
 /// Executes the live `PowerShell` workflow tool.

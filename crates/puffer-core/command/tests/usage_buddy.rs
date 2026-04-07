@@ -118,6 +118,7 @@ fn usage_command_reports_runtime_and_resource_counts() {
                 commands: Vec::new(),
                 skills: Vec::new(),
                 mcp_servers: Vec::new(),
+                lsp_servers: Vec::new(),
             },
             source_info: puffer_resources::SourceInfo {
                 path: PathBuf::from("plugins/core.yaml"),
@@ -461,6 +462,7 @@ fn sample_resources() -> LoadedResources {
                 commands: Vec::new(),
                 skills: Vec::new(),
                 mcp_servers: Vec::new(),
+                lsp_servers: Vec::new(),
             },
             source_info: puffer_resources::SourceInfo {
                 path: PathBuf::from("plugins/core.yaml"),

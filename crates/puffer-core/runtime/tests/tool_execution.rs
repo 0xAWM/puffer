@@ -1,4 +1,27 @@
 use super::*;
+use puffer_config::PufferConfig;
+use puffer_session_store::SessionMetadata;
+use std::fs;
+use std::time::Duration;
+use uuid::Uuid;
+
+fn temp_state() -> AppState {
+    let tempdir = tempfile::tempdir().unwrap();
+    let cwd = tempdir.path().to_path_buf();
+    std::mem::forget(tempdir);
+    let session = SessionMetadata {
+        id: Uuid::new_v4(),
+        display_name: None,
+        cwd: cwd.clone(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        parent_session_id: None,
+        slug: None,
+        tags: Vec::new(),
+        note: None,
+    };
+    AppState::new(PufferConfig::default(), cwd, session)
+}
 
 #[test]
 fn execute_openai_tool_calls_serializes_outputs() {
@@ -29,6 +52,7 @@ fn execute_openai_tool_calls_serializes_outputs() {
         std::env::current_dir().unwrap().as_path(),
         &request_config,
         "gpt-5",
+        None,
     )
     .unwrap();
     assert_eq!(result.outputs[0].kind, "function_call_output");
@@ -84,7 +108,333 @@ fn tool_hooks_run_for_completed_tool_calls() {
         temp.path(),
         &request_config,
         "claude-sonnet-4-5",
+        None,
     )
     .unwrap();
     assert_eq!(std::fs::read_to_string(hook_output).unwrap(), "bash");
+}
+
+#[test]
+fn task_output_reads_runtime_background_agent_output_file() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let agent_output_dir = ConfigPaths::discover(&cwd)
+        .workspace_config_dir
+        .join("runtime")
+        .join("agent_outputs");
+    fs::create_dir_all(&agent_output_dir).unwrap();
+    let output_file = agent_output_dir.join("agent-demo.json");
+    fs::write(
+        &output_file,
+        serde_json::to_string_pretty(&json!({
+            "status": "completed",
+            "result": "background ok"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = super::super::claude_tools::workflow::task_output::execute_task_output(
+        &mut state,
+        &cwd,
+        json!({
+            "task_id": "agent-demo",
+            "block": false,
+            "timeout": 50
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["task_type"], "agent");
+    assert_eq!(parsed["status"], "completed");
+    assert_eq!(parsed["output"], "background ok");
+    assert_eq!(
+        parsed["outputFile"].as_str(),
+        Some(output_file.display().to_string().as_str())
+    );
+}
+
+#[test]
+fn send_user_message_stores_resolved_attachment_paths() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let attachment = cwd.join("note.txt");
+    fs::write(&attachment, "hello").unwrap();
+
+    let output = super::super::claude_tools::workflow::send_user_message::execute_send_user_message(
+        &mut state,
+        &cwd,
+        json!({
+            "message": "hello",
+            "attachments": ["note.txt"],
+            "status": "normal"
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(
+        parsed["message"]["attachments"][0].as_str(),
+        Some(attachment.display().to_string().as_str())
+    );
+}
+
+#[test]
+fn todo_write_rejects_multiple_in_progress_items() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let error = super::super::claude_tools::workflow::todo_write::execute_todo_write(
+        &mut state,
+        &cwd,
+        json!({
+            "todos": [
+                {"content": "one", "status": "in_progress", "activeForm": "Doing one"},
+                {"content": "two", "status": "in_progress", "activeForm": "Doing two"}
+            ]
+        }),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("at most one in_progress"));
+}
+
+#[test]
+fn config_tool_supports_editor_mode() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let output = super::super::claude_tools::workflow::config::execute_config(
+        &mut state,
+        &cwd,
+        json!({
+            "setting": "editorMode",
+            "value": "vim"
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["operation"], "set");
+    assert_eq!(parsed["value"], "vim");
+    assert_eq!(parsed["newValue"], "vim");
+    assert!(state.vim_mode);
+}
+
+#[test]
+fn config_tool_supports_openai_map_settings() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let output = super::super::claude_tools::workflow::config::execute_config(
+        &mut state,
+        &cwd,
+        json!({
+            "setting": "openai_headers",
+            "value": {
+                "x-test": "one",
+                "x-another": "two"
+            }
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["operation"], "set");
+    assert_eq!(parsed["value"]["x-test"], "one");
+    assert_eq!(parsed["newValue"]["x-another"], "two");
+    assert_eq!(
+        state.config.openai_headers.get("x-test").map(String::as_str),
+        Some("one")
+    );
+}
+
+#[test]
+fn config_tool_allows_null_to_clear_openai_map_settings() {
+    let mut state = temp_state();
+    state
+        .config
+        .openai_query_params
+        .insert("user".to_string(), "alpha".to_string());
+    let cwd = state.cwd.clone();
+    let output = super::super::claude_tools::workflow::config::execute_config(
+        &mut state,
+        &cwd,
+        json!({
+            "setting": "openai_query_params",
+            "value": null
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["operation"], "set");
+    assert_eq!(parsed["value"], json!({}));
+    assert!(state.config.openai_query_params.is_empty());
+}
+
+#[test]
+fn ask_user_question_rejects_duplicate_headers() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let error = super::super::claude_tools::workflow::ask_user_question::execute_ask_user_question(
+        &mut state,
+        &cwd,
+        json!({
+            "questions": [
+                {
+                    "question": "Pick one",
+                    "header": "choice",
+                    "options": [
+                        {"label": "A", "description": "A"},
+                        {"label": "B", "description": "B"}
+                    ]
+                },
+                {
+                    "question": "Pick two",
+                    "header": "choice",
+                    "options": [
+                        {"label": "C", "description": "C"},
+                        {"label": "D", "description": "D"}
+                    ]
+                }
+            ]
+        }),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("headers must be unique"));
+}
+
+#[test]
+fn team_create_makes_dirs_and_team_delete_removes_them() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let created = super::super::claude_tools::workflow::team_create::execute_team_create(
+        &mut state,
+        &cwd,
+        json!({
+            "team_name": "alpha",
+            "description": "Coordination team"
+        }),
+    )
+    .unwrap();
+    let created: Value = serde_json::from_str(&created).unwrap();
+    let team_dir = created["teamDir"].as_str().unwrap();
+    let task_dir = created["taskDir"].as_str().unwrap();
+    assert!(std::path::Path::new(team_dir).exists());
+    assert!(std::path::Path::new(task_dir).exists());
+
+    let deleted = super::super::claude_tools::workflow::team_delete::execute_team_delete(
+        &mut state,
+        &cwd,
+        json!({}),
+    )
+    .unwrap();
+    let deleted: Value = serde_json::from_str(&deleted).unwrap();
+    assert_eq!(deleted["deleted"][0], "alpha");
+    assert!(!std::path::Path::new(team_dir).exists());
+    assert!(!std::path::Path::new(task_dir).exists());
+}
+
+#[test]
+fn task_update_sets_timestamps_for_progress() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let created = super::super::claude_tools::workflow::task_create::execute_task_create(
+        &mut state,
+        &cwd,
+        json!({
+            "subject": "Do thing",
+            "description": "Do thing"
+        }),
+    )
+    .unwrap();
+    let created: Value = serde_json::from_str(&created).unwrap();
+    let task_id = created["task_id"].as_str().unwrap();
+
+    let updated = super::super::claude_tools::workflow::task_update::execute_task_update(
+        &mut state,
+        &cwd,
+        json!({
+            "taskId": task_id,
+            "status": "in_progress"
+        }),
+    )
+    .unwrap();
+    let updated: Value = serde_json::from_str(&updated).unwrap();
+    assert_eq!(updated["status"], "in_progress");
+    assert!(updated["started_at_ms"].is_number());
+    assert!(updated["updated_at_ms"].is_number());
+}
+
+#[test]
+fn task_output_waits_for_agent_completion() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let workflow_root = cwd.join(".puffer/runtime/claude_workflow");
+    fs::create_dir_all(workflow_root.join("agent_outputs")).unwrap();
+
+    let agent_output = workflow_root.join("agent_outputs/agent-1.md");
+    fs::write(&agent_output, "initial").unwrap();
+    let agents_path = workflow_root.join("agents.json");
+    fs::write(
+        &agents_path,
+        serde_json::to_string_pretty(&json!({
+            "agents": [{
+                "agent_id": "agent-1",
+                "name": "alpha",
+                "description": "demo",
+                "prompt": "do work",
+                "subagent_type": null,
+                "model": null,
+                "team_name": null,
+                "mode": null,
+                "isolation": null,
+                "cwd": null,
+                "status": "async_launched",
+                "output_file": agent_output.display().to_string()
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let agents_path_bg = agents_path.clone();
+    let agent_output_bg = agent_output.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        fs::write(&agent_output_bg, "done").unwrap();
+        fs::write(
+            &agents_path_bg,
+            serde_json::to_string_pretty(&json!({
+                "agents": [{
+                    "agent_id": "agent-1",
+                    "name": "alpha",
+                    "description": "demo",
+                    "prompt": "do work",
+                    "subagent_type": null,
+                    "model": null,
+                    "team_name": null,
+                    "mode": null,
+                    "isolation": null,
+                    "cwd": null,
+                    "status": "completed",
+                    "output_file": agent_output_bg.display().to_string()
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    });
+
+    let output = super::super::claude_tools::workflow::task_output::execute_task_output(
+        &mut state,
+        &cwd,
+        json!({
+            "task_id": "agent-1",
+            "block": true,
+            "timeout": 1_000
+        }),
+    )
+    .unwrap();
+    let output: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(output["retrieval_status"], "success");
+    assert_eq!(output["task_type"], "agent");
+    assert_eq!(output["status"], "completed");
+    assert_eq!(output["output"], "done");
 }

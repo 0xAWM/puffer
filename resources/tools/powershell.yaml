@@ -3,12 +3,29 @@ name: PowerShell
 description: |-
   Executes a PowerShell command and returns its output.
 
-  Prefer dedicated tools for file search, file reads, and file edits when they
-  are a better fit. Use `run_in_background` for longer-running work when you do
-  not need the result immediately.
+  Use this for terminal operations and PowerShell cmdlets. Prefer dedicated
+  tools for file search, file reads, and file edits when they are a better fit.
+  Use `run_in_background` for longer-running work when you do not need the
+  result immediately.
+
+  Prefer conservative syntax that works on Windows PowerShell 5.1 unless you
+  know PowerShell 7+ is available. In particular, avoid relying on `&&`, `||`,
+  ternary `?:`, `??`, or `?.` operators unless you know the newer shell
+  supports them. Use `A; if ($?) { B }` when you need conditional chaining.
 
   Commands run in a sandbox by default. Use `dangerouslyDisableSandbox: true`
   only when you explicitly need to bypass sandbox restrictions.
+  Avoid interactive commands such as `Read-Host` or anything that waits for a
+  TTY prompt.
+
+  Avoid unnecessary `Start-Sleep` loops. If you launch a background command,
+  wait for completion notification instead of polling. If you must poll an
+  external process, use a check command rather than sleeping first.
+
+  Prefer quoting paths with spaces. If you need to run multiple independent
+  commands, make multiple tool calls instead of combining unrelated work into
+  one command. Do not prefix commands with `cd` or `Set-Location` unless the
+  user explicitly wants a directory change.
 handler: runtime:workflow:powershell
 approval_policy: on-request
 sandbox_policy: workspace-write
@@ -24,13 +41,13 @@ input_schema:
       description: The PowerShell command to execute.
     timeout:
       type: integer
-      description: Optional timeout in milliseconds.
+      description: Optional timeout in milliseconds. Use only when you need a non-default limit.
     description:
       type: string
       description: Clear, concise description of what this command does in active voice.
     run_in_background:
       type: boolean
-      description: Set to true to run this command in the background.
+      description: Set to true to run this command in the background when you do not need the result immediately.
     dangerouslyDisableSandbox:
       type: boolean
       description: Set true to override sandboxing and run unsandboxed.

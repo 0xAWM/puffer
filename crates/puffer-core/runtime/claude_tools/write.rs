@@ -103,9 +103,13 @@ pub fn execute_claude_write_tool(
         },
         file_path: path.display().to_string(),
         content: input.content,
-        structured_patch: build_structured_patch(original_file.as_deref(), &path)?,
-        original_file,
-        git_diff: None,
+        structured_patch: if original_file.is_some() {
+            build_structured_patch(original_file.as_deref(), &path)?
+        } else {
+            Vec::new()
+        },
+        original_file: original_file.clone(),
+        git_diff: build_git_diff(original_file.as_deref(), &path)?,
     };
     serde_json::to_string_pretty(&output).context("failed to serialize Write output")
 }
@@ -154,6 +158,32 @@ fn build_structured_patch(
         new_lines: new_lines.len(),
         lines,
     }])
+}
+
+fn build_git_diff(original_file: Option<&str>, path: &Path) -> Result<Option<Value>> {
+    let Some(original_file) = original_file else {
+        return Ok(None);
+    };
+    let updated_file = fs::read_to_string(path)
+        .with_context(|| format!("failed to read updated file {}", path.display()))?;
+    if original_file == updated_file {
+        return Ok(None);
+    }
+
+    let mut diff_lines = Vec::new();
+    diff_lines.push(format!("--- {}", path.display()));
+    diff_lines.push(format!("+++ {}", path.display()));
+    diff_lines.extend(
+        split_lines(original_file)
+            .into_iter()
+            .map(|line| format!("-{line}")),
+    );
+    diff_lines.extend(
+        split_lines(&updated_file)
+            .into_iter()
+            .map(|line| format!("+{line}")),
+    );
+    Ok(Some(Value::String(diff_lines.join("\n"))))
 }
 
 fn split_lines(contents: &str) -> Vec<String> {
@@ -278,9 +308,24 @@ mod tests {
         assert!(parsed["structuredPatch"]
             .as_array()
             .is_some_and(|hunks| !hunks.is_empty()));
+        assert!(parsed["gitDiff"].as_str().is_some());
         assert_eq!(fs::read_to_string(&path).unwrap(), "new");
         assert!(read_state
             .get(&path)
             .is_some_and(|snapshot| snapshot.timestamp_ms >= 1 && !snapshot.is_partial_view));
+    }
+
+    #[test]
+    fn write_create_uses_empty_structured_patch() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fresh.txt");
+        let mut read_state = HashMap::new();
+
+        let output =
+            execute_claude_write_tool(write_input(&path, "hello"), &mut read_state).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "create");
+        assert_eq!(parsed["structuredPatch"], json!([]));
+        assert!(parsed["gitDiff"].is_null());
     }
 }

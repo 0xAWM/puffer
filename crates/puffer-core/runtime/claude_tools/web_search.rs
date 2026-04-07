@@ -89,6 +89,7 @@ pub fn execute_claude_openai_web_search(
                 kind: "web_search".to_string(),
                 name: String::new(),
                 description: String::new(),
+                strict: false,
                 parameters: Value::Null,
                 filters: build_openai_filters(&input),
                 user_location: None,
@@ -99,6 +100,7 @@ pub fn execute_claude_openai_web_search(
                 OpenAIResponsesToolChoiceMode::Auto,
             )),
             previous_response_id: None,
+            text: None,
         },
     )?;
 

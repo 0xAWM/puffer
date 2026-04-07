@@ -1,9 +1,20 @@
 use crate::AppState;
 use anyhow::Result;
+use puffer_resources::LoadedResources;
 use serde_json::Value;
 use std::path::Path;
 
-/// Executes the Claude-compatible `LSP` tool scaffold.
-pub fn execute_lsp(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
-    super::support::execute_lsp(state, cwd, input)
+/// Executes the Claude-compatible `LSP` tool using a real stdio LSP session.
+pub fn execute_lsp(
+    _state: &mut AppState,
+    resources: &LoadedResources,
+    cwd: &Path,
+    input: Value,
+) -> Result<String> {
+    super::lsp_live::execute_lsp(resources, cwd, input)
+}
+
+/// Shuts down cached LSP services for the current process.
+pub fn shutdown_lsp_services() -> Result<()> {
+    super::lsp_live::shutdown_lsp_services()
 }

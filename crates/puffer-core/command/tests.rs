@@ -921,6 +921,7 @@ fn reload_plugins_reports_resource_counts() {
                 commands: Vec::new(),
                 skills: Vec::new(),
                 mcp_servers: Vec::new(),
+                lsp_servers: Vec::new(),
             },
             source_info: puffer_resources::SourceInfo {
                 path: PathBuf::from("plugins/git.yaml"),

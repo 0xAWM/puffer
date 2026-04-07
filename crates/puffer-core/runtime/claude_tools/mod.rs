@@ -1,5 +1,6 @@
 use crate::state::ClaudeReadState;
 use crate::AppState;
+use crate::runtime::structured_output_support::StructuredOutputConfig;
 use anyhow::{bail, Context, Result};
 use puffer_provider_openai::OpenAIRequestConfig;
 use puffer_resources::LoadedResources;
@@ -15,14 +16,14 @@ mod bash;
 mod edit;
 mod glob;
 mod grep;
-mod mcp_resources;
+pub(super) mod mcp_resources;
 mod notebook_edit;
 mod read;
 mod skill;
 mod tool_search;
 mod web_fetch;
 mod web_search;
-mod workflow;
+pub(crate) mod workflow;
 mod write;
 
 /// Carries provider-specific execution context for runtime-backed tools.
@@ -31,10 +32,12 @@ pub(crate) enum ProviderToolContext<'a> {
     OpenAI {
         request_config: &'a OpenAIRequestConfig,
         model_id: &'a str,
+        structured_output: Option<&'a StructuredOutputConfig>,
     },
     Anthropic {
         request_config: &'a AnthropicRequestConfig,
         model_id: &'a str,
+        structured_output: Option<&'a StructuredOutputConfig>,
     },
 }
 
@@ -61,6 +64,18 @@ pub(crate) fn execute_tool(
             Ok(tool_result(definition, execution.success, output))
         }
         "Read" => {
+            if is_full_read_request(&input) {
+                if let Some(path) = input_file_path(&input, "file_path")? {
+                    if let Some(snapshot) = state.claude_read_state.get(&path) {
+                        let timestamp_ms = file_timestamp_ms(&path)?;
+                        if !snapshot.is_partial_view && timestamp_ms == snapshot.timestamp_ms {
+                            let output =
+                                read::execute_claude_file_unchanged(path.display().to_string().as_str())?;
+                            return Ok(tool_result(definition, true, output));
+                        }
+                    }
+                }
+            }
             let output = read::execute_claude_read_tool(cwd, input.clone())?;
             record_read_from_input(state, &input)?;
             Ok(tool_result(definition, true, output))
@@ -129,10 +144,12 @@ pub(crate) fn execute_tool(
                 ProviderToolContext::OpenAI {
                     request_config,
                     model_id,
+                    ..
                 } => web_search::execute_claude_openai_web_search(request_config, model_id, input)?,
                 ProviderToolContext::Anthropic {
                     request_config,
                     model_id,
+                    ..
                 } => web_search::execute_claude_anthropic_web_search(
                     request_config,
                     model_id,
@@ -147,7 +164,14 @@ pub(crate) fn execute_tool(
         _ if definition.handler.starts_with("runtime:workflow:") => Ok(tool_result(
             definition,
             true,
-            execute_workflow_tool(state, cwd, definition.id.as_str(), input)?,
+            execute_workflow_tool(
+                state,
+                resources,
+                cwd,
+                definition.id.as_str(),
+                input,
+                provider_context.structured_output(),
+            )?,
         )),
         _ if super::local_tools::is_runtime_local_tool(definition) => Ok(tool_result(
             definition,
@@ -174,6 +198,10 @@ fn tool_result(definition: &ToolDefinition, success: bool, stdout: String) -> To
 
 fn input_file_path(input: &Value, field: &str) -> Result<Option<PathBuf>> {
     Ok(input.get(field).and_then(Value::as_str).map(PathBuf::from))
+}
+
+fn is_full_read_request(input: &Value) -> bool {
+    input.get("offset").is_none() && input.get("limit").is_none() && input.get("pages").is_none()
 }
 
 fn clone_read_state(state: &AppState) -> HashMap<PathBuf, write::ClaudeReadSnapshot> {
@@ -270,9 +298,11 @@ fn file_timestamp_ms(path: &Path) -> Result<u128> {
 
 fn execute_workflow_tool(
     state: &mut AppState,
+    resources: &LoadedResources,
     cwd: &Path,
     tool_id: &str,
     input: Value,
+    structured_output: Option<&StructuredOutputConfig>,
 ) -> Result<String> {
     match tool_id {
         "Agent" => workflow::agent::execute_agent(state, cwd, input),
@@ -287,14 +317,19 @@ fn execute_workflow_tool(
         "EnterWorktree" => workflow::enter_worktree::execute_enter_worktree(state, cwd, input),
         "ExitPlanMode" => workflow::exit_plan_mode::execute_exit_plan_mode(state, cwd, input),
         "ExitWorktree" => workflow::exit_worktree::execute_exit_worktree(state, cwd, input),
-        "LSP" => workflow::lsp::execute_lsp(state, cwd, input),
+        "LSP" => workflow::lsp::execute_lsp(state, resources, cwd, input),
         "PowerShell" => workflow::powershell::execute_powershell(state, cwd, input),
         "SendMessage" => workflow::send_message::execute_send_message(state, cwd, input),
         "SendUserMessage" | "Brief" => {
             workflow::send_user_message::execute_send_user_message(state, cwd, input)
         }
         "StructuredOutput" => {
-            workflow::structured_output::execute_structured_output(state, cwd, input)
+            workflow::structured_output::execute_structured_output(
+                state,
+                cwd,
+                input,
+                structured_output,
+            )
         }
         "TaskCreate" => workflow::task_create::execute_task_create(state, cwd, input),
         "TaskGet" => workflow::task_get::execute_task_get(state, cwd, input),
@@ -306,5 +341,19 @@ fn execute_workflow_tool(
         "TeamDelete" => workflow::team_delete::execute_team_delete(state, cwd, input),
         "TodoWrite" => workflow::todo_write::execute_todo_write(state, cwd, input),
         other => bail!("workflow tool `{other}` is not implemented"),
+    }
+}
+
+impl<'a> ProviderToolContext<'a> {
+    fn structured_output(self) -> Option<&'a StructuredOutputConfig> {
+        match self {
+            Self::OpenAI {
+                structured_output, ..
+            }
+            | Self::Anthropic {
+                structured_output, ..
+            } => structured_output,
+            Self::None => None,
+        }
     }
 }

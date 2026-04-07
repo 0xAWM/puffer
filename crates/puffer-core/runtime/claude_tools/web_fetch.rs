@@ -5,8 +5,9 @@ use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CLAUDE_WEB_FETCH_TOOL_DESCRIPTION: &str = r#"- Fetches content from a specified URL and processes it using an AI model
 - Takes a URL and a prompt as input
@@ -35,6 +36,7 @@ struct CachedFetch {
     bytes: usize,
     code: u16,
     code_text: String,
+    final_url: String,
     inserted_at: Instant,
 }
 
@@ -92,7 +94,7 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
             "codeText": cached.code_text,
             "result": result?,
             "durationMs": start.elapsed().as_millis(),
-            "url": request_url.to_string(),
+            "url": cached.final_url,
         }));
     }
 
@@ -117,10 +119,15 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
         }));
     }
 
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let bytes = response
         .bytes()
         .context("failed to read web fetch response body")?;
-    let content = normalize_web_content(&bytes);
+    let content = normalize_web_content(&bytes, content_type.as_deref())?;
     store_cached_fetch(
         &request_url,
         CachedFetch {
@@ -128,6 +135,7 @@ fn execute_claude_web_fetch_internal(client: Client, input: ClaudeWebFetchInput)
             bytes: bytes.len(),
             code: status.as_u16(),
             code_text: status_text.clone(),
+            final_url: final_url.to_string(),
             inserted_at: Instant::now(),
         },
     );
@@ -194,12 +202,15 @@ fn store_cached_fetch(url: &Url, entry: CachedFetch) {
     }
 }
 
-fn normalize_web_content(bytes: &[u8]) -> String {
+fn normalize_web_content(bytes: &[u8], content_type: Option<&str>) -> Result<String> {
+    if is_binary_content_type(content_type) {
+        return build_binary_notice(bytes, content_type);
+    }
     let text = String::from_utf8_lossy(bytes).to_string();
     if !looks_like_html(&text) {
-        return text;
+        return Ok(text);
     }
-    html_to_text(&text)
+    Ok(html_to_text(&text))
 }
 
 fn looks_like_html(text: &str) -> bool {
@@ -208,6 +219,71 @@ fn looks_like_html(text: &str) -> bool {
         || lower.starts_with("<html")
         || lower.contains("<body")
         || lower.contains("<p>")
+}
+
+fn is_binary_content_type(content_type: Option<&str>) -> bool {
+    let Some(content_type) = content_type else {
+        return false;
+    };
+    let content_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    !(content_type.starts_with("text/")
+        || matches!(
+            content_type.as_str(),
+            "application/json"
+                | "application/ld+json"
+                | "application/javascript"
+                | "application/x-javascript"
+                | "application/xml"
+                | "application/xhtml+xml"
+                | "application/x-yaml"
+                | "application/yaml"
+                | "image/svg+xml"
+        ))
+}
+
+fn build_binary_notice(bytes: &[u8], content_type: Option<&str>) -> Result<String> {
+    let path = persist_binary_payload(bytes, content_type)?;
+    let mime = content_type.unwrap_or("application/octet-stream");
+    Ok(format!(
+        "Binary content saved to: {path}\nContent-Type: {mime}\nBytes: {}\n\nWebFetch cannot analyze binary content directly. Use an appropriate local tool on the saved file if you need to inspect it further.",
+        bytes.len()
+    ))
+}
+
+fn persist_binary_payload(bytes: &[u8], content_type: Option<&str>) -> Result<String> {
+    let root = std::env::temp_dir().join("puffer-web-fetch");
+    fs::create_dir_all(&root)
+        .with_context(|| format!("failed to create {}", root.display()))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let extension = extension_for_content_type(content_type);
+    let file_name = format!("fetch-{timestamp}{extension}");
+    let path = root.join(file_name);
+    fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+fn extension_for_content_type(content_type: Option<&str>) -> &'static str {
+    let Some(content_type) = content_type else {
+        return ".bin";
+    };
+    match content_type.split(';').next().unwrap_or(content_type).trim() {
+        "application/pdf" => ".pdf",
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        "application/zip" => ".zip",
+        "application/json" => ".json",
+        _ => ".bin",
+    }
 }
 
 fn html_to_text(html: &str) -> String {
@@ -262,6 +338,7 @@ fn truncate_for_result(content: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn schema_matches_claude_field_names() {
@@ -299,7 +376,11 @@ mod tests {
     #[test]
     fn html_content_is_normalized_before_prompting() {
         let normalized =
-            normalize_web_content(b"<html><body><h1>Title</h1><p>Hello<br>world</p></body></html>");
+            normalize_web_content(
+                b"<html><body><h1>Title</h1><p>Hello<br>world</p></body></html>",
+                Some("text/html"),
+            )
+            .unwrap();
         assert!(normalized.contains("Title"));
         assert!(normalized.contains("Hello"));
         assert!(normalized.contains("world"));
@@ -310,5 +391,18 @@ mod tests {
     fn truncate_for_result_uses_char_boundary() {
         let truncated = truncate_for_result("aé漢字", 3);
         assert_eq!(truncated, "aé漢");
+    }
+
+    #[test]
+    fn binary_content_creates_saved_file_notice() {
+        let notice = normalize_web_content(b"%PDF-1.7", Some("application/pdf")).unwrap();
+        assert!(notice.contains("Binary content saved to:"));
+        let path = notice
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("Binary content saved to: "))
+            .unwrap();
+        assert!(Path::new(path).exists());
+        let _ = fs::remove_file(path);
     }
 }

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// A minimal OpenAI Responses API payload needed by the runtime.
@@ -75,7 +75,7 @@ pub struct OpenAIChatChoiceMessage {
     pub role: Option<String>,
     #[serde(default)]
     pub content: Option<Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tool_calls")]
     pub tool_calls: Vec<OpenAIChatToolCall>,
 }
 
@@ -103,6 +103,13 @@ pub struct OpenAIResponseToolCall {
     pub call_id: String,
     pub name: String,
     pub arguments: Value,
+}
+
+fn deserialize_tool_calls<'de, D>(deserializer: D) -> std::result::Result<Vec<OpenAIChatToolCall>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<Vec<OpenAIChatToolCall>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Parses a serialized OpenAI Responses API payload.

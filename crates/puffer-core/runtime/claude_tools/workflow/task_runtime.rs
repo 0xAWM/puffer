@@ -1,5 +1,6 @@
 use super::store::{
     load_store, now_ms, process_is_running, save_store, tasks_path, StoredTask, TaskStore,
+    TodoInputItem,
 };
 use anyhow::{Context, Result};
 use std::fs;
@@ -7,6 +8,79 @@ use std::path::Path;
 use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
+use puffer_config::ConfigPaths;
+use serde_json::Value;
+
+/// Returns the persisted runtime-agent output path for a task id.
+pub(super) fn runtime_agent_output_path(session_cwd: &Path, task_id: &str) -> std::path::PathBuf {
+    ConfigPaths::discover(session_cwd)
+        .workspace_config_dir
+        .join("runtime")
+        .join("agent_outputs")
+        .join(format!("{task_id}.json"))
+}
+
+/// Loads the persisted runtime-agent output payload when it exists.
+pub(super) fn read_runtime_agent_output(session_cwd: &Path, task_id: &str) -> Option<Value> {
+    let raw = fs::read_to_string(runtime_agent_output_path(session_cwd, task_id)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// Returns true when the runtime-agent output status is terminal.
+pub(super) fn runtime_agent_terminal_status(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "stopped")
+}
+
+/// Waits for the persisted runtime-agent output to reach a terminal state.
+pub(super) fn wait_for_runtime_agent_output(
+    session_cwd: &Path,
+    task_id: &str,
+    timeout_ms: u64,
+) -> (Option<Value>, bool) {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let payload = read_runtime_agent_output(session_cwd, task_id);
+        if payload
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            .is_some_and(runtime_agent_terminal_status)
+        {
+            return (payload, false);
+        }
+        if Instant::now() >= deadline {
+            return (payload, true);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Validates the TodoWrite list shape and progress-state invariants.
+pub(super) fn validate_todos(todos: &[TodoInputItem]) -> anyhow::Result<()> {
+    if todos.is_empty() {
+        anyhow::bail!("TodoWrite requires at least one todo item");
+    }
+    let mut in_progress = 0usize;
+    for todo in todos {
+        if todo.content.trim().is_empty() {
+            anyhow::bail!("TodoWrite todo content cannot be empty");
+        }
+        if todo.active_form.trim().is_empty() {
+            anyhow::bail!("TodoWrite activeForm cannot be empty");
+        }
+        match todo.status.as_str() {
+            "pending" | "in_progress" | "completed" => {}
+            other => anyhow::bail!("TodoWrite status `{other}` is not supported"),
+        }
+        if todo.status == "in_progress" {
+            in_progress += 1;
+        }
+    }
+    if in_progress > 1 {
+        anyhow::bail!("TodoWrite supports at most one in_progress item at a time");
+    }
+    Ok(())
+}
 
 /// Captures child-process output together with timeout state.
 pub(super) struct TimedProcessOutput {

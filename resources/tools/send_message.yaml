@@ -9,9 +9,20 @@ description: |-
   Usage notes:
   - `to` may be a teammate name, `*` for broadcast, a team name, or another
     supported endpoint identifier.
+  - Broadcast is expensive. Use `*` only when everyone genuinely needs the message.
   - `summary` should be a short preview when useful.
   - `message` may be plain text or a structured control payload such as a
     shutdown or plan-approval response.
+  - Messages are delivered automatically; you do not need to poll an inbox.
+  - Refer to teammates by name, not UUID.
+  - When relaying a teammate message to the user, summarize it instead of
+    quoting it verbatim.
+  - If you receive a legacy structured protocol request such as
+    `shutdown_request` or `plan_approval_request`, respond with the matching
+    `_response` payload and echo the `request_id`.
+  - Do not originate `shutdown_request` yourself unless explicitly asked.
+  - Do not send structured JSON status chatter; use normal text unless you are
+    responding to a shutdown or plan-approval request.
 handler: runtime:workflow:send_message
 approval_policy: auto
 sandbox_policy: read-only
@@ -23,7 +34,7 @@ input_schema:
       description: Recipient name, wildcard, or supported endpoint address.
     summary:
       type: string
-      description: Optional 5-10 word summary preview.
+      description: Optional short summary preview, typically 5-10 words.
     message:
       description: Message payload as plain text or structured control message.
       anyOf:
@@ -38,6 +49,7 @@ input_schema:
               type: string
           required:
             - type
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -54,6 +66,7 @@ input_schema:
             - type
             - request_id
             - approve
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -70,6 +83,7 @@ input_schema:
             - type
             - request_id
             - approve
+          additionalProperties: false
   required:
     - to
     - message

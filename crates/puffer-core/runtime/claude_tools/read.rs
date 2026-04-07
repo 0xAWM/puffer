@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const MAX_LINES_TO_READ: usize = 2000;
 const MAX_PDF_PAGES_PER_READ: u32 = 20;
@@ -28,6 +29,7 @@ enum ClaudeReadOutput {
     Image { file: ImageFilePayload },
     Notebook { file: NotebookFilePayload },
     Pdf { file: PdfFilePayload },
+    FileUnchanged { file: UnchangedFilePayload },
 }
 
 #[derive(Debug, Serialize)]
@@ -68,6 +70,12 @@ struct PdfFilePayload {
     original_size: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct UnchangedFilePayload {
+    #[serde(rename = "filePath")]
+    file_path: String,
+}
+
 /// Returns the Claude-style model-facing description for the `Read` tool.
 pub fn claude_read_description() -> &'static str {
     CLAUDE_READ_DESCRIPTION
@@ -106,6 +114,18 @@ pub fn execute_claude_read_tool(cwd: &Path, input: Value) -> Result<String> {
         serde_json::from_value(input).context("invalid Read tool input")?;
     let output = execute_claude_read(cwd, input)?;
     Ok(serde_json::to_string_pretty(&output)?)
+}
+
+/// Returns a serialized Claude-compatible payload indicating the file has not
+/// changed since the caller's prior full read.
+pub fn execute_claude_file_unchanged(file_path: &str) -> Result<String> {
+    Ok(serde_json::to_string_pretty(
+        &ClaudeReadOutput::FileUnchanged {
+            file: UnchangedFilePayload {
+                file_path: file_path.to_string(),
+            },
+        },
+    )?)
 }
 
 fn execute_claude_read(cwd: &Path, input: ClaudeReadInput) -> Result<ClaudeReadOutput> {
@@ -221,10 +241,8 @@ fn read_pdf(
     original_file_path: &str,
     pages: Option<&str>,
 ) -> Result<ClaudeReadOutput> {
-    if pages.is_some() {
-        bail!(
-            "Read pages extraction for PDF is not implemented in this runtime yet; full-PDF reads are supported"
-        );
+    if let Some(pages) = pages {
+        return read_pdf_pages(path, original_file_path, pages);
     }
     let bytes = fs::read(path).with_context(|| format!("failed to read PDF {}", path.display()))?;
     Ok(ClaudeReadOutput::Pdf {
@@ -232,6 +250,51 @@ fn read_pdf(
             file_path: original_file_path.to_string(),
             base64: encode_base64(&bytes),
             original_size: bytes.len(),
+        },
+    })
+}
+
+fn read_pdf_pages(path: &Path, original_file_path: &str, pages: &str) -> Result<ClaudeReadOutput> {
+    let (first_page, last_page) = parse_pdf_range(pages)?;
+    let output = Command::new("pdftotext")
+        .args([
+            "-f",
+            &first_page.to_string(),
+            "-l",
+            &last_page.to_string(),
+            path.to_string_lossy().as_ref(),
+            "-",
+        ])
+        .output()
+        .with_context(|| format!("failed to execute pdftotext for {}", path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            "pdftotext exited unsuccessfully".to_string()
+        } else {
+            stderr
+        };
+        bail!(
+            "failed to extract PDF pages `{pages}` from {}: {detail}",
+            path.display()
+        );
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let trimmed = raw.trim_end_matches('\u{c}').trim_end().to_string();
+    let num_lines = trimmed.lines().count();
+    Ok(ClaudeReadOutput::Text {
+        file: TextFilePayload {
+            file_path: original_file_path.to_string(),
+            content: if trimmed.is_empty() {
+                "<system-reminder>Warning: extracted PDF page contents are empty.</system-reminder>"
+                    .to_string()
+            } else {
+                format_with_line_numbers(&trimmed, 1)
+            },
+            num_lines,
+            start_line: 1,
+            total_lines: num_lines,
         },
     })
 }
@@ -282,6 +345,15 @@ fn parse_page_number(value: &str) -> Result<u32> {
     Ok(page)
 }
 
+fn parse_pdf_range(value: &str) -> Result<(u32, u32)> {
+    if let Some((left, right)) = value.trim().split_once('-') {
+        Ok((parse_page_number(left)?, parse_page_number(right)?))
+    } else {
+        let page = parse_page_number(value)?;
+        Ok((page, page))
+    }
+}
+
 fn resolve_absolute_read_path(cwd: &Path, raw_path: &str) -> Result<PathBuf> {
     let provided = PathBuf::from(raw_path);
     if !provided.is_absolute() {
@@ -300,6 +372,14 @@ fn resolve_absolute_read_path(cwd: &Path, raw_path: &str) -> Result<PathBuf> {
         let cwd_text = cwd.display().to_string();
         bail!(
             "file does not exist: {} (current working directory: {cwd_text})",
+            provided.display()
+        );
+    }
+    let metadata = fs::metadata(&provided)
+        .with_context(|| format!("failed to stat file {}", provided.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "Read can only read regular files (`{}`)",
             provided.display()
         );
     }
@@ -353,6 +433,7 @@ fn encode_base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn schema_exposes_claude_fields() {
@@ -503,5 +584,57 @@ mod tests {
         assert!(parsed["file"]["content"]
             .as_str()
             .is_some_and(|text| text.contains("shorter than the provided offset (5)")));
+    }
+
+    #[test]
+    fn file_unchanged_output_uses_claude_variant_shape() {
+        let output = execute_claude_file_unchanged("/tmp/demo.txt").unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "file_unchanged");
+        assert_eq!(parsed["file"]["filePath"], "/tmp/demo.txt");
+    }
+
+    #[test]
+    fn pdf_pages_are_extracted_with_pdftotext_when_available() {
+        let _guard = env_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("pdftotext");
+        fs::write(&script, "#!/bin/sh\nprintf 'Page one\\nPage two\\n'\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script, permissions).unwrap();
+        }
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{old_path}", bin_dir.display()));
+
+        let pdf_path = temp.path().join("sample.pdf");
+        fs::write(&pdf_path, "pdf").unwrap();
+        let output = execute_claude_read_tool(
+            temp.path(),
+            json!({
+                "file_path": pdf_path.display().to_string(),
+                "pages": "1-2",
+            }),
+        )
+        .unwrap();
+
+        std::env::set_var("PATH", old_path);
+
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "text");
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("Page one")));
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 }

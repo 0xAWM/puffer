@@ -1,6 +1,7 @@
 use crate::model::{
-    AgentSpec, HookSpec, IdeSpec, LoadedItem, LoadedResources, MascotSpec, McpServerSpec,
-    PluginSpec, PromptTemplate, ProviderPack, SkillSpec, SourceInfo, SourceKind, ToolSpec,
+    AgentSpec, HookSpec, IdeSpec, LoadedItem, LoadedResources, LspServerSpec, MascotSpec,
+    McpServerSpec, PluginSpec, PromptTemplate, ProviderPack, SkillSpec, SourceInfo, SourceKind,
+    ToolSpec,
 };
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
@@ -149,6 +150,21 @@ pub fn plugin_mcp_servers(resources: &LoadedResources) -> Vec<(&PluginSpec, &Mcp
             plugin
                 .value
                 .mcp_servers
+                .iter()
+                .map(move |server| (&plugin.value, server))
+        })
+        .collect()
+}
+
+/// Collects every LSP server declared by loaded plugins.
+pub fn plugin_lsp_servers(resources: &LoadedResources) -> Vec<(&PluginSpec, &LspServerSpec)> {
+    resources
+        .plugins
+        .iter()
+        .flat_map(|plugin| {
+            plugin
+                .value
+                .lsp_servers
                 .iter()
                 .map(move |server| (&plugin.value, server))
         })

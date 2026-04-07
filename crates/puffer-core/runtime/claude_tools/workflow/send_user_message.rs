@@ -20,8 +20,12 @@ pub fn execute_send_user_message(state: &mut AppState, cwd: &Path, input: Value)
     if parsed.message.trim().is_empty() {
         bail!("SendUserMessage message cannot be empty");
     }
-    for attachment in &parsed.attachments {
-        let resolved = resolve_path(cwd, attachment);
+    let resolved_attachments = parsed
+        .attachments
+        .iter()
+        .map(|attachment| resolve_path(cwd, attachment))
+        .collect::<Vec<_>>();
+    for resolved in &resolved_attachments {
         if !resolved.exists() {
             bail!(
                 "SendUserMessage attachment does not exist: {}",
@@ -36,7 +40,10 @@ pub fn execute_send_user_message(state: &mut AppState, cwd: &Path, input: Value)
         summary: Some(parsed.status.clone()),
         message: json!({
             "message": parsed.message,
-            "attachments": parsed.attachments,
+            "attachments": resolved_attachments
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
             "status": parsed.status,
         }),
         created_at_ms: now_ms(),

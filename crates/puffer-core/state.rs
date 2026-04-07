@@ -3,7 +3,7 @@ use puffer_session_store::{
     ClaudeReadSnapshotEvent, SessionMetadata, SessionRecord, TranscriptEvent, TranscriptRewrite,
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Describes the role of a rendered transcript message.
@@ -69,6 +69,7 @@ pub struct AppState {
     pub should_exit: bool,
     pub reload_resources_requested: bool,
     pub(crate) claude_read_state: HashMap<PathBuf, ClaudeReadState>,
+    pub(crate) native_structured_output_unsupported: HashSet<String>,
     tasks: Vec<TaskRecord>,
     next_task_id: u64,
 }
@@ -99,6 +100,7 @@ impl AppState {
             should_exit: false,
             reload_resources_requested: false,
             claude_read_state: HashMap::new(),
+            native_structured_output_unsupported: HashSet::new(),
             tasks: Vec::new(),
             next_task_id: 1,
         }
@@ -258,6 +260,54 @@ impl AppState {
     pub(crate) fn tasks(&self) -> &[TaskRecord] {
         &self.tasks
     }
+
+    pub(crate) fn native_structured_output_key(
+        family: &str,
+        provider_id: &str,
+        model_id: &str,
+        endpoint_id: &str,
+    ) -> String {
+        let endpoint_id = endpoint_id.trim().trim_end_matches('/').to_ascii_lowercase();
+        format!(
+            "{}::{}::{}::{}",
+            family.trim().to_ascii_lowercase(),
+            provider_id.trim().to_ascii_lowercase(),
+            model_id.trim().to_ascii_lowercase(),
+            endpoint_id
+        )
+    }
+
+    pub(crate) fn is_native_structured_output_unsupported(
+        &self,
+        family: &str,
+        provider_id: &str,
+        model_id: &str,
+        endpoint_id: &str,
+    ) -> bool {
+        self.native_structured_output_unsupported
+            .contains(&Self::native_structured_output_key(
+                family,
+                provider_id,
+                model_id,
+                endpoint_id,
+            ))
+    }
+
+    pub(crate) fn mark_native_structured_output_unsupported(
+        &mut self,
+        family: &str,
+        provider_id: &str,
+        model_id: &str,
+        endpoint_id: &str,
+    ) {
+        self.native_structured_output_unsupported
+            .insert(Self::native_structured_output_key(
+                family,
+                provider_id,
+                model_id,
+                endpoint_id,
+            ));
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +385,22 @@ mod tests {
             .map(|message| message.text.as_str())
             .collect::<Vec<_>>();
         assert_eq!(lines, vec!["before", "done"]);
+    }
+
+    #[test]
+    fn native_structured_output_cache_key_changes_by_endpoint() {
+        let official = AppState::native_structured_output_key(
+            "openai",
+            "openai",
+            "gpt-5",
+            "https://api.openai.com/",
+        );
+        let proxy = AppState::native_structured_output_key(
+            "openai",
+            "openai",
+            "gpt-5",
+            "http://84.32.32.146:8317",
+        );
+        assert_ne!(official, proxy);
     }
 }

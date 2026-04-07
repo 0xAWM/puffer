@@ -5,20 +5,34 @@ description: |-
 
   Use this when a focused task is better handled in parallel or by a specialized
   agent. Write the prompt like a briefing for a smart colleague who has not seen
-  the current conversation.
+  the current conversation. If `subagent_type` is omitted, the general-purpose
+  agent is used.
 
   Usage notes:
   - `description` should be a short 3-5 word summary of the task.
   - `prompt` should include the goal, relevant context, what has already been
     tried, and any important constraints.
-  - `subagent_type` selects a specialized agent. If omitted, the general-purpose
-    agent is used.
+  - The result returned by the agent is not shown directly to the user. You
+    must summarize it yourself in your visible reply.
+  - Fresh agents start with zero context. Explain what you are trying to do,
+    why it matters, and what has already been learned or ruled out.
+  - Do not delegate understanding. Give concrete file paths, constraints, what
+    is in scope, what is out of scope, and the specific question or change you
+    want.
   - `run_in_background` is for longer work where you do not need the result
-    immediately.
+    immediately. Do not poll or sleep after launching a background agent; wait
+    for completion notification.
+  - Do not peek at a background agent's output file unless the user explicitly
+    asks for a progress check.
+  - Do not predict or fabricate results from a running agent before it finishes.
   - `name` makes a running agent easier to reference via SendMessage.
   - `team_name` and `mode` are for teammate and multi-agent coordination flows.
   - `cwd` overrides the working directory for the subagent.
   - `isolation` may request an isolated worktree session when supported.
+  - Tell the agent clearly whether it should research, review, or write code.
+  - Avoid terse command-style prompts. A good prompt gives enough surrounding
+    context that the agent can make judgment calls instead of blindly following
+    narrow instructions.
 handler: runtime:agent
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -30,13 +44,17 @@ input_schema:
       description: Short description of the delegated task.
     prompt:
       type: string
-      description: Full task instructions for the subagent.
+      description: Full task instructions for the subagent, including goal, context, prior findings, and constraints.
     subagent_type:
       type: string
       description: Optional agent id to run. Defaults to general-purpose.
     model:
       type: string
-      description: Optional fully-qualified model override for the subagent.
+      enum:
+        - haiku
+        - opus
+        - sonnet
+      description: Optional model override for the subagent.
     run_in_background:
       type: boolean
       description: When true, request background execution.
@@ -45,7 +63,9 @@ input_schema:
       description: Optional working directory override for the subagent.
     isolation:
       type: string
-      description: Optional isolation mode. Only worktree is recognized.
+      enum:
+        - worktree
+      description: Optional isolation mode. Currently only worktree isolation is supported.
     name:
       type: string
       description: Optional label for the subagent invocation.
@@ -54,7 +74,13 @@ input_schema:
       description: Optional team name for spawning or attaching to coordinated work.
     mode:
       type: string
-      description: Optional permission mode override for the spawned agent.
+      enum:
+        - acceptEdits
+        - bypassPermissions
+        - default
+        - dontAsk
+        - plan
+      description: Optional permission mode override for the spawned agent. Use only when a specific teammate flow requires it.
   required:
     - description
     - prompt

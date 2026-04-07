@@ -16,9 +16,11 @@ use serde_json::{json, Value};
 
 mod agents;
 mod claude_tools;
+mod local_mcp_resources;
 mod local_tools;
 mod openai;
 mod openai_sse;
+mod structured_output_support;
 mod tool_executor;
 #[cfg(test)]
 mod agent_runtime_tests;
@@ -32,6 +34,8 @@ use self::openai::{
 use self::openai::{
     execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response,
 };
+pub use self::structured_output_support::StructuredOutputConfig;
+use self::structured_output_support::{anthropic_tool_definitions, validate_structured_output_schema};
 use self::tool_executor::{execute_tool_call, ToolExecutionBackend};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -74,16 +78,73 @@ pub fn execute_user_prompt(
     auth_store: &mut AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
+    execute_user_prompt_with_options(state, resources, providers, auth_store, input, None)
+}
+
+/// Shuts down long-lived runtime services such as cached LSP sessions.
+pub fn shutdown_runtime_services() -> Result<()> {
+    claude_tools::workflow::lsp::shutdown_lsp_services()
+}
+
+/// Executes one user prompt with a request-scoped structured output contract.
+pub fn execute_user_prompt_with_structured_output(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    structured_output: &StructuredOutputConfig,
+) -> Result<TurnExecution> {
+    validate_structured_output_schema(structured_output)?;
+    execute_user_prompt_with_options(
+        state,
+        resources,
+        providers,
+        auth_store,
+        input,
+        Some(structured_output),
+    )
+}
+
+fn execute_user_prompt_with_options(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    structured_output: Option<&StructuredOutputConfig>,
+) -> Result<TurnExecution> {
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     match resolve_model_api(state, providers, provider, &model_id).as_str() {
         "anthropic-messages" => execute_anthropic(
-            state, resources, providers, provider, model_id, auth_store, input,
+            state,
+            resources,
+            providers,
+            provider,
+            model_id,
+            auth_store,
+            input,
+            structured_output,
         ),
         "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => execute_openai(
-            state, resources, providers, provider, model_id, auth_store, input,
+            state,
+            resources,
+            providers,
+            provider,
+            model_id,
+            auth_store,
+            input,
+            structured_output,
         ),
         "openai-completions" => execute_openai_completions(
-            state, resources, providers, provider, model_id, auth_store, input,
+            state,
+            resources,
+            providers,
+            provider,
+            model_id,
+            auth_store,
+            input,
+            structured_output,
         ),
         other => bail!(
             "provider {} with api {other} is not executable yet",
@@ -104,6 +165,54 @@ pub fn execute_user_prompt_streaming<F>(
 where
     F: FnMut(TurnStreamEvent),
 {
+    execute_user_prompt_streaming_with_options(
+        state,
+        resources,
+        providers,
+        auth_store,
+        input,
+        None,
+        &mut on_event,
+    )
+}
+
+/// Executes one user prompt with a request-scoped structured output contract and streaming events.
+pub fn execute_user_prompt_streaming_with_structured_output<F>(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    structured_output: &StructuredOutputConfig,
+    mut on_event: F,
+) -> Result<TurnExecution>
+where
+    F: FnMut(TurnStreamEvent),
+{
+    validate_structured_output_schema(structured_output)?;
+    execute_user_prompt_streaming_with_options(
+        state,
+        resources,
+        providers,
+        auth_store,
+        input,
+        Some(structured_output),
+        &mut on_event,
+    )
+}
+
+fn execute_user_prompt_streaming_with_options<F>(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    structured_output: Option<&StructuredOutputConfig>,
+    on_event: &mut F,
+) -> Result<TurnExecution>
+where
+    F: FnMut(TurnStreamEvent),
+{
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     match resolve_model_api(state, providers, provider, &model_id).as_str() {
         "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
@@ -115,10 +224,18 @@ where
                 model_id,
                 auth_store,
                 input,
-                &mut on_event,
+                structured_output,
+                on_event,
             )
         }
-        _ => execute_user_prompt(state, resources, providers, auth_store, input),
+        _ => execute_user_prompt_with_options(
+            state,
+            resources,
+            providers,
+            auth_store,
+            input,
+            structured_output,
+        ),
     }
 }
 fn resolve_provider_and_model<'a>(
@@ -189,6 +306,7 @@ fn execute_anthropic(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
+    structured_output: Option<&StructuredOutputConfig>,
 ) -> Result<TurnExecution> {
     let auth = anthropic_auth_for_provider(auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
@@ -232,7 +350,7 @@ fn execute_anthropic(
             )
         });
 
-        let tools = anthropic_tool_definitions(&registry);
+        let tools = anthropic_tool_definitions(&registry, structured_output)?;
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
         }
@@ -249,6 +367,7 @@ fn execute_anthropic(
             &cwd,
             &request_config,
             &model_id,
+            structured_output,
         )? {
             invocations.extend(tool_results.invocations);
             messages.push(json!({
@@ -291,6 +410,7 @@ fn send_http_request_raw(
     body: &str,
     anthropic: bool,
 ) -> Result<RawHttpResponse> {
+    trace_http_exchange("request", url, headers, body);
     let client = Client::new();
     let mut request = client.post(url);
     for (key, value) in headers {
@@ -320,11 +440,64 @@ fn send_http_request_raw(
         .and_then(|value| value.to_str().ok())
         .map(ToString::to_string);
     let text = response.text()?;
+    trace_http_response(url, status.as_u16(), &text);
     Ok(RawHttpResponse {
         status,
         content_type,
         text,
     })
+}
+
+fn trace_http_exchange(kind: &str, url: &str, headers: &[(String, String)], body: &str) {
+    let Ok(path) = std::env::var("PUFFER_HTTP_TRACE_PATH") else {
+        return;
+    };
+    let rendered_headers = headers
+        .iter()
+        .map(|(key, value)| {
+            if key.eq_ignore_ascii_case("authorization") {
+                format!("{key}: <redacted>")
+            } else {
+                format!("{key}: {value}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            writeln!(
+                file,
+                "--- {} {} ---\n{}\n\n{}\n",
+                kind.to_ascii_uppercase(),
+                url,
+                rendered_headers,
+                body
+            )
+        });
+}
+
+fn trace_http_response(url: &str, status: u16, body: &str) {
+    let Ok(path) = std::env::var("PUFFER_HTTP_TRACE_PATH") else {
+        return;
+    };
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            writeln!(
+                file,
+                "--- RESPONSE {} {} ---\n{}\n",
+                status,
+                url,
+                body
+            )
+        });
 }
 
 fn parse_http_json_response(
@@ -385,18 +558,6 @@ fn parse_anthropic_text(response: &Value) -> Result<String> {
         bail!("anthropic response did not contain text content");
     }
     Ok(parts.join("\n"))
-}
-fn anthropic_tool_definitions(registry: &ToolRegistry) -> Vec<Value> {
-    registry
-        .tools()
-        .map(|tool| {
-            json!({
-                "name": tool.spec.id,
-                "description": tool.spec.description,
-                "input_schema": tool.spec.input_schema.as_json_schema(),
-            })
-        })
-        .collect()
 }
 #[cfg(test)]
 fn anthropic_tool_schema(handler: &str) -> Value {
@@ -464,6 +625,7 @@ fn execute_anthropic_tool_calls(
     cwd: &std::path::Path,
     request_config: &AnthropicRequestConfig,
     model_id: &str,
+    structured_output: Option<&StructuredOutputConfig>,
 ) -> Result<Option<AnthropicToolResults>> {
     let Some(content) = response.get("content").and_then(Value::as_array) else {
         return Ok(None);
@@ -494,7 +656,10 @@ fn execute_anthropic_tool_calls(
             registry,
             model_id,
             cwd,
-            ToolExecutionBackend::Anthropic { request_config },
+            ToolExecutionBackend::Anthropic {
+                request_config,
+                structured_output,
+            },
             tool_id,
             input.clone(),
         )?;

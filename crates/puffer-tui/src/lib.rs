@@ -16,7 +16,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, size as terminal_size, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
-use puffer_core::{supported_commands, AppState, CommandSpec};
+use puffer_core::{shutdown_runtime_services, supported_commands, AppState, CommandSpec};
 use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_session_store::SessionStore;
@@ -191,6 +191,7 @@ pub fn run_app(
         }
     }
 
+    let _ = shutdown_runtime_services();
     disable_raw_mode()?;
     if !no_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

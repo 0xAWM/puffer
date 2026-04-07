@@ -817,6 +817,7 @@ fn loaded_plugin(id: &str, display_name: &str) -> LoadedItem<puffer_resources::P
             commands: Vec::new(),
             skills: Vec::new(),
             mcp_servers: Vec::new(),
+            lsp_servers: Vec::new(),
         },
         source_info: SourceInfo {
             path: PathBuf::from(format!("{id}.yaml")),

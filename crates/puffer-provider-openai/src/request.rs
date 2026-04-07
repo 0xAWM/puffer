@@ -4,10 +4,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A minimal OpenAI Responses API request payload.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAIResponsesRequest {
     pub model: String,
     pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<OpenAIResponsesTextConfig>,
 }
 
 /// A minimal OpenAI Chat Completions API request payload.
@@ -19,6 +21,8 @@ pub struct OpenAIChatCompletionsRequest {
     pub tools: Vec<OpenAIChatCompletionTool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<OpenAIResponsesToolChoiceMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<OpenAIChatResponseFormat>,
 }
 
 /// A message item accepted by the OpenAI Chat Completions API.
@@ -63,6 +67,7 @@ pub struct OpenAIChatCompletionToolFunction {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    pub strict: bool,
 }
 
 /// A tool-enabled OpenAI Responses API request payload.
@@ -78,6 +83,45 @@ pub struct OpenAIResponsesToolRequest {
     pub tool_choice: Option<OpenAIResponsesToolChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<OpenAIResponsesTextConfig>,
+}
+
+/// Structured output configuration for the OpenAI Responses API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIResponsesTextConfig {
+    pub format: OpenAIResponsesTextFormat,
+}
+
+/// One structured output format accepted by the OpenAI Responses API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIResponsesTextFormat {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub schema: Value,
+    pub strict: bool,
+}
+
+/// Structured output configuration for OpenAI Chat Completions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatResponseFormat {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(rename = "json_schema")]
+    pub json_schema: OpenAIChatResponseJsonSchema,
+}
+
+/// JSON Schema payload nested under a Chat Completions response format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAIChatResponseJsonSchema {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub schema: Value,
+    pub strict: bool,
 }
 
 /// A tool definition accepted by the OpenAI Responses API.
@@ -89,6 +133,7 @@ pub struct OpenAIResponsesTool {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    pub strict: bool,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub parameters: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +245,7 @@ fn build_request_to_path<T: Serialize>(
     request: &T,
     path: &str,
 ) -> anyhow::Result<BuiltOpenAIRequest> {
+    let normalized_path = normalized_path(&config.base_url, path);
     let mut headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         (
@@ -208,8 +254,14 @@ fn build_request_to_path<T: Serialize>(
         ),
         ("originator".to_string(), config.originator.clone()),
     ];
+    if normalized_path.ends_with("/responses") {
+        headers.push(("Accept".to_string(), "text/event-stream".to_string()));
+    }
     if let Some(session_id) = config.session_id.as_deref() {
         headers.push(("session_id".to_string(), session_id.to_string()));
+        if normalized_path.ends_with("/responses") {
+            headers.push(("x-client-request-id".to_string(), session_id.to_string()));
+        }
     }
     if let Some(account_id) = config.account_id.as_deref() {
         headers.push(("ChatGPT-Account-ID".to_string(), account_id.to_string()));
@@ -221,7 +273,6 @@ fn build_request_to_path<T: Serialize>(
             headers.push(("Authorization".to_string(), format!("Bearer {key}")));
         }
     }
-    let normalized_path = normalized_path(&config.base_url, path);
     let mut url = format!(
         "{}{}",
         config.base_url.trim_end_matches('/'),
@@ -274,6 +325,7 @@ mod tests {
             &OpenAIResponsesRequest {
                 model: "gpt-5".to_string(),
                 input: "hello".to_string(),
+                text: None,
             },
         )
         .unwrap();
@@ -299,6 +351,7 @@ mod tests {
             &OpenAIResponsesRequest {
                 model: "llama3.1:8b".to_string(),
                 input: "hello".to_string(),
+                text: None,
             },
         )
         .unwrap();
@@ -328,6 +381,7 @@ mod tests {
                     kind: "function".to_string(),
                     name: "read_file".to_string(),
                     description: "Reads a file from disk.".to_string(),
+                    strict: false,
                     parameters: json!({
                         "type": "object",
                         "properties": {
@@ -346,6 +400,7 @@ mod tests {
                     OpenAIResponsesToolChoiceMode::Auto,
                 )),
                 previous_response_id: Some("resp_123".to_string()),
+                text: None,
             },
         )
         .unwrap();
@@ -401,9 +456,11 @@ mod tests {
                         name: "read_file".to_string(),
                         description: "Reads a file.".to_string(),
                         parameters: json!({"type": "object", "properties": {}}),
+                        strict: false,
                     },
                 }],
                 tool_choice: Some(OpenAIResponsesToolChoiceMode::Auto),
+                response_format: None,
             },
         )
         .unwrap();
@@ -413,6 +470,100 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], json!("user"));
         assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
         assert_eq!(body["tool_choice"], json!("auto"));
+    }
+
+    #[test]
+    fn chat_completions_request_serializes_response_format() {
+        let request = build_chat_completions_request(
+            &OpenAIRequestConfig {
+                base_url: "https://api.openai.com".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
+            },
+            &OpenAIChatCompletionsRequest {
+                model: "gpt-5".to_string(),
+                messages: vec![OpenAIChatMessage {
+                    role: "user".to_string(),
+                    content: Some(json!("hello")),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                }],
+                tools: Vec::new(),
+                tool_choice: None,
+                response_format: Some(OpenAIChatResponseFormat {
+                    kind: "json_schema".to_string(),
+                    json_schema: OpenAIChatResponseJsonSchema {
+                        name: "answer".to_string(),
+                        description: Some("Structured answer".to_string()),
+                        schema: json!({
+                            "type": "object",
+                            "properties": {
+                                "value": { "type": "string" }
+                            },
+                            "required": ["value"]
+                        }),
+                        strict: true,
+                    },
+                }),
+            },
+        )
+        .unwrap();
+
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(body["response_format"]["type"], json!("json_schema"));
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            json!("answer")
+        );
+    }
+
+    #[test]
+    fn responses_request_serializes_text_format() {
+        let request = build_tool_responses_request(
+            &OpenAIRequestConfig {
+                base_url: "https://api.openai.com".to_string(),
+                version: "0.1.0".to_string(),
+                auth: OpenAIAuth::ApiKey("sk-test".to_string()),
+                originator: "codex_cli_rs".to_string(),
+                session_id: None,
+                account_id: None,
+                custom_headers: Vec::new(),
+                query_params: Vec::new(),
+            },
+            &OpenAIResponsesToolRequest {
+                model: "gpt-5".to_string(),
+                input: json!("hello"),
+                tools: Vec::new(),
+                include: Vec::new(),
+                tool_choice: None,
+                previous_response_id: None,
+                text: Some(OpenAIResponsesTextConfig {
+                    format: OpenAIResponsesTextFormat {
+                        kind: "json_schema".to_string(),
+                        name: "answer".to_string(),
+                        description: Some("Structured answer".to_string()),
+                        schema: json!({
+                            "type": "object",
+                            "properties": {
+                                "value": { "type": "string" }
+                            },
+                            "required": ["value"]
+                        }),
+                        strict: true,
+                    },
+                }),
+            },
+        )
+        .unwrap();
+
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(body["text"]["format"]["type"], json!("json_schema"));
+        assert_eq!(body["text"]["format"]["name"], json!("answer"));
     }
 
     #[test]

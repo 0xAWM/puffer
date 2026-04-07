@@ -1,5 +1,8 @@
 use super::agents::execute_agent_tool;
 use super::claude_tools::{self, ProviderToolContext};
+use super::structured_output_support::{
+    requested_structured_output_definition_for_request, StructuredOutputConfig,
+};
 use crate::AppState;
 use anyhow::{anyhow, Result};
 use puffer_provider_openai::OpenAIRequestConfig;
@@ -11,13 +14,15 @@ use serde_json::Value;
 use std::path::Path;
 
 /// Identifies which provider loop is currently executing a tool call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum ToolExecutionBackend<'a> {
     Anthropic {
         request_config: &'a AnthropicRequestConfig,
+        structured_output: Option<&'a StructuredOutputConfig>,
     },
     OpenAi {
         request_config: &'a OpenAIRequestConfig,
+        structured_output: Option<&'a StructuredOutputConfig>,
     },
 }
 
@@ -34,28 +39,47 @@ pub(super) fn execute_tool_call(
     tool_id: &str,
     input: Value,
 ) -> Result<ToolExecutionResult> {
-    let definition = registry
-        .definition(tool_id)
-        .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?;
+    let structured_output = match backend {
+        ToolExecutionBackend::Anthropic {
+            structured_output, ..
+        }
+        | ToolExecutionBackend::OpenAi {
+            structured_output, ..
+        } => structured_output,
+    };
+    let definition = match registry.definition(tool_id) {
+        Some(definition) => definition.clone(),
+        None => requested_structured_output_definition_for_request(registry, structured_output)?
+            .filter(|definition| definition.id == tool_id)
+            .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?,
+    };
     if definition.handler == "runtime:agent" {
         let output = execute_agent_tool(state, resources, providers, auth_store, cwd, input)?;
         return Ok(successful_runtime_tool(tool_id, output));
     }
     let provider_context = match backend {
-        ToolExecutionBackend::Anthropic { request_config } => ProviderToolContext::Anthropic {
+        ToolExecutionBackend::Anthropic {
+            request_config,
+            structured_output,
+        } => ProviderToolContext::Anthropic {
             request_config,
             model_id,
+            structured_output,
         },
-        ToolExecutionBackend::OpenAi { request_config } => ProviderToolContext::OpenAI {
+        ToolExecutionBackend::OpenAi {
+            request_config,
+            structured_output,
+        } => ProviderToolContext::OpenAI {
             request_config,
             model_id,
+            structured_output,
         },
     };
     claude_tools::execute_tool(
         state,
         resources,
         registry,
-        definition,
+        &definition,
         cwd,
         input,
         provider_context,

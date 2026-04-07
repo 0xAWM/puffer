@@ -6,7 +6,31 @@ description: |-
   Use this when the user asks about current settings, requests a configuration
   change, or would benefit from adjusting a setting directly.
 
-  Omit `value` to read the current setting. Provide `value` to update it.
+  Usage:
+  - Omit `value` to read the current setting.
+  - Provide `value` to update it.
+
+  Currently supported settings in this runtime include:
+  - `theme`
+  - `model`
+  - `editorMode`
+  - `default_provider`
+  - `default_model`
+  - `openai_base_url`
+  - `openai_headers`
+  - `openai_query_params`
+  - `no_alt_screen`
+  - `tmux_golden_mode`
+
+  Set `value` to `null` to clear optional settings such as `default_model`,
+  `default_provider`, `openai_base_url`, `openai_headers`, or
+  `openai_query_params`.
+
+  Examples:
+  - Get theme: `{ "setting": "theme" }`
+  - Set theme: `{ "setting": "theme", "value": "dark" }`
+  - Change model: `{ "setting": "model", "value": "opus" }`
+  - Enable vim mode: `{ "setting": "editorMode", "value": "vim" }`
 handler: runtime:workflow:config
 approval_policy: auto
 sandbox_policy: workspace-write
@@ -15,13 +39,16 @@ input_schema:
   properties:
     setting:
       type: string
-      description: The setting key, such as theme, model, or permissions.defaultMode.
+      description: The setting key, such as theme, model, editorMode, default_model, or openai_headers.
     value:
       description: The new value; omit to get current value.
       oneOf:
+        - type: "null"
         - type: string
         - type: boolean
-        - type: number
+        - type: object
+          additionalProperties:
+            type: string
   required:
     - setting
   additionalProperties: false

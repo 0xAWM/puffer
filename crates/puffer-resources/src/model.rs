@@ -193,6 +193,23 @@ pub struct McpServerSpec {
     pub description: String,
 }
 
+/// Declares a declarative LSP server integration entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LspServerSpec {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub extension_to_language: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub workspace_folder: Option<String>,
+}
+
 /// Declares a declarative plugin manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginSpec {
@@ -206,6 +223,8 @@ pub struct PluginSpec {
     pub skills: Vec<String>,
     #[serde(default)]
     pub mcp_servers: Vec<McpServerSpec>,
+    #[serde(default)]
+    pub lsp_servers: Vec<LspServerSpec>,
 }
 
 /// Declares a mascot resource.

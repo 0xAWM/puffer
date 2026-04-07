@@ -2,7 +2,10 @@ use super::*;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
-use puffer_provider_openai::{OpenAIAuth, OpenAIRequestConfig, OpenAIResponseToolCall};
+use puffer_provider_openai::{
+    OpenAIAuth, OpenAIRequestConfig, OpenAIResponseToolCall, OpenAIResponsesTextConfig,
+    OpenAIResponsesTextFormat,
+};
 use puffer_provider_registry::{AuthMode, OAuthCredential, ProviderDescriptor, StoredCredential};
 use puffer_resources::{AgentSpec, LoadedItem, LoadedResources, SourceInfo, SourceKind, ToolSpec};
 use puffer_session_store::SessionMetadata;
@@ -343,6 +346,7 @@ fn execute_anthropic_tool_calls_runs_registered_tools() {
         std::env::current_dir().unwrap().as_path(),
         &request_config,
         "claude-sonnet-4-5",
+        None,
     )
     .unwrap();
     assert!(result.is_some());
@@ -355,7 +359,7 @@ fn openai_tool_definitions_use_registry_schema() {
         ..LoadedResources::default()
     };
     let registry = ToolRegistry::from_resources(&resources);
-    let tools = openai_tool_definitions(&registry);
+    let tools = openai_tool_definitions(&registry, None, false).unwrap();
     assert_eq!(tools[0].name, "search_text");
     assert_eq!(tools[0].kind, "function");
     assert_eq!(tools[0].parameters["type"], "object");
@@ -387,7 +391,7 @@ fn openai_tool_definitions_fill_missing_array_items() {
         ..LoadedResources::default()
     };
     let registry = ToolRegistry::from_resources(&resources);
-    let tools = openai_tool_definitions(&registry);
+    let tools = openai_tool_definitions(&registry, None, false).unwrap();
     assert_eq!(tools[0].name, "WebSearch");
     assert_eq!(
         tools[0].parameters["properties"]["allowed_domains"]["items"]["type"].as_str(),
@@ -397,6 +401,44 @@ fn openai_tool_definitions_fill_missing_array_items() {
         tools[0].parameters["properties"]["blocked_domains"]["items"]["type"].as_str(),
         Some("string")
     );
+}
+
+#[test]
+fn openai_web_search_description_mentions_current_month_year() {
+    let description = "\
+- Allows Claude to search the web and use the results to inform responses
+
+IMPORTANT - Use the correct year in search queries:
+  - You MUST use the current year when searching for recent information, documentation, or current events.";
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("WebSearch", description, "provider:web_search")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let tools = openai_tool_definitions(&registry, None, false).unwrap();
+    assert!(tools[0].description.contains("The current month is"));
+    assert!(!tools[0]
+        .description
+        .contains("You MUST use the current year when searching"));
+}
+
+#[test]
+fn anthropic_web_search_description_mentions_current_month_year() {
+    let description = "\
+- Allows Claude to search the web and use the results to inform responses
+
+IMPORTANT - Use the correct year in search queries:
+  - You MUST use the current year when searching for recent information, documentation, or current events.";
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("WebSearch", description, "provider:web_search")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let tools = anthropic_tool_definitions(&registry, None).unwrap();
+    assert!(tools[0]["description"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("The current month is"));
 }
 
 #[test]
@@ -410,8 +452,8 @@ fn tool_definitions_filter_disabled_tools() {
         ..LoadedResources::default()
     };
     let registry = ToolRegistry::from_resources(&resources);
-    let openai_tools = openai_tool_definitions(&registry);
-    let anthropic_tools = anthropic_tool_definitions(&registry);
+    let openai_tools = openai_tool_definitions(&registry, None, false).unwrap();
+    let anthropic_tools = anthropic_tool_definitions(&registry, None).unwrap();
     assert_eq!(openai_tools.len(), 1);
     assert_eq!(anthropic_tools.len(), 1);
     assert_eq!(openai_tools[0].name, "bash");
@@ -433,7 +475,7 @@ fn openai_tool_definitions_exclude_structured_output_workflow_helper() {
     };
     let registry = ToolRegistry::from_resources(&resources);
 
-    let openai_tools = openai_tool_definitions(&registry);
+    let openai_tools = openai_tool_definitions(&registry, None, false).unwrap();
 
     assert!(!openai_tools.iter().any(|tool| tool.name == "StructuredOutput"));
     assert!(openai_tools.iter().any(|tool| tool.name == "bash"));
@@ -492,8 +534,8 @@ fn build_codex_openai_request_body_matches_codex_shape() {
         "gpt-5",
         Value::String("hello".to_string()),
         &Vec::new(),
-        None,
         true,
+        None,
     );
 
     assert_eq!(body["model"], json!("gpt-5"));
@@ -504,6 +546,208 @@ fn build_codex_openai_request_body_matches_codex_shape() {
     assert_eq!(body["input"][0]["content"][0]["text"], json!("hello"));
     assert_eq!(body["reasoning"]["summary"], json!("auto"));
     assert_eq!(body["reasoning"]["effort"], json!("medium"));
+    assert!(body.get("previous_response_id").is_none());
+}
+
+#[test]
+fn build_codex_openai_request_body_includes_native_structured_output_config() {
+    let state = state();
+    let body = build_codex_openai_request_body(
+        &state,
+        "gpt-5",
+        Value::String("hello".to_string()),
+        &Vec::new(),
+        true,
+        Some(OpenAIResponsesTextConfig {
+            format: OpenAIResponsesTextFormat {
+                kind: "json_schema".to_string(),
+                name: "answer_shape".to_string(),
+                description: None,
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": { "type": "string" }
+                    }
+                }),
+                strict: true,
+            },
+        }),
+    );
+
+    assert_eq!(body["text"]["format"]["type"], json!("json_schema"));
+    assert_eq!(body["text"]["format"]["name"], json!("answer_shape"));
+}
+
+#[test]
+fn openai_structured_output_falls_back_and_caches_unsupported_native_support() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let request_log = Arc::clone(&requests);
+
+    let server = thread::spawn(move || {
+        for index in 0..5 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 16384];
+            let bytes = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            request_log.lock().unwrap().push(request);
+
+            let body = match index {
+                0 => json!({
+                    "error": {
+                        "message": "response_format json_schema is not supported for this model"
+                    }
+                })
+                .to_string(),
+                1 => json!({
+                    "id": "resp_1",
+                    "output": [{
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "StructuredOutput",
+                        "arguments": { "answer": "ok" }
+                    }]
+                })
+                .to_string(),
+                2 => json!({
+                    "id": "resp_2",
+                    "output": [{
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "{\"answer\":\"ok\"}"
+                        }]
+                    }]
+                })
+                .to_string(),
+                3 => json!({
+                    "id": "resp_3",
+                    "output": [{
+                        "type": "function_call",
+                        "call_id": "call_2",
+                        "name": "StructuredOutput",
+                        "arguments": { "answer": "cached" }
+                    }]
+                })
+                .to_string(),
+                _ => json!({
+                    "id": "resp_4",
+                    "output": [{
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "{\"answer\":\"cached\"}"
+                        }]
+                    }]
+                })
+                .to_string(),
+            };
+            let status = if index == 0 { 400 } else { 200 };
+            let response = format!(
+                "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                if status == 200 { "OK" } else { "Bad Request" },
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+
+    let mut registry = ProviderRegistry::new();
+    registry.register(openai_provider(format!("http://{address}")));
+    let mut auth_store = AuthStore::default();
+    auth_store.set_api_key("openai", "sk-openai");
+    let mut state = state();
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+    let structured_output = StructuredOutputConfig::new(
+        "answer_shape",
+        json!({
+            "type": "object",
+            "properties": {
+                "answer": { "type": "string" }
+            },
+            "required": ["answer"],
+            "additionalProperties": false
+        }),
+    );
+
+    let first = execute_user_prompt_with_structured_output(
+        &mut state,
+        &LoadedResources::default(),
+        &registry,
+        &mut auth_store,
+        "hello",
+        &structured_output,
+    )
+    .unwrap();
+    let second = execute_user_prompt_with_structured_output(
+        &mut state,
+        &LoadedResources::default(),
+        &registry,
+        &mut auth_store,
+        "again",
+        &structured_output,
+    )
+    .unwrap();
+    server.join().unwrap();
+
+    assert_eq!(first.assistant_text, "{\"answer\":\"ok\"}");
+    assert_eq!(second.assistant_text, "{\"answer\":\"cached\"}");
+    assert!(state.is_native_structured_output_unsupported(
+        "openai",
+        "openai",
+        "gpt-5",
+        registry.provider("openai").unwrap().base_url.as_str()
+    ));
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 5);
+
+    let first_body = request_json_body(&requests[0]);
+    assert_eq!(first_body["text"]["format"]["type"], json!("json_schema"));
+    assert!(first_body["tools"]
+        .as_array()
+        .is_none_or(|tools| tools.iter().all(|tool| tool["name"] != "StructuredOutput")));
+
+    let fallback_body = request_json_body(&requests[1]);
+    assert!(fallback_body.get("text").is_none());
+    assert!(fallback_body["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "StructuredOutput")));
+
+    let cached_body = request_json_body(&requests[3]);
+    assert!(cached_body.get("text").is_none());
+    assert!(cached_body["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "StructuredOutput")));
+}
+
+#[test]
+fn native_structured_output_unsupported_cache_is_endpoint_scoped() {
+    let mut state = state();
+    state.mark_native_structured_output_unsupported(
+        "openai",
+        "openai",
+        "gpt-5",
+        "https://first.example/v1",
+    );
+
+    assert!(state.is_native_structured_output_unsupported(
+        "openai",
+        "openai",
+        "gpt-5",
+        "https://first.example/v1",
+    ));
+    assert!(!state.is_native_structured_output_unsupported(
+        "openai",
+        "openai",
+        "gpt-5",
+        "https://second.example/v1",
+    ));
 }
 
 #[test]
@@ -704,7 +948,7 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
         ..LoadedResources::default()
     };
     let registry = ToolRegistry::from_resources(&resources);
-    let openai_tools = openai_tool_definitions(&registry);
+    let openai_tools = openai_tool_definitions(&registry, None, false).unwrap();
     assert_eq!(openai_tools.len(), 1);
     assert_eq!(openai_tools[0].name, "read_file");
 }
@@ -712,3 +956,8 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
 
 #[path = "tests/tool_execution.rs"]
 mod tool_execution;
+
+fn request_json_body(raw_request: &str) -> Value {
+    let body = raw_request.split("\r\n\r\n").nth(1).unwrap_or_default();
+    serde_json::from_str(body).unwrap()
+}

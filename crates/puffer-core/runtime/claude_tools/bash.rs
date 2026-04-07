@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -31,6 +32,8 @@ pub struct ClaudeBashOutput {
     pub interrupted: bool,
     #[serde(skip_serializing_if = "Option::is_none", rename = "backgroundTaskId")]
     pub background_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "outputFile")]
+    pub output_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "backgroundedByUser")]
     pub backgrounded_by_user: Option<bool>,
     #[serde(
@@ -86,13 +89,24 @@ pub fn execute(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashExecution
 }
 
 fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
+    let output_dir = shell_output_dir(cwd)?;
+    let pending_output_file = output_dir.join("shell-pending.log");
+    let stdout = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&pending_output_file)
+        .with_context(|| format!("failed to create {}", pending_output_file.display()))?;
+    let stderr = stdout
+        .try_clone()
+        .with_context(|| format!("failed to clone {}", pending_output_file.display()))?;
     let child = Command::new("bash")
         .arg("-lc")
         .arg(&input.command)
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn()
         .with_context(|| {
             format!(
@@ -101,6 +115,8 @@ fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
             )
         })?;
     let task_id = format!("shell-{}", child.id());
+    let output_file = shell_output_path(cwd, child.id())?;
+    let _ = fs::rename(&pending_output_file, &output_file);
     Ok(ClaudeBashExecution {
         success: true,
         output: ClaudeBashOutput {
@@ -108,6 +124,7 @@ fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
             stderr: String::new(),
             interrupted: false,
             background_task_id: Some(task_id),
+            output_file: Some(output_file.display().to_string()),
             backgrounded_by_user: Some(false),
             assistant_auto_backgrounded: Some(false),
             dangerously_disable_sandbox: Some(input.dangerously_disable_sandbox),
@@ -141,6 +158,7 @@ fn execute_foreground(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
             stderr,
             interrupted: timed.timed_out,
             background_task_id: None,
+            output_file: None,
             backgrounded_by_user: None,
             assistant_auto_backgrounded: None,
             dangerously_disable_sandbox: Some(input.dangerously_disable_sandbox),
@@ -161,6 +179,21 @@ fn classify_return_code(code: Option<i32>) -> Option<String> {
 struct TimedCommandOutput {
     output: Output,
     timed_out: bool,
+}
+
+fn shell_output_dir(cwd: &Path) -> Result<std::path::PathBuf> {
+    let dir = cwd
+        .join(".puffer")
+        .join("runtime")
+        .join("claude_workflow")
+        .join("shell_outputs");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create {}", dir.display()))?;
+    Ok(dir)
+}
+
+fn shell_output_path(cwd: &Path, pid: u32) -> Result<std::path::PathBuf> {
+    Ok(shell_output_dir(cwd)?.join(format!("shell-{pid}.log")))
 }
 
 fn run_bash_command(cwd: &Path, command: &str, timeout_ms: u64) -> Result<TimedCommandOutput> {

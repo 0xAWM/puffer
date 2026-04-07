@@ -20,6 +20,8 @@ pub use auth::OPENAI_REDIRECT_URI;
 pub use auth::OPENAI_SCOPE;
 pub use auth::OPENAI_TOKEN_URL;
 pub use request::BuiltOpenAIRequest;
+pub use request::OpenAIChatResponseFormat;
+pub use request::OpenAIChatResponseJsonSchema;
 pub use request::OpenAIChatCompletionTool;
 pub use request::OpenAIChatCompletionToolFunction;
 pub use request::OpenAIChatCompletionsRequest;
@@ -30,6 +32,8 @@ pub use request::OpenAIRequestConfig;
 pub use request::OpenAIResponsesFunctionCallOutput;
 pub use request::OpenAIResponsesNamedToolChoice;
 pub use request::OpenAIResponsesRequest;
+pub use request::OpenAIResponsesTextConfig;
+pub use request::OpenAIResponsesTextFormat;
 pub use request::OpenAIResponsesTool;
 pub use request::OpenAIResponsesToolChoice;
 pub use request::OpenAIResponsesToolChoiceMode;
@@ -176,6 +180,7 @@ mod tests {
             &OpenAIResponsesRequest {
                 model: "gpt-5".to_string(),
                 input: "hello".to_string(),
+                text: None,
             },
         )
         .expect("request should build");
@@ -203,6 +208,7 @@ mod tests {
                     kind: "function".to_string(),
                     name: "read_file".to_string(),
                     description: "Reads a file from disk.".to_string(),
+                    strict: false,
                     parameters: json!({
                         "type": "object",
                         "properties": {
@@ -218,6 +224,7 @@ mod tests {
                     OpenAIResponsesToolChoiceMode::Auto,
                 )),
                 previous_response_id: None,
+                text: None,
             },
         )
         .expect("request should build");
@@ -250,6 +257,7 @@ mod tests {
                 }],
                 tools: Vec::new(),
                 tool_choice: None,
+                response_format: None,
             },
         )
         .expect("request should build");

@@ -7,7 +7,14 @@ description: |-
   diffs, logs, and similar artifacts. `status` distinguishes a normal reply
   from a proactive update you are initiating yourself.
 
-  Use this tool for the real user-facing reply, especially after longer work.
+  Text outside this tool is visible in the detail view, but most users will not
+  open it. Assume unread. Put the real answer here.
+
+  Use this tool for every user-visible reply. Even simple replies like "hi" or
+  "thanks" should go here. If you can answer immediately, send the answer. If
+  you need to investigate first, send a one-line acknowledgement here before
+  you work, then send the result. For longer work, use meaningful checkpoints
+  when something useful changed; skip filler.
 handler: runtime:workflow:send_user_message
 approval_policy: auto
 sandbox_policy: read-only

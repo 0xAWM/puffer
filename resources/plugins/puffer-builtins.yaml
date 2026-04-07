@@ -15,3 +15,63 @@ mcp_servers:
     display_name: Filesystem
     transport: stdio
     target: internal://filesystem
+lsp_servers:
+  - id: rust-analyzer
+    display_name: Rust Analyzer
+    command: rust-analyzer
+    extension_to_language:
+      .rs: rust
+  - id: typescript-language-server
+    display_name: TypeScript Language Server
+    command: typescript-language-server
+    args:
+      - --stdio
+    extension_to_language:
+      .ts: typescript
+      .tsx: typescriptreact
+      .js: javascript
+      .jsx: javascriptreact
+      .mjs: javascript
+      .cjs: javascript
+  - id: vtsls
+    display_name: vtsls
+    command: vtsls
+    args:
+      - --stdio
+    extension_to_language:
+      .ts: typescript
+      .tsx: typescriptreact
+      .js: javascript
+      .jsx: javascriptreact
+      .mjs: javascript
+      .cjs: javascript
+  - id: pyright-langserver
+    display_name: Pyright
+    command: pyright-langserver
+    args:
+      - --stdio
+    extension_to_language:
+      .py: python
+  - id: basedpyright-langserver
+    display_name: BasedPyright
+    command: basedpyright-langserver
+    args:
+      - --stdio
+    extension_to_language:
+      .py: python
+  - id: gopls
+    display_name: gopls
+    command: gopls
+    extension_to_language:
+      .go: go
+  - id: clangd
+    display_name: clangd
+    command: clangd
+    extension_to_language:
+      .c: c
+      .cc: cpp
+      .cpp: cpp
+      .cxx: cpp
+      .h: c
+      .hh: cpp
+      .hpp: cpp

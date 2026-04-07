@@ -9,10 +9,17 @@ description: |-
   - Use `multiSelect: true` to allow multiple selections.
   - If you recommend a specific option, make it the first option and append
     "(Recommended)" to the label.
+  - Use the optional `preview` field only when users need to compare concrete
+    artifacts such as mockups, code snippets, diagrams, or configuration
+    examples.
+  - Do not use previews for simple preference questions.
+  - Previews are only supported for single-select questions, not `multiSelect`.
   - In plan mode, use this to clarify requirements or choose between approaches
     before finalizing the plan.
   - Do not use this tool to ask whether the user approves the finished plan;
     use ExitPlanMode for plan approval instead.
+  - In plan mode, do not ask about "the plan" directly because the user cannot
+    see it until ExitPlanMode is called.
 handler: runtime:workflow:ask_user_question
 approval_policy: auto
 sandbox_policy: read-only
@@ -78,12 +85,14 @@ input_schema:
             type: string
           notes:
             type: string
+        additionalProperties: false
     metadata:
       type: object
       properties:
         source:
           type: string
       description: Optional metadata for tracking and analytics purposes.
+      additionalProperties: false
   required:
     - questions
   additionalProperties: false

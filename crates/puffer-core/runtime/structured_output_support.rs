@@ -1,0 +1,405 @@
+use anyhow::{anyhow, bail, Context, Result};
+use puffer_provider_openai::{
+    OpenAIChatCompletionTool, OpenAIChatCompletionToolFunction, OpenAIChatResponseFormat,
+    OpenAIChatResponseJsonSchema, OpenAIResponsesTextConfig, OpenAIResponsesTextFormat,
+    OpenAIResponsesTool,
+};
+use puffer_tools::{
+    ToolDefinition, ToolDisplayHints, ToolInputSchema, ToolKind, ToolMetadata, ToolPolicyHints,
+    ToolRegistry,
+};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use time::{format_description, OffsetDateTime};
+
+const STRUCTURED_OUTPUT_TOOL_ID: &str = "StructuredOutput";
+const WEB_SEARCH_TOOL_ID: &str = "WebSearch";
+const WEB_SEARCH_CURRENT_YEAR_LINE: &str =
+    "- You MUST use the current year when searching for recent information, documentation, or current events.";
+
+/// Describes one request-scoped structured output contract for a model turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructuredOutputConfig {
+    pub name: String,
+    pub description: Option<String>,
+    pub schema: Value,
+}
+
+impl StructuredOutputConfig {
+    /// Creates a request-scoped structured output contract from a JSON Schema.
+    pub fn new(name: impl Into<String>, schema: Value) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            schema,
+        }
+    }
+
+    /// Adds an optional human-readable description to the output contract.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+pub(super) fn validate_structured_output_schema(config: &StructuredOutputConfig) -> Result<()> {
+    let name = config.name.trim();
+    if name.is_empty() {
+        bail!("StructuredOutput requires a non-empty schema name");
+    }
+    let schema = &config.schema;
+    if !schema.is_object() {
+        bail!("StructuredOutput schema must be a JSON object");
+    }
+    let _ = jsonschema::validator_for(schema)
+        .map_err(|error| anyhow!("invalid StructuredOutput schema: {error}"))?;
+    Ok(())
+}
+
+pub(super) fn validate_structured_output_payload(
+    config: &StructuredOutputConfig,
+    input: &Value,
+) -> Result<()> {
+    validate_structured_output_schema(config)?;
+    let validator = jsonschema::validator_for(&config.schema)
+        .map_err(|error| anyhow!("invalid StructuredOutput schema: {error}"))?;
+    let errors = validator
+        .iter_errors(input)
+        .take(5)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "Output does not match required schema: {}",
+        errors.join(", ")
+    );
+}
+
+pub(super) fn anthropic_tool_definitions(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+) -> Result<Vec<Value>> {
+    let definitions = anthropic_tool_definitions_with_structured_output(registry, structured_output)?;
+    Ok(definitions
+        .into_iter()
+        .map(|definition| {
+            json!({
+                "name": definition.id,
+                "description": rendered_tool_description(&definition),
+                "input_schema": definition.input_schema.as_json_schema(),
+            })
+        })
+        .collect())
+}
+
+pub(super) fn openai_tool_definitions(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+    use_native: bool,
+) -> Result<Vec<OpenAIResponsesTool>> {
+    let definitions = openai_tool_definitions_with_structured_output(
+        registry,
+        structured_output,
+        use_native,
+    )?;
+    Ok(definitions
+        .into_iter()
+        .map(|definition| OpenAIResponsesTool {
+            kind: "function".to_string(),
+            name: definition.id.clone(),
+            description: rendered_tool_description(&definition),
+            strict: false,
+            parameters: openai_compatible_schema(definition.input_schema.as_json_schema()),
+            filters: None,
+            user_location: None,
+            external_web_access: None,
+        })
+        .collect())
+}
+
+pub(super) fn openai_chat_completion_tools(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+    use_native: bool,
+) -> Result<Vec<OpenAIChatCompletionTool>> {
+    let definitions = openai_tool_definitions_with_structured_output(
+        registry,
+        structured_output,
+        use_native,
+    )?;
+    Ok(definitions
+        .into_iter()
+        .map(|definition| OpenAIChatCompletionTool {
+            kind: "function".to_string(),
+            function: OpenAIChatCompletionToolFunction {
+                name: definition.id.clone(),
+                description: rendered_tool_description(&definition),
+                parameters: openai_compatible_schema(definition.input_schema.as_json_schema()),
+                strict: false,
+            },
+        })
+        .collect())
+}
+
+pub(super) fn openai_responses_text_config(
+    structured_output: Option<&StructuredOutputConfig>,
+    use_native: bool,
+) -> Option<OpenAIResponsesTextConfig> {
+    if !use_native {
+        return None;
+    }
+    let config = structured_output?;
+    Some(OpenAIResponsesTextConfig {
+        format: OpenAIResponsesTextFormat {
+            kind: "json_schema".to_string(),
+            name: config.name.clone(),
+            description: config.description.clone(),
+            schema: openai_compatible_schema(config.schema.clone()),
+            strict: true,
+        },
+    })
+}
+
+pub(super) fn openai_chat_response_format(
+    structured_output: Option<&StructuredOutputConfig>,
+    use_native: bool,
+) -> Option<OpenAIChatResponseFormat> {
+    if !use_native {
+        return None;
+    }
+    let config = structured_output?;
+    Some(OpenAIChatResponseFormat {
+        kind: "json_schema".to_string(),
+        json_schema: OpenAIChatResponseJsonSchema {
+            name: config.name.clone(),
+            description: config.description.clone(),
+            schema: openai_compatible_schema(config.schema.clone()),
+            strict: true,
+        },
+    })
+}
+
+fn anthropic_tool_definitions_with_structured_output(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+) -> Result<Vec<ToolDefinition>> {
+    match structured_output {
+        Some(config) => registry
+            .definitions()
+            .map(|definition| {
+                if definition.id == STRUCTURED_OUTPUT_TOOL_ID {
+                    requested_structured_output_definition(registry, config)
+                } else {
+                    Ok(definition.clone())
+                }
+            })
+            .collect(),
+        None => Ok(registry.definitions().cloned().collect()),
+    }
+}
+
+fn openai_tool_definitions_with_structured_output(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+    use_native: bool,
+) -> Result<Vec<ToolDefinition>> {
+    let mut definitions = registry
+        .definitions()
+        .filter(|definition| definition.handler != "runtime:workflow:structured_output")
+        .cloned()
+        .collect::<Vec<_>>();
+    if !use_native {
+        if let Some(config) = structured_output {
+            definitions.push(requested_structured_output_definition(registry, config)?);
+        }
+    }
+    Ok(definitions)
+}
+
+fn requested_structured_output_definition(
+    registry: &ToolRegistry,
+    config: &StructuredOutputConfig,
+) -> Result<ToolDefinition> {
+    validate_structured_output_schema(config)?;
+    let mut definition = registry
+        .definition(STRUCTURED_OUTPUT_TOOL_ID)
+        .cloned()
+        .unwrap_or_else(|| synthetic_structured_output_definition(config));
+    definition.input_schema = ToolInputSchema {
+        properties: BTreeMap::new(),
+        raw_json_schema: Some(
+            serde_json::to_string(&config.schema).context("failed to serialize schema")?,
+        ),
+    };
+    Ok(definition)
+}
+
+pub(super) fn requested_structured_output_definition_for_request(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+) -> Result<Option<ToolDefinition>> {
+    structured_output
+        .map(|config| requested_structured_output_definition(registry, config))
+        .transpose()
+}
+
+fn synthetic_structured_output_definition(config: &StructuredOutputConfig) -> ToolDefinition {
+    ToolDefinition {
+        id: STRUCTURED_OUTPUT_TOOL_ID.to_string(),
+        name: STRUCTURED_OUTPUT_TOOL_ID.to_string(),
+        description: config
+            .description
+            .clone()
+            .unwrap_or_else(|| "Return structured output in the requested format".to_string()),
+        handler: "runtime:workflow:structured_output".to_string(),
+        handler_args: Vec::new(),
+        kind: ToolKind::Custom,
+        input_schema: ToolInputSchema::default(),
+        metadata: ToolMetadata::default(),
+        policy: ToolPolicyHints::default(),
+        shared_lib: None,
+        enabled_if: None,
+        display: ToolDisplayHints::default(),
+    }
+}
+
+fn rendered_tool_description(definition: &ToolDefinition) -> String {
+    if definition.id == WEB_SEARCH_TOOL_ID {
+        return render_web_search_description(&definition.description);
+    }
+    definition.description.clone()
+}
+
+fn render_web_search_description(description: &str) -> String {
+    let current_month_year = current_month_year();
+    let specific_line = format!(
+        "- The current month is {current_month_year}. You MUST use this year when searching for recent information, documentation, or current events."
+    );
+    if description.contains(WEB_SEARCH_CURRENT_YEAR_LINE) {
+        return description.replace(WEB_SEARCH_CURRENT_YEAR_LINE, &specific_line);
+    }
+    format!("{description}\n{specific_line}")
+}
+
+fn current_month_year() -> String {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let format =
+        format_description::parse("[month repr:long] [year]").expect("valid month/year format");
+    now.format(&format)
+        .unwrap_or_else(|_| "the current month".to_string())
+}
+
+fn openai_compatible_schema(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut object) => {
+            if object.get("type").and_then(Value::as_str) == Some("array") {
+                let items = object
+                    .remove("items")
+                    .map(openai_compatible_schema)
+                    .unwrap_or_else(|| json!({ "type": "string" }));
+                object.insert("items".to_string(), items);
+            }
+
+            if let Some(Value::Object(properties)) = object.get_mut("properties") {
+                for property in properties.values_mut() {
+                    let normalized = openai_compatible_schema(property.take());
+                    *property = normalized;
+                }
+            }
+
+            if let Some(items) = object.get_mut("items") {
+                let normalized = openai_compatible_schema(items.take());
+                *items = normalized;
+            }
+
+            Value::Object(object)
+        }
+        value => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puffer_tools::ToolRegistry;
+
+    fn structured_output_registry() -> ToolRegistry {
+        ToolRegistry::from_definitions(vec![ToolDefinition {
+            id: STRUCTURED_OUTPUT_TOOL_ID.to_string(),
+            name: STRUCTURED_OUTPUT_TOOL_ID.to_string(),
+            description: "Structured output helper".to_string(),
+            handler: "runtime:workflow:structured_output".to_string(),
+            handler_args: Vec::new(),
+            kind: ToolKind::Custom,
+            input_schema: ToolInputSchema::default(),
+            metadata: ToolMetadata::default(),
+            policy: ToolPolicyHints::default(),
+            shared_lib: None,
+            enabled_if: None,
+            display: ToolDisplayHints::default(),
+        }])
+    }
+
+    #[test]
+    fn payload_validation_rejects_mismatched_instances() {
+        let config = StructuredOutputConfig::new(
+            "shape",
+            json!({
+                "type": "object",
+                "properties": {
+                    "answer": { "type": "string" }
+                },
+                "required": ["answer"],
+                "additionalProperties": false
+            }),
+        );
+        let error = validate_structured_output_payload(&config, &json!({"answer": 42}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Output does not match required schema"));
+    }
+
+    #[test]
+    fn openai_fallback_includes_requested_structured_output_tool() {
+        let registry = structured_output_registry();
+        let config = StructuredOutputConfig::new(
+            "shape",
+            json!({
+                "type": "object",
+                "properties": {
+                    "answer": { "type": "string" }
+                },
+                "required": ["answer"]
+            }),
+        );
+        let tools = openai_tool_definitions(&registry, Some(&config), false).unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, STRUCTURED_OUTPUT_TOOL_ID);
+        assert_eq!(tools[0].parameters["required"], json!(["answer"]));
+    }
+
+    #[test]
+    fn openai_native_path_skips_structured_output_tool() {
+        let registry = structured_output_registry();
+        let config = StructuredOutputConfig::new("shape", json!({ "type": "object" }));
+        let tools = openai_tool_definitions(&registry, Some(&config), true).unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn openai_native_responses_format_is_emitted_when_enabled() {
+        let config = StructuredOutputConfig::new("shape", json!({ "type": "object" }));
+        let text = openai_responses_text_config(Some(&config), true).unwrap();
+        assert_eq!(text.format.kind, "json_schema");
+        assert_eq!(text.format.name, "shape");
+        assert!(text.format.strict);
+    }
+
+    #[test]
+    fn openai_native_responses_format_is_disabled_when_requested() {
+        let config = StructuredOutputConfig::new("shape", json!({ "type": "object" }));
+        assert!(openai_responses_text_config(Some(&config), false).is_none());
+    }
+}

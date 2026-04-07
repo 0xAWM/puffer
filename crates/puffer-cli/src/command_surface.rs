@@ -638,6 +638,7 @@ fn disable_plugin(
         commands: Vec::new(),
         skills: Vec::new(),
         mcp_servers: Vec::new(),
+        lsp_servers: Vec::new(),
     };
     write_yaml(&enabled_path, &placeholder)?;
     println!(
@@ -902,6 +903,7 @@ fn disabled_placeholder_for(plugin: &PluginSpec) -> PluginSpec {
         commands: Vec::new(),
         skills: Vec::new(),
         mcp_servers: Vec::new(),
+        lsp_servers: Vec::new(),
     }
 }
 

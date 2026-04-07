@@ -6,6 +6,7 @@ use puffer_session_store::SessionMetadata;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
+use std::process::Command;
 use std::thread;
 use uuid::Uuid;
 
@@ -50,6 +51,40 @@ fn loaded_agent(
             kind: SourceKind::Builtin,
         },
     }
+}
+
+fn init_git_repo(root: &Path) {
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(root.join("README.md"), "hello\n").unwrap();
+    let status = Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = Command::new("git")
+        .args(["commit", "-qm", "init"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success());
 }
 
 #[test]
@@ -143,5 +178,170 @@ fn execute_agent_tool_background_returns_async_payload_and_output_file() {
         );
         thread::sleep(std::time::Duration::from_millis(20));
     }
+    server.join().unwrap();
+}
+
+#[test]
+fn execute_agent_tool_sync_reports_worktree_isolation_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let body = json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "sync ok"
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+
+    let mut provider = provider();
+    provider.id = "local-anthropic".to_string();
+    provider.base_url = format!("http://{address}");
+    provider.auth_modes.clear();
+    provider.models[0].provider = "local-anthropic".to_string();
+
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider);
+    let session = SessionMetadata {
+        id: Uuid::new_v4(),
+        display_name: None,
+        cwd: temp.path().to_path_buf(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        parent_session_id: None,
+        slug: None,
+        tags: Vec::new(),
+        note: None,
+    };
+    let mut state = AppState::new(PufferConfig::default(), temp.path().to_path_buf(), session);
+    state.current_provider = Some("local-anthropic".to_string());
+    state.current_model = Some("local-anthropic/claude-sonnet-4-5".to_string());
+
+    let resources = LoadedResources {
+        agents: vec![loaded_agent(
+            "general-purpose",
+            "Default agent",
+            "You are a coding subagent.",
+            &["read_file"],
+        )],
+        ..LoadedResources::default()
+    };
+    let output = super::agents::execute_agent_tool(
+        &state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        temp.path(),
+        json!({
+            "description": "Sync request",
+            "prompt": "Do the thing",
+            "isolation": "worktree",
+            "team_name": "alpha",
+            "mode": "plan"
+        }),
+    )
+    .unwrap();
+    let payload: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(payload["status"], "completed");
+    assert_eq!(payload["isolation"], "worktree");
+    assert_eq!(payload["teamName"], "alpha");
+    assert_eq!(payload["mode"], "plan");
+    assert!(payload["worktreePath"].as_str().is_some());
+    assert!(payload["worktreeBranch"].as_str().is_some());
+    server.join().unwrap();
+}
+
+#[test]
+fn execute_agent_tool_background_preserves_worktree_path() {
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let body = json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "background worktree ok"
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+
+    let mut provider = provider();
+    provider.id = "local-anthropic".to_string();
+    provider.base_url = format!("http://{address}");
+    provider.auth_modes.clear();
+    provider.models[0].provider = "local-anthropic".to_string();
+
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider);
+    let session = SessionMetadata {
+        id: Uuid::new_v4(),
+        display_name: None,
+        cwd: temp.path().to_path_buf(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        parent_session_id: None,
+        slug: None,
+        tags: Vec::new(),
+        note: None,
+    };
+    let mut state = AppState::new(PufferConfig::default(), temp.path().to_path_buf(), session);
+    state.current_provider = Some("local-anthropic".to_string());
+    state.current_model = Some("local-anthropic/claude-sonnet-4-5".to_string());
+
+    let resources = LoadedResources {
+        agents: vec![loaded_agent(
+            "general-purpose",
+            "Default agent",
+            "You are a coding subagent.",
+            &["read_file"],
+        )],
+        ..LoadedResources::default()
+    };
+    let output = super::agents::execute_agent_tool(
+        &state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        temp.path(),
+        json!({
+            "description": "Background request",
+            "prompt": "Do the thing",
+            "run_in_background": true,
+            "isolation": "worktree"
+        }),
+    )
+    .unwrap();
+    let payload: Value = serde_json::from_str(&output).unwrap();
+    let worktree_path = payload["worktreePath"].as_str().unwrap();
+    assert!(Path::new(worktree_path).exists());
     server.join().unwrap();
 }

@@ -12,7 +12,10 @@ pub(crate) use command_summary::{
 pub use hooks::run_resource_hooks;
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::{
-    execute_user_prompt_streaming as execute_user_turn_streaming, ToolInvocation, TurnExecution,
+    execute_user_prompt_streaming as execute_user_turn_streaming,
+    execute_user_prompt_streaming_with_structured_output as execute_user_turn_streaming_with_structured_output,
+    execute_user_prompt_with_structured_output as execute_user_turn_with_structured_output,
+    shutdown_runtime_services, StructuredOutputConfig, ToolInvocation, TurnExecution,
     TurnStreamEvent,
 };
 pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
@@ -28,6 +31,7 @@ pub fn reload_runtime_resources(
     providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
 ) -> Result<String> {
+    let _ = shutdown_runtime_services();
     *resources = command_helpers::reload_resources_from_disk(state)?;
     *providers = ProviderRegistry::new();
     for provider in &resources.providers {
