@@ -2,10 +2,9 @@ use super::prompt_border_style;
 use puffer_core::{AppState, CommandSpec};
 use puffer_resources::LoadedResources;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::symbols::border;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 const HOME_WIDE_BREAKPOINT: u16 = 84;
@@ -25,26 +24,15 @@ const FEATURED_HELP_COMMANDS: [&str; 10] = [
 
 /// Renders the empty-session welcome body with width-aware cards.
 pub(super) fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let card_width = area.width.saturating_sub(6).clamp(38, 104);
     let wide = area.width >= HOME_WIDE_BREAKPOINT && area.height >= 12;
-    let desired_height = if wide { 12 } else { 8 };
-    let card_height = desired_height.min(area.height.saturating_sub(1).max(6));
-    let card_area = Rect {
-        x: area.x + area.width.saturating_sub(card_width) / 2,
-        y: area.y,
-        width: card_width,
-        height: card_height,
-    };
-    frame.render_widget(Clear, card_area);
-    let block = Block::default()
-        .title(" Puffer Code ")
-        .borders(Borders::ALL)
-        .border_set(border::ROUNDED)
-        .border_style(prompt_border_style(state));
-    frame.render_widget(&block, card_area);
-    let inner = block.inner(card_area);
-
     if wide {
+        let content_width = area.width.saturating_sub(6).clamp(38, 104);
+        let content_area = Rect {
+            x: area.x + area.width.saturating_sub(content_width) / 2,
+            y: area.y,
+            width: content_width,
+            height: area.height,
+        };
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -52,7 +40,7 @@ pub(super) fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppS
                 Constraint::Length(1),
                 Constraint::Percentage(42),
             ])
-            .split(inner);
+            .split(content_area);
         frame.render_widget(
             Paragraph::new(Text::from(welcome_left_lines(state))).wrap(Wrap { trim: false }),
             columns[0],
@@ -66,11 +54,17 @@ pub(super) fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppS
             columns[2],
         );
     } else {
+        let content_area = Rect {
+            x: area.x.saturating_add(1),
+            y: area.y,
+            width: area.width.saturating_sub(2),
+            height: area.height,
+        };
         frame.render_widget(
             Paragraph::new(Text::from(welcome_compact_lines(state)))
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: false }),
-            inner,
+            content_area,
         );
     }
 }

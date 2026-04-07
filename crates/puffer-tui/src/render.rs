@@ -1,7 +1,9 @@
+mod overlay_list;
 mod panes;
 mod summary;
 mod tool_messages;
 
+use self::overlay_list::{onboarding_fixed_line_count, overlay_selection, visible_overlay_rows};
 use self::panes::{render_empty_state, render_help_pane};
 use self::summary::{
     hint_line, status_compact_line, status_primary_line, status_secondary_line,
@@ -91,14 +93,12 @@ pub(crate) fn render(
         .unwrap_or(false);
     let help_active = help_pane_active(state, &active_overlay);
     let home_active = state.transcript.is_empty() && active_overlay.is_none() && !onboarding_active;
-    let simplified_surface = home_active || help_active;
+    let simplified_surface = help_active;
     let compact_composer = frame.area().width < COMPACT_COMPOSER_BREAKPOINT;
     let footer_height = if onboarding_active {
         4
     } else if help_active {
         2
-    } else if home_active {
-        3
     } else if compact_composer {
         4
     } else if state.statusline_enabled {
@@ -148,13 +148,6 @@ pub(crate) fn render(
         .direction(Direction::Vertical)
         .constraints(if help_active {
             [Constraint::Length(1), Constraint::Length(1)].as_ref()
-        } else if home_active {
-            [
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-            .as_ref()
         } else if onboarding_active {
             [
                 Constraint::Length(1),
@@ -230,8 +223,6 @@ pub(crate) fn render(
         footer[2]
     } else if help_active {
         footer[1]
-    } else if home_active {
-        footer[1]
     } else if compact_composer {
         footer[2]
     } else if state.statusline_enabled {
@@ -243,8 +234,6 @@ pub(crate) fn render(
         Some(footer[3])
     } else if help_active {
         None
-    } else if home_active {
-        Some(footer[2])
     } else if compact_composer {
         Some(footer[3])
     } else if state.statusline_enabled {
@@ -592,25 +581,30 @@ fn render_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState)
         return;
     }
     let width = viewport.width.saturating_sub(8).min(72);
-    let height = overlay_rows(overlay).len() as u16 + 2;
+    let max_height = viewport.height.saturating_sub(2).max(3);
+    let rows = visible_overlay_rows(
+        overlay_rows(overlay),
+        overlay_selection(overlay),
+        usize::from(max_height.saturating_sub(2)),
+    )
+    .into_iter()
+    .map(|row| {
+        ListItem::new(row.text).style(if row.selected {
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        })
+    })
+    .collect::<Vec<_>>();
+    let height = rows.len() as u16 + 2;
     let area = Rect {
         x: viewport.x + viewport.width.saturating_sub(width) / 2,
         y: viewport.y + viewport.height.saturating_sub(height) / 2,
         width,
         height,
     };
-    let rows = overlay_rows(overlay)
-        .into_iter()
-        .map(|row| {
-            ListItem::new(row.text).style(if row.selected {
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            })
-        })
-        .collect::<Vec<_>>();
     frame.render_widget(Clear, area);
     frame.render_widget(
         List::new(rows).block(
@@ -763,6 +757,12 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
 }
 
 fn render_model_entry(entry: &ModelPickerEntry) -> String {
+    if entry.description.trim().is_empty() {
+        return entry.selector.clone();
+    }
+    if entry.selector.eq_ignore_ascii_case(entry.description.trim()) {
+        return entry.description.clone();
+    }
     format!("{}  {}", entry.selector, entry.description)
 }
 
@@ -794,6 +794,7 @@ pub(super) fn prompt_border_style(state: &AppState) -> Style {
     Style::default().fg(color)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct OverlayRow {
     text: String,
     selected: bool,
@@ -804,9 +805,14 @@ fn is_onboarding_overlay(overlay: &OverlayState) -> bool {
 }
 
 fn render_onboarding_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState) {
-    let body_lines = onboarding_body_lines(overlay);
+    let max_height = viewport.height.saturating_sub(2).max(8);
+    let max_rows = usize::from(
+        max_height.saturating_sub((onboarding_fixed_line_count(overlay) + 2) as u16),
+    )
+    .max(1);
+    let body_lines = onboarding_body_lines(overlay, max_rows);
     let width = viewport.width.saturating_sub(12).min(76).max(34);
-    let height = (body_lines.len() as u16 + 2).min(viewport.height.saturating_sub(2));
+    let height = (body_lines.len() as u16 + 2).min(max_height);
     let area = Rect {
         x: viewport.x + viewport.width.saturating_sub(width) / 2,
         y: viewport.y + viewport.height.saturating_sub(height) / 3,
@@ -844,7 +850,7 @@ fn render_onboarding_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &Ov
     }
 }
 
-fn onboarding_body_lines(overlay: &OverlayState) -> Vec<Line<'static>> {
+fn onboarding_body_lines(overlay: &OverlayState, max_rows: usize) -> Vec<Line<'static>> {
     let (title, subtitle, note, rows, footer) = match overlay {
         OverlayState::ThemePicker { .. } => (
             "Let's get started.",
@@ -925,7 +931,7 @@ fn onboarding_body_lines(overlay: &OverlayState) -> Vec<Line<'static>> {
         )));
     }
     lines.push(Line::default());
-    for row in rows {
+    for row in visible_overlay_rows(rows, overlay_selection(overlay), max_rows) {
         let marker = if row.selected { "› " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(
@@ -958,3 +964,5 @@ fn onboarding_body_lines(overlay: &OverlayState) -> Vec<Line<'static>> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod overlay_tests;

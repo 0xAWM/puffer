@@ -4,7 +4,11 @@ use crate::model::{
 };
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
+use reqwest::blocking::RequestBuilder;
 use serde_json::Value;
+
+const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
+const OPENAI_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 /// Performs runtime provider model-discovery requests.
 #[derive(Debug, Clone, Default)]
@@ -29,20 +33,11 @@ impl ModelDiscoveryClient {
         let Some(discovery) = provider.discovery.as_ref() else {
             return Ok(Vec::new());
         };
-        let url = format!(
-            "{}{}",
-            provider.base_url.trim_end_matches('/'),
-            discovery.path
-        );
-        let url = append_query_params(url, &provider.query_params);
+        let discovery_mode = discovery_mode(provider, auth_store);
+        let url = discovery_url(provider, discovery, &discovery_mode);
         let mut request = self.client.get(&url);
-        for (key, value) in &provider.headers {
-            request = request.header(key, value);
-        }
-        for (key, value) in &discovery.headers {
-            request = request.header(key, value);
-        }
-        request = apply_discovery_auth(request, provider, auth_store);
+        request = apply_discovery_headers(request, provider, discovery, &discovery_mode);
+        request = apply_discovery_auth(request, provider, auth_store, &discovery_mode);
         let response = request
             .send()
             .with_context(|| format!("failed to fetch models from {url}"))?;
@@ -56,7 +51,12 @@ impl ModelDiscoveryClient {
         let payload = response
             .json::<Value>()
             .with_context(|| format!("failed to parse discovery response from {url}"))?;
-        parse_discovered_models(provider, discovery, &payload)
+        match discovery_mode {
+            DiscoveryMode::Standard => parse_discovered_models(provider, discovery, &payload),
+            DiscoveryMode::OpenAiOAuthCodex => {
+                parse_codex_discovered_models(provider, discovery, &payload)
+            }
+        }
     }
 }
 
@@ -73,10 +73,90 @@ pub fn merge_discovered_models(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscoveryMode {
+    Standard,
+    OpenAiOAuthCodex,
+}
+
+fn discovery_mode(provider: &ProviderDescriptor, auth_store: &AuthStore) -> DiscoveryMode {
+    match auth_store.get(provider.id.as_str()) {
+        Some(StoredCredential::OAuth(_)) if provider.id == "openai" => DiscoveryMode::OpenAiOAuthCodex,
+        _ => DiscoveryMode::Standard,
+    }
+}
+
+fn discovery_url(
+    provider: &ProviderDescriptor,
+    discovery: &ModelDiscoveryConfig,
+    mode: &DiscoveryMode,
+) -> String {
+    match mode {
+        DiscoveryMode::Standard => {
+            let url = format!(
+                "{}{}",
+                provider.base_url.trim_end_matches('/'),
+                normalized_discovery_path(&provider.base_url, &discovery.path)
+            );
+            append_query_params(url, &provider.query_params)
+        }
+        DiscoveryMode::OpenAiOAuthCodex => {
+            let url = format!(
+                "{}/models",
+                openai_oauth_discovery_base_url(provider).trim_end_matches('/')
+            );
+            let mut parsed = reqwest::Url::parse(&url).unwrap_or_else(|_| {
+                reqwest::Url::parse(OPENAI_CHATGPT_BASE_URL)
+                    .expect("default OpenAI ChatGPT base URL should be valid")
+            });
+            {
+                let mut pairs = parsed.query_pairs_mut();
+                for (key, value) in &provider.query_params {
+                    pairs.append_pair(key, value);
+                }
+                pairs.append_pair("client_version", env!("CARGO_PKG_VERSION"));
+            }
+            parsed.to_string()
+        }
+    }
+}
+
+fn normalized_discovery_path(base_url: &str, path: &str) -> String {
+    if base_url.trim_end_matches('/').ends_with("/v1") && path.starts_with("/v1/") {
+        path[3..].to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+fn apply_discovery_headers(
+    mut request: RequestBuilder,
+    provider: &ProviderDescriptor,
+    discovery: &ModelDiscoveryConfig,
+    mode: &DiscoveryMode,
+) -> RequestBuilder {
+    for (key, value) in &provider.headers {
+        request = request.header(key, value);
+    }
+    for (key, value) in &discovery.headers {
+        request = request.header(key, value);
+    }
+    if matches!(mode, DiscoveryMode::OpenAiOAuthCodex) {
+        request = request.header("originator", OPENAI_CODEX_ORIGINATOR);
+        request = request.header(
+            reqwest::header::USER_AGENT,
+            format!("{OPENAI_CODEX_ORIGINATOR}/{}", env!("CARGO_PKG_VERSION")),
+        );
+        request = request.header("version", env!("CARGO_PKG_VERSION"));
+    }
+    request
+}
+
 fn apply_discovery_auth(
     mut request: reqwest::blocking::RequestBuilder,
     provider: &ProviderDescriptor,
     auth_store: &AuthStore,
+    mode: &DiscoveryMode,
 ) -> reqwest::blocking::RequestBuilder {
     let auth_family = provider_auth_family(provider);
     match auth_store.get(provider.id.as_str()) {
@@ -87,10 +167,15 @@ fn apply_discovery_auth(
         Some(StoredCredential::ApiKey { key }) => {
             request.header("Authorization", format!("Bearer {key}"))
         }
-        Some(StoredCredential::OAuth(credential)) => request.header(
-            "Authorization",
-            format!("Bearer {}", credential.access_token),
-        ),
+        Some(StoredCredential::OAuth(credential)) => {
+            request = request.header("Authorization", format!("Bearer {}", credential.access_token));
+            if matches!(mode, DiscoveryMode::OpenAiOAuthCodex) {
+                if let Some(account_id) = credential.account_id.as_deref() {
+                    request = request.header("ChatGPT-Account-ID", account_id);
+                }
+            }
+            request
+        }
         None => request,
     }
 }
@@ -187,11 +272,78 @@ fn default_display_name<'a>(item: &'a Value, format: &ModelDiscoveryFormat) -> O
     }
 }
 
+fn parse_codex_discovered_models(
+    provider: &ProviderDescriptor,
+    discovery: &ModelDiscoveryConfig,
+    payload: &Value,
+) -> Result<Vec<ModelDescriptor>> {
+    let items = payload
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("discovery response for {} missing models array", provider.id))?;
+    let mut models = Vec::new();
+    for item in items {
+        if item.get("visibility").and_then(Value::as_str) == Some("hide") {
+            continue;
+        }
+        if item.get("visibility").and_then(Value::as_str) == Some("none") {
+            continue;
+        }
+        if item
+            .get("supported_in_api")
+            .and_then(Value::as_bool)
+            .is_some_and(|supported| !supported)
+        {
+            continue;
+        }
+        let id = item
+            .get("slug")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("discovery model for {} missing slug", provider.id))?;
+        let display_name = item
+            .get("display_name")
+            .and_then(Value::as_str)
+            .unwrap_or(id);
+        let context_window = item
+            .get("context_window")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(discovery.context_window);
+        let supports_reasoning = item
+            .get("supported_reasoning_levels")
+            .and_then(Value::as_array)
+            .map(|levels| !levels.is_empty())
+            .unwrap_or(discovery.supports_reasoning);
+        models.push(ModelDescriptor {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            provider: provider.id.clone(),
+            api: discovery.api.clone(),
+            context_window,
+            max_output_tokens: discovery.max_output_tokens,
+            supports_reasoning,
+        });
+    }
+    Ok(models)
+}
+
+fn openai_oauth_discovery_base_url(provider: &ProviderDescriptor) -> String {
+    let trimmed = provider.base_url.trim_end_matches('/');
+    if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
+        trimmed.to_string()
+    } else {
+        OPENAI_CHATGPT_BASE_URL.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::AuthMode;
+    use crate::auth::{AuthMode, OAuthCredential};
     use indexmap::IndexMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     fn provider(discovery: ModelDiscoveryConfig) -> ProviderDescriptor {
         ProviderDescriptor {
@@ -358,5 +510,161 @@ mod tests {
         assert!(request.contains("x-api-key: sk-ant-custom"));
         assert!(request.contains("anthropic-version: 2023-06-01"));
         assert!(!request.contains("authorization: Bearer"));
+    }
+
+    #[test]
+    fn openai_oauth_discovery_uses_codex_models_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || -> String {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).expect("request");
+            let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+            let body = serde_json::json!({
+                "models": [
+                    {
+                        "slug": "gpt-5.3-codex",
+                        "display_name": "gpt-5.3-codex",
+                        "supported_in_api": true,
+                        "visibility": "list",
+                        "supported_reasoning_levels": [
+                            { "effort": "medium", "description": "medium" }
+                        ],
+                        "context_window": 272000
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("response write");
+            request
+        });
+        let mut auth = AuthStore::default();
+        auth.set_oauth(
+            "openai",
+            OAuthCredential {
+                access_token: "token-123".to_string(),
+                refresh_token: "refresh-123".to_string(),
+                expires_at_ms: 0,
+                account_id: Some("acct-123".to_string()),
+                organization_id: None,
+                email: None,
+                plan_type: None,
+                rate_limit_tier: None,
+                scopes: Vec::new(),
+                organization_name: None,
+                organization_role: None,
+                workspace_role: None,
+            },
+        );
+        let mut provider = provider(ModelDiscoveryConfig {
+            path: "/v1/models".to_string(),
+            response: ModelDiscoveryFormat::OpenAiModels,
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+            items_field: "data".to_string(),
+            id_field: "id".to_string(),
+            display_name_field: None,
+            headers: IndexMap::new(),
+        });
+        provider.id = "openai".to_string();
+        provider.base_url = format!("http://{address}/api/codex");
+        let models = ModelDiscoveryClient::new()
+            .discover_models(&provider, &auth)
+            .expect("discovery should succeed");
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-5.3-codex");
+        let request = server.join().expect("request");
+        assert!(request.contains("GET /api/codex/models?client_version="));
+        assert!(request.contains("authorization: Bearer token-123"));
+        assert!(request.contains("chatgpt-account-id: acct-123"));
+        assert!(request.contains("originator: codex_cli_rs"));
+    }
+
+    #[test]
+    fn openai_oauth_default_base_url_uses_chatgpt_backend() {
+        let provider = ProviderDescriptor {
+            id: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com".to_string(),
+            default_api: "openai-responses".to_string(),
+            auth_modes: vec![AuthMode::OAuth],
+            headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            discovery: None,
+            models: Vec::new(),
+        };
+
+        assert_eq!(
+            openai_oauth_discovery_base_url(&provider),
+            OPENAI_CHATGPT_BASE_URL
+        );
+    }
+
+    #[test]
+    fn standard_discovery_avoids_duplicate_v1_prefix() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || -> String {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).expect("request");
+            let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+            let body = serde_json::json!({
+                "data": [
+                    { "id": "gpt-5" },
+                    { "id": "gpt-5.4" }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("response write");
+            request
+        });
+        let provider = ProviderDescriptor {
+            id: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: format!("http://{address}/v1"),
+            default_api: "openai-responses".to_string(),
+            auth_modes: vec![AuthMode::ApiKey],
+            headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            discovery: Some(ModelDiscoveryConfig {
+                path: "/v1/models".to_string(),
+                response: ModelDiscoveryFormat::OpenAiModels,
+                api: "openai-responses".to_string(),
+                context_window: 272_000,
+                max_output_tokens: 16_384,
+                supports_reasoning: true,
+                items_field: "data".to_string(),
+                id_field: "id".to_string(),
+                display_name_field: None,
+                headers: IndexMap::new(),
+            }),
+            models: Vec::new(),
+        };
+        let mut auth = AuthStore::default();
+        auth.set_api_key("openai", "sk-test");
+
+        let models = ModelDiscoveryClient::new()
+            .discover_models(&provider, &auth)
+            .expect("discovery should succeed");
+
+        assert_eq!(models.len(), 2);
+        let request = server.join().expect("request");
+        assert!(request.contains("GET /v1/models HTTP/1.1"));
+        assert!(!request.contains("GET /v1/v1/models HTTP/1.1"));
     }
 }

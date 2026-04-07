@@ -125,10 +125,23 @@ impl ProviderRegistry {
     pub fn discover_and_merge_all(&mut self, auth_store: &AuthStore) -> Result<()> {
         let client = ModelDiscoveryClient::new();
         let provider_ids = self.providers.keys().cloned().collect::<Vec<_>>();
+        let mut failures = Vec::new();
         for provider_id in provider_ids {
-            self.discover_and_merge_provider_with_client(&provider_id, auth_store, &client)?;
+            if let Err(error) =
+                self.discover_and_merge_provider_with_client(&provider_id, auth_store, &client)
+            {
+                failures.push(format!("{provider_id}: {error}"));
+            }
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "model discovery failed for {} provider(s): {}",
+                failures.len(),
+                failures.join("; ")
+            ))
+        }
     }
 
     /// Discovers and merges runtime models for one provider when discovery is configured.
@@ -360,5 +373,88 @@ mod tests {
                 .map(String::as_str),
             Some("2025-01-01")
         );
+    }
+
+    #[test]
+    fn discover_and_merge_all_continues_after_provider_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer).expect("request");
+            let body = serde_json::json!({
+                "data": [
+                    { "id": "gpt-5" },
+                    { "id": "gpt-5.4" }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response write");
+        });
+
+        let mut failing = provider_descriptor();
+        failing.id = "anthropic".to_string();
+        failing.base_url = "http://127.0.0.1:1".to_string();
+        failing.discovery = Some(ModelDiscoveryConfig {
+            path: "/v1/models".to_string(),
+            response: ModelDiscoveryFormat::AnthropicModels,
+            api: "anthropic-messages".to_string(),
+            context_window: 200_000,
+            max_output_tokens: 8_192,
+            supports_reasoning: true,
+            items_field: "data".to_string(),
+            id_field: "id".to_string(),
+            display_name_field: None,
+            headers: IndexMap::new(),
+        });
+
+        let mut succeeding = provider_descriptor();
+        succeeding.id = "openai".to_string();
+        succeeding.base_url = format!("http://{address}/v1");
+        succeeding.default_api = "openai-responses".to_string();
+        succeeding.discovery = Some(ModelDiscoveryConfig {
+            path: "/v1/models".to_string(),
+            response: ModelDiscoveryFormat::OpenAiModels,
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+            items_field: "data".to_string(),
+            id_field: "id".to_string(),
+            display_name_field: None,
+            headers: IndexMap::new(),
+        });
+        succeeding.models = vec![ModelDescriptor {
+            id: "gpt-5".to_string(),
+            display_name: "GPT-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+        }];
+
+        let mut registry = ProviderRegistry::new();
+        registry.register(failing);
+        registry.register(succeeding);
+        let mut auth = AuthStore::default();
+        auth.set_api_key("openai", "sk-test");
+
+        let error = registry
+            .discover_and_merge_all(&auth)
+            .expect_err("one provider should fail");
+        assert!(error.to_string().contains("anthropic"));
+        let openai = registry.provider("openai").expect("openai provider");
+        assert!(openai.models.iter().any(|model| model.id == "gpt-5.4"));
+
+        server.join().expect("server");
     }
 }

@@ -690,6 +690,9 @@ fn execute_local_command(
                         "No provider is selected. Use onboarding or /login first.".to_string(),
                     );
                 };
+                let discovery_error = providers
+                    .discover_and_merge_provider(provider_id, auth_store)
+                    .err();
                 let Some(provider) = providers.provider(provider_id) else {
                     return emit_system(
                         state,
@@ -703,10 +706,14 @@ fn execute_local_command(
                     .map(|model| model.id.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
+                let mut message = format!("Available models for {provider_id}: {models}");
+                if let Some(error) = discovery_error {
+                    message.push_str(&format!("\nmodel refresh failed: {error}"));
+                }
                 emit_system(
                     state,
                     session_store,
-                    format!("Available models for {provider_id}: {models}"),
+                    message,
                 )
             } else if args == "refresh" {
                 let Some(provider_id) = state.current_provider.as_deref() else {
@@ -766,6 +773,7 @@ fn execute_local_command(
                 } else {
                     args
                 };
+                let _ = providers.discover_and_merge_provider(provider_id, auth_store);
                 let Some(provider) = providers.provider(provider_id) else {
                     return emit_system(
                         state,

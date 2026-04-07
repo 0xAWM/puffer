@@ -38,7 +38,7 @@ pub(crate) fn needs_initial_provider_setup(state: &AppState, providers: &Provide
 /// Builds the initial onboarding overlay when provider/model setup is incomplete.
 pub(crate) fn initial_overlay(
     state: &AppState,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
 ) -> Result<Option<OverlayState>> {
     if !needs_initial_provider_setup(state, providers)
@@ -59,7 +59,7 @@ pub(crate) fn initial_overlay(
 /// Builds a command-driven picker overlay, including provider-scoped model selection.
 pub(crate) fn overlay_from_command(
     state: &AppState,
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
     session_store: &SessionStore,
     submitted: &str,
@@ -82,10 +82,10 @@ pub(crate) fn overlay_from_command(
                 })
             }
         }
-        "model" if args.is_empty() => state
-            .current_provider
-            .as_deref()
-            .and_then(|provider_id| model_picker(providers, provider_id, false)),
+        "model" if args.is_empty() => state.current_provider.as_deref().and_then(|provider_id| {
+            refresh_provider_models_best_effort(providers, auth_store, provider_id);
+            model_picker(providers, provider_id, false)
+        }),
         "agents" if args.is_empty() => {
             let entries = load_agent_picker_entries(&state.cwd, state.current_model.as_deref())?;
             if entries.is_empty() {
@@ -109,7 +109,7 @@ pub(crate) fn overlay_from_command(
 
 /// Builds the next auth-or-model overlay for one provider.
 pub(crate) fn provider_setup_overlay(
-    providers: &ProviderRegistry,
+    providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
     provider_id: &str,
 ) -> Result<Option<OverlayState>> {
@@ -119,6 +119,7 @@ pub(crate) fn provider_setup_overlay(
     if needs_auth_choice(provider, auth_store) {
         return auth_picker(providers, auth_store, provider_id, true);
     }
+    refresh_provider_models_best_effort(providers, auth_store, provider_id);
     Ok(model_picker(providers, provider_id, true))
 }
 
@@ -322,6 +323,14 @@ fn import_label(candidate: &ExternalImportCandidate) -> String {
     }
 }
 
+fn refresh_provider_models_best_effort(
+    providers: &mut ProviderRegistry,
+    auth_store: &AuthStore,
+    provider_id: &str,
+) {
+    let _ = providers.discover_and_merge_provider(provider_id, auth_store);
+}
+
 fn model_picker(
     providers: &ProviderRegistry,
     provider_id: &str,
@@ -394,5 +403,178 @@ fn provider_rank(provider_id: &str) -> (u8, &str) {
         "anthropic" => (0, provider_id),
         "openai" | "openai-codex" | "azure-openai-responses" => (1, provider_id),
         _ => (2, provider_id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puffer_provider_registry::{AuthMode, ModelDescriptor, ModelDiscoveryConfig, ModelDiscoveryFormat};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn openai_provider(address: std::net::SocketAddr) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: format!("http://{address}/api/codex"),
+            default_api: "openai-responses".to_string(),
+            auth_modes: vec![AuthMode::OAuth],
+            headers: Default::default(),
+            query_params: Default::default(),
+            discovery: Some(ModelDiscoveryConfig {
+                path: "/v1/models".to_string(),
+                response: ModelDiscoveryFormat::OpenAiModels,
+                api: "openai-responses".to_string(),
+                context_window: 272_000,
+                max_output_tokens: 16_384,
+                supports_reasoning: true,
+                items_field: "data".to_string(),
+                id_field: "id".to_string(),
+                display_name_field: None,
+                headers: Default::default(),
+            }),
+            models: vec![ModelDescriptor {
+                id: "gpt-5".to_string(),
+                display_name: "GPT-5".to_string(),
+                provider: "openai".to_string(),
+                api: "openai-responses".to_string(),
+                context_window: 272_000,
+                max_output_tokens: 16_384,
+                supports_reasoning: true,
+            }],
+        }
+    }
+
+    fn spawn_model_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer).expect("request");
+            let body = serde_json::json!({
+                "models": [
+                    {
+                        "slug": "gpt-5",
+                        "display_name": "gpt-5",
+                        "supported_in_api": true,
+                        "visibility": "list",
+                        "supported_reasoning_levels": [
+                            { "effort": "medium", "description": "medium" }
+                        ],
+                        "context_window": 272000
+                    },
+                    {
+                        "slug": "gpt-4.1",
+                        "display_name": "gpt-4.1",
+                        "supported_in_api": true,
+                        "visibility": "list",
+                        "supported_reasoning_levels": [
+                            { "effort": "medium", "description": "medium" }
+                        ],
+                        "context_window": 128000
+                    },
+                    {
+                        "slug": "gpt-4.1-mini",
+                        "display_name": "gpt-4.1-mini",
+                        "supported_in_api": true,
+                        "visibility": "list",
+                        "supported_reasoning_levels": [
+                            { "effort": "medium", "description": "medium" }
+                        ],
+                        "context_window": 128000
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response write");
+        });
+        address
+    }
+
+    #[test]
+    fn provider_setup_overlay_refreshes_models_after_auth() {
+        let address = spawn_model_server();
+        let mut providers = ProviderRegistry::new();
+        providers.register(openai_provider(address));
+        let mut auth_store = AuthStore::default();
+        auth_store.set_oauth(
+            "openai",
+            puffer_provider_registry::OAuthCredential {
+                access_token: "token".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let overlay = provider_setup_overlay(&mut providers, &auth_store, "openai")
+            .expect("overlay result");
+
+        match overlay {
+            Some(OverlayState::ModelPicker { entries, .. }) => {
+                assert!(entries.iter().any(|entry| entry.selector == "gpt-4.1"));
+                assert!(entries.iter().any(|entry| entry.selector == "gpt-4.1-mini"));
+            }
+            other => panic!("expected model picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overlay_from_model_command_refreshes_active_provider_models() {
+        let address = spawn_model_server();
+        let mut providers = ProviderRegistry::new();
+        providers.register(openai_provider(address));
+        let mut auth_store = AuthStore::default();
+        auth_store.set_oauth(
+            "openai",
+            puffer_provider_registry::OAuthCredential {
+                access_token: "token".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut state = AppState::new(
+            puffer_config::PufferConfig::default(),
+            std::path::PathBuf::from("/workspace/puffer"),
+            puffer_session_store::SessionMetadata {
+                id: uuid::Uuid::nil(),
+                display_name: None,
+                cwd: std::path::PathBuf::from("/workspace/puffer"),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                parent_session_id: None,
+                slug: None,
+                tags: Vec::new(),
+                note: None,
+            },
+        );
+        state.current_provider = Some("openai".to_string());
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let session_store = SessionStore::from_paths(&ConfigPaths::discover(tempdir.path()))
+            .expect("session store");
+
+        let overlay = overlay_from_command(
+            &state,
+            &mut providers,
+            &auth_store,
+            &session_store,
+            "/model",
+        )
+        .expect("overlay result");
+
+        match overlay {
+            Some(OverlayState::ModelPicker { entries, .. }) => {
+                assert!(entries.iter().any(|entry| entry.selector == "gpt-4.1"));
+                assert!(entries.iter().any(|entry| entry.selector == "gpt-4.1-mini"));
+            }
+            other => panic!("expected model picker, got {other:?}"),
+        }
     }
 }
