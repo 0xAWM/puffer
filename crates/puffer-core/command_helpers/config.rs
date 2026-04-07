@@ -1,12 +1,14 @@
 use super::emit_system;
+use crate::permissions::{
+    load_or_initialize_permissions, load_or_initialize_sandbox_settings, normalize_tool_id,
+    write_permissions, write_sandbox_settings, PermissionsSettings, SandboxSettings,
+};
 use crate::AppState;
 use anyhow::Result;
 use puffer_config::{ensure_workspace_dirs, save_user_config, ConfigPaths};
 use puffer_resources::{hook_by_id, LoadedResources};
 use puffer_session_store::SessionStore;
 use puffer_tools::ToolRegistry;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
@@ -374,31 +376,10 @@ pub(crate) fn handle_hooks_command(
     )
 }
 
-fn normalize_tool_id(tool: &str) -> String {
-    tool.trim().replace('-', "_")
-}
-
 fn set_permission_level(settings: &mut PermissionsSettings, tool: &str, level: &str) {
     settings
         .tools
         .insert(normalize_tool_id(tool), level.to_string());
-}
-
-fn load_or_initialize_permissions(
-    path: &PathBuf,
-    resources: &LoadedResources,
-) -> Result<PermissionsSettings> {
-    if path.exists() {
-        return Ok(toml::from_str(&fs::read_to_string(path)?)?);
-    }
-    let default = default_permissions_contents(resources);
-    fs::write(path, default)?;
-    Ok(toml::from_str(&fs::read_to_string(path)?)?)
-}
-
-fn write_permissions(path: &PathBuf, settings: &PermissionsSettings) -> Result<()> {
-    fs::write(path, toml::to_string_pretty(settings)?)?;
-    Ok(())
 }
 
 fn render_permissions_summary(path: &PathBuf, settings: &PermissionsSettings) -> String {
@@ -538,61 +519,10 @@ fn default_keybindings_contents() -> &'static str {
     "submit = \"enter\"\nclear_input = \"esc\"\nexit = \"ctrl+c\"\n"
 }
 
-fn default_permissions_contents(resources: &LoadedResources) -> String {
-    let mut text = String::from("[tools]\n");
-    for tool in &resources.tools {
-        let key = tool.value.id.replace('-', "_");
-        let _ = writeln!(&mut text, "{key} = \"ask\"");
-    }
-    if resources.tools.is_empty() {
-        text.push_str("bash = \"ask\"\n");
-    }
-    text
-}
-
 fn default_hooks_contents() -> &'static str {
     "id: tool-end\n\
 event: tool_end\n\
 command: echo \"$PUFFER_TOOL_ID:$PUFFER_TOOL_SUCCESS\"\n"
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct PermissionsSettings {
-    #[serde(default)]
-    tools: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SandboxSettings {
-    mode: String,
-    #[serde(default)]
-    auto_allow: bool,
-    #[serde(default)]
-    allow_unsandboxed_fallback: bool,
-    #[serde(default)]
-    excluded_commands: Vec<String>,
-}
-
-fn load_or_initialize_sandbox_settings(
-    path: &PathBuf,
-    state: &AppState,
-) -> Result<SandboxSettings> {
-    if path.exists() {
-        return Ok(toml::from_str(&fs::read_to_string(path)?)?);
-    }
-    let settings = SandboxSettings {
-        mode: state.sandbox_mode.clone(),
-        auto_allow: false,
-        allow_unsandboxed_fallback: false,
-        excluded_commands: Vec::new(),
-    };
-    write_sandbox_settings(path, &settings)?;
-    Ok(settings)
-}
-
-fn write_sandbox_settings(path: &PathBuf, settings: &SandboxSettings) -> Result<()> {
-    fs::write(path, toml::to_string_pretty(settings)?)?;
-    Ok(())
 }
 
 fn render_sandbox_summary(path: &PathBuf, settings: &SandboxSettings) -> String {

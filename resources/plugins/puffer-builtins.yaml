@@ -19,11 +19,13 @@ lsp_servers:
   - id: rust-analyzer
     display_name: Rust Analyzer
     command: rust-analyzer
+    install_hint: rustup component add rust-analyzer
     extension_to_language:
       .rs: rust
   - id: typescript-language-server
     display_name: TypeScript Language Server
     command: typescript-language-server
+    install_hint: npm install -g typescript typescript-language-server
     args:
       - --stdio
     extension_to_language:
@@ -36,6 +38,7 @@ lsp_servers:
   - id: vtsls
     display_name: vtsls
     command: vtsls
+    install_hint: npm install -g typescript vtsls
     args:
       - --stdio
     extension_to_language:
@@ -48,6 +51,7 @@ lsp_servers:
   - id: pyright-langserver
     display_name: Pyright
     command: pyright-langserver
+    install_hint: npm install -g pyright
     args:
       - --stdio
     extension_to_language:
@@ -55,6 +59,7 @@ lsp_servers:
   - id: basedpyright-langserver
     display_name: BasedPyright
     command: basedpyright-langserver
+    install_hint: pipx install basedpyright
     args:
       - --stdio
     extension_to_language:
@@ -62,11 +67,13 @@ lsp_servers:
   - id: gopls
     display_name: gopls
     command: gopls
+    install_hint: go install golang.org/x/tools/gopls@latest
     extension_to_language:
       .go: go
   - id: clangd
     display_name: clangd
     command: clangd
+    install_hint: Install clangd from your system package manager or LLVM distribution
     extension_to_language:
       .c: c
       .cc: cpp

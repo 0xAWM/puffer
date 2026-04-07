@@ -375,17 +375,13 @@ pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>
     }
 
     let agents = load_store::<AgentStore>(&agents_path(cwd))?;
-    if let Some(agent) = agents
-        .agents
-        .iter()
-        .find(|agent| {
-            agent.agent_id.eq_ignore_ascii_case(target)
-                || agent
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(target))
-        })
-    {
+    if let Some(agent) = agents.agents.iter().find(|agent| {
+        agent.agent_id.eq_ignore_ascii_case(target)
+            || agent
+                .name
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(target))
+    }) {
         return Ok(vec![agent.agent_id.clone()]);
     }
 
@@ -465,8 +461,7 @@ pub(super) fn set_config_value(state: &mut AppState, setting: &str, value: Value
             state.config.openai_headers = value_to_string_map(value, "openai_headers")?;
         }
         "openai_query_params" => {
-            state.config.openai_query_params =
-                value_to_string_map(value, "openai_query_params")?;
+            state.config.openai_query_params = value_to_string_map(value, "openai_query_params")?;
         }
         "no_alt_screen" => {
             state.config.ui.no_alt_screen = value
@@ -512,7 +507,6 @@ pub(super) fn detect_powershell_binary() -> Result<String> {
     }
     bail!("PowerShell is not installed on this system")
 }
-
 
 pub(super) fn load_store<T>(path: &Path) -> Result<T>
 where

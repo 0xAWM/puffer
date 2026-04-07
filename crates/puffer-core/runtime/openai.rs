@@ -3,19 +3,20 @@ use super::{
     send_http_request_raw, ToolExecutionBackend, ToolInvocation, TurnStreamEvent, APP_VERSION,
     OPENAI_CHATGPT_BASE_URL,
 };
+use crate::permissions::load_runtime_permission_context;
 mod support;
 
-pub(super) use super::structured_output_support::openai_tool_definitions;
 pub(super) use self::support::build_codex_openai_request_body;
-use super::structured_output_support::{
-    openai_chat_completion_tools, openai_chat_response_format, openai_responses_text_config,
-    StructuredOutputConfig,
-};
 use self::support::{
     extend_input_with_continuation, is_openai_structured_output_error,
-    openai_registry_credential, prefer_native_structured_output,
-    structured_output_endpoint_id,
+    openai_model_supports_reasoning, openai_registry_credential, openai_responses_path,
+    prefer_native_structured_output, structured_output_endpoint_id,
     OPENAI_STRUCTURED_OUTPUT_FAMILY,
+};
+pub(super) use super::structured_output_support::openai_tool_definitions;
+use super::structured_output_support::{
+    openai_chat_completion_tools_for_request, openai_chat_response_format,
+    openai_responses_text_config, openai_tool_definitions_for_request, StructuredOutputConfig,
 };
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
@@ -23,13 +24,11 @@ use puffer_provider_openai::{
     build_chat_completions_request, build_json_post_request, extract_chat_completions_text,
     extract_chat_completions_tool_calls, extract_responses_text, extract_responses_tool_calls,
     parse_chat_completions_response, parse_responses_response, refresh_oauth_token, OpenAIAuth,
-    OpenAIChatCompletionsRequest, OpenAIChatFunctionCall, OpenAIChatMessage,
-    OpenAIChatToolCall, OpenAIRequestConfig, OpenAIResponseToolCall,
-    OpenAIResponsesFunctionCallOutput, OpenAIResponsesResponse, OpenAIResponsesToolChoiceMode,
+    OpenAIChatCompletionsRequest, OpenAIChatFunctionCall, OpenAIChatMessage, OpenAIChatToolCall,
+    OpenAIRequestConfig, OpenAIResponseToolCall, OpenAIResponsesFunctionCallOutput,
+    OpenAIResponsesResponse, OpenAIResponsesToolChoiceMode,
 };
-use puffer_provider_registry::{
-    AuthStore, ProviderDescriptor, ProviderRegistry, StoredCredential,
-};
+use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use reqwest::blocking::{Client, Response};
@@ -115,28 +114,35 @@ fn execute_openai_once(
 ) -> Result<super::TurnExecution> {
     let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
+    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
     let text = openai_responses_text_config(structured_output, use_native);
-    let tools = openai_tool_definitions(&registry, structured_output, use_native)?;
+    let tools = openai_tool_definitions_for_request(
+        &registry,
+        structured_output,
+        use_native,
+        Some(&permission_context),
+    )?;
     let mut next_input = transcript_to_openai_input(state, input)?;
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
 
     for _ in 0..8 {
-        let response = send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
-            let body = build_codex_openai_request_body(
-                state,
-                &model_id,
-                next_input.clone(),
-                &tools,
-                supports_reasoning,
-                text.clone(),
-            );
-            build_json_post_request(
-                request_config,
-                openai_responses_path(&request_config.base_url),
-                &body,
-            )
-        })?;
+        let response =
+            send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
+                let body = build_codex_openai_request_body(
+                    state,
+                    &model_id,
+                    next_input.clone(),
+                    &tools,
+                    supports_reasoning,
+                    text.clone(),
+                );
+                build_json_post_request(
+                    request_config,
+                    openai_responses_path(&request_config.base_url),
+                    &body,
+                )
+            })?;
 
         let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
         let tool_calls = extract_responses_tool_calls(&parsed)?;
@@ -255,8 +261,14 @@ where
     }
 
     let registry = ToolRegistry::from_resources(resources);
+    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
     let text = openai_responses_text_config(structured_output, use_native);
-    let tools = openai_tool_definitions(&registry, structured_output, use_native)?;
+    let tools = openai_tool_definitions_for_request(
+        &registry,
+        structured_output,
+        use_native,
+        Some(&permission_context),
+    )?;
     let mut next_input = transcript_to_openai_input(state, input)?;
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
@@ -381,8 +393,14 @@ fn execute_openai_completions_once(
 ) -> Result<super::TurnExecution> {
     let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
+    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
     let response_format = openai_chat_response_format(structured_output, use_native);
-    let tools = openai_chat_completion_tools(&registry, structured_output, use_native)?;
+    let tools = openai_chat_completion_tools_for_request(
+        &registry,
+        structured_output,
+        use_native,
+        Some(&permission_context),
+    )?;
     let mut messages = transcript_to_openai_chat_messages(state, input)?;
     let mut invocations = Vec::new();
 
@@ -949,7 +967,10 @@ fn is_codex_openai_provider(provider: &ProviderDescriptor) -> bool {
             .base_url
             .trim_end_matches('/')
             .contains("/backend-api")
-        || provider.base_url.trim_end_matches('/').contains("/api/codex")
+        || provider
+            .base_url
+            .trim_end_matches('/')
+            .contains("/api/codex")
 }
 
 fn openai_base_url_for_auth(provider: &ProviderDescriptor, oauth: bool) -> String {
@@ -962,25 +983,4 @@ fn openai_base_url_for_auth(provider: &ProviderDescriptor, oauth: bool) -> Strin
     } else {
         OPENAI_CHATGPT_BASE_URL.to_string()
     }
-}
-
-pub(super) fn openai_responses_path(base_url: &str) -> &'static str {
-    let trimmed = base_url.trim_end_matches('/');
-    if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
-        "/responses"
-    } else {
-        "/v1/responses"
-    }
-}
-
-pub(super) fn openai_model_supports_reasoning(
-    provider: &ProviderDescriptor,
-    model_id: &str,
-) -> bool {
-    provider
-        .models
-        .iter()
-        .find(|model| model.id == model_id)
-        .map(|model| model.supports_reasoning)
-        .unwrap_or(false)
 }

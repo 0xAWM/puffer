@@ -287,9 +287,18 @@ fn execute_notebook_edit(cwd: &Path, input: Value) -> Result<String> {
     }))?)
 }
 
-fn execute_list_mcp_resources(resources: &LoadedResources, cwd: &Path, input: Value) -> Result<String> {
+fn execute_list_mcp_resources(
+    resources: &LoadedResources,
+    cwd: &Path,
+    input: Value,
+) -> Result<String> {
     let input: ListMcpInput = serde_json::from_value(input)?;
-    if let Some(server) = input.server.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(server) = input
+        .server
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let available = available_resource_servers(resources, cwd);
         if !available
             .iter()
@@ -305,25 +314,29 @@ fn execute_list_mcp_resources(resources: &LoadedResources, cwd: &Path, input: Va
         .iter()
         .any(|candidate| matches_server_filter_name(candidate, input.server.as_deref()))
     {
-        serde_json::from_str::<Vec<Value>>(&list_live_mcp_resources(resources, cwd, input.server.as_deref())?)
-            .context("failed to decode live MCP resources")?
+        serde_json::from_str::<Vec<Value>>(&list_live_mcp_resources(
+            resources,
+            cwd,
+            input.server.as_deref(),
+        )?)
+        .context("failed to decode live MCP resources")?
     } else {
         Vec::new()
     };
     filtered.extend(
         collect_mcp_resource_records(resources)
-        .into_iter()
-        .filter(|record| matches_server_filter(record, input.server.as_deref()))
-        .map(|record| {
-            json!({
-                "uri": record.uri,
-                "name": record.name,
-                "mimeType": record.mime_type,
-                "description": record.description,
-                "server": record.server,
+            .into_iter()
+            .filter(|record| matches_server_filter(record, input.server.as_deref()))
+            .map(|record| {
+                json!({
+                    "uri": record.uri,
+                    "name": record.name,
+                    "mimeType": record.mime_type,
+                    "description": record.description,
+                    "server": record.server,
+                })
             })
-        })
-        .collect::<Vec<_>>(),
+            .collect::<Vec<_>>(),
     );
     filtered.sort_by(|left, right| {
         left["server"]
@@ -334,7 +347,11 @@ fn execute_list_mcp_resources(resources: &LoadedResources, cwd: &Path, input: Va
     Ok(serde_json::to_string_pretty(&filtered)?)
 }
 
-fn execute_read_mcp_resource(resources: &LoadedResources, cwd: &Path, input: Value) -> Result<String> {
+fn execute_read_mcp_resource(
+    resources: &LoadedResources,
+    cwd: &Path,
+    input: Value,
+) -> Result<String> {
     let input: ReadMcpInput = serde_json::from_value(input)?;
     let available = available_resource_servers(resources, cwd);
     if !available
@@ -348,12 +365,7 @@ fn execute_read_mcp_resource(resources: &LoadedResources, cwd: &Path, input: Val
         );
     }
     if is_live_resource_server(resources, input.server.trim()) {
-        let output = read_live_mcp_resource(
-            resources,
-            cwd,
-            input.server.trim(),
-            &input.uri,
-        )?;
+        let output = read_live_mcp_resource(resources, cwd, input.server.trim(), &input.uri)?;
         return Ok(serde_json::to_string_pretty(&decorate_live_read_output(
             output,
             input.server.trim(),
@@ -729,8 +741,9 @@ mod tests {
             }],
             ..LoadedResources::default()
         };
-        let output = execute_list_mcp_resources(&resources, std::env::temp_dir().as_path(), json!({}))
-            .unwrap();
+        let output =
+            execute_list_mcp_resources(&resources, std::env::temp_dir().as_path(), json!({}))
+                .unwrap();
         assert!(output.contains("\"server\": \"docs\""));
         assert!(output.contains("mcp://manifest/docs"));
     }
@@ -787,8 +800,8 @@ mod tests {
             std::env::temp_dir().as_path(),
             json!({"server": "missing"}),
         )
-            .unwrap_err()
-            .to_string();
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("Server \"missing\" not found"));
         assert!(error.contains("docs"));
     }
@@ -878,12 +891,9 @@ mod tests {
             ..LoadedResources::default()
         };
 
-        let listed = execute_list_mcp_resources(
-            &resources,
-            temp.path(),
-            json!({"server": "filesystem"}),
-        )
-        .unwrap();
+        let listed =
+            execute_list_mcp_resources(&resources, temp.path(), json!({"server": "filesystem"}))
+                .unwrap();
         assert!(listed.contains("\"server\": \"filesystem\""));
         assert!(listed.contains("mcp://filesystem/notes/guide.md"));
         assert!(listed.contains("mcp://filesystem/notes/data.bin"));

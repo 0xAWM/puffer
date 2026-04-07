@@ -3,6 +3,7 @@ use super::claude_tools::{self, ProviderToolContext};
 use super::structured_output_support::{
     requested_structured_output_definition_for_request, StructuredOutputConfig,
 };
+use crate::permissions::{load_runtime_permission_context, ToolPermissionBehavior};
 use crate::AppState;
 use anyhow::{anyhow, Result};
 use puffer_provider_openai::OpenAIRequestConfig;
@@ -53,6 +54,15 @@ pub(super) fn execute_tool_call(
             .filter(|definition| definition.id == tool_id)
             .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?,
     };
+    let permission_context = load_runtime_permission_context(cwd, resources, state)?;
+    let permission_decision = permission_context.decision_for_tool_call(&definition, &input);
+    if permission_decision.behavior != ToolPermissionBehavior::Allow {
+        return Ok(blocked_runtime_tool(
+            tool_id,
+            permission_decision.behavior,
+            permission_decision.reason,
+        ));
+    }
     if definition.handler == "runtime:agent" {
         let output = execute_agent_tool(state, resources, providers, auth_store, cwd, input)?;
         return Ok(successful_runtime_tool(tool_id, output));
@@ -90,6 +100,30 @@ fn successful_runtime_tool(tool_id: &str, stdout: String) -> ToolExecutionResult
     ToolExecutionResult {
         tool_id: tool_id.to_string(),
         success: true,
+        output: ToolOutput {
+            stdout,
+            stderr: String::new(),
+            metadata: Value::Null,
+        },
+    }
+}
+
+fn blocked_runtime_tool(
+    tool_id: &str,
+    behavior: ToolPermissionBehavior,
+    reason: Option<String>,
+) -> ToolExecutionResult {
+    let prefix = match behavior {
+        ToolPermissionBehavior::Allow => "Allowed",
+        ToolPermissionBehavior::Ask => "Permission required",
+        ToolPermissionBehavior::Deny => "Permission denied",
+    };
+    let stdout = reason
+        .map(|reason| format!("{prefix}: {reason}"))
+        .unwrap_or_else(|| prefix.to_string());
+    ToolExecutionResult {
+        tool_id: tool_id.to_string(),
+        success: false,
         output: ToolOutput {
             stdout,
             stderr: String::new(),

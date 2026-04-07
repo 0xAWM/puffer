@@ -118,9 +118,12 @@ fn ensure_session<'a>(
             },
         );
     }
-    sessions
-        .get_mut(&key)
-        .with_context(|| format!("missing managed LSP session for {}", workspace_root.display()))
+    sessions.get_mut(&key).with_context(|| {
+        format!(
+            "missing managed LSP session for {}",
+            workspace_root.display()
+        )
+    })
 }
 
 fn sync_file(managed: &mut ManagedLspSession, file_sync: &LspFileSync) -> Result<()> {
@@ -128,9 +131,11 @@ fn sync_file(managed: &mut ManagedLspSession, file_sync: &LspFileSync) -> Result
         Some(state) => {
             if state.content != file_sync.content {
                 state.version += 1;
-                managed
-                    .session
-                    .change_file(&file_sync.file_uri, state.version, &file_sync.content)?;
+                managed.session.change_file(
+                    &file_sync.file_uri,
+                    state.version,
+                    &file_sync.content,
+                )?;
                 state.content = file_sync.content.clone();
             }
         }

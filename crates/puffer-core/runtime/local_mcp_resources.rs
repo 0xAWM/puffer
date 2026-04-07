@@ -109,12 +109,13 @@ impl McpResourceClient for FilesystemResourceClient {
     }
 
     fn read_resource(&mut self, uri: &str) -> Result<Vec<McpReadResourceContent>> {
-        let relative = uri
-            .strip_prefix("mcp://filesystem/")
-            .ok_or_else(|| anyhow::anyhow!("filesystem MCP resource `{uri}` is not a supported URI"))?;
+        let relative = uri.strip_prefix("mcp://filesystem/").ok_or_else(|| {
+            anyhow::anyhow!("filesystem MCP resource `{uri}` is not a supported URI")
+        })?;
         let path = resolve_workspace_file(&self.root, relative)?;
-        let bytes = fs::read(&path)
-            .with_context(|| format!("failed to read filesystem MCP resource {}", path.display()))?;
+        let bytes = fs::read(&path).with_context(|| {
+            format!("failed to read filesystem MCP resource {}", path.display())
+        })?;
         let mime_type = Some(mime_type_for_path(&path));
         let content = match String::from_utf8(bytes.clone()) {
             Ok(text) => McpReadResourceContent::Text {
@@ -148,7 +149,9 @@ fn configured_live_resource_servers(resources: &LoadedResources) -> Vec<LiveReso
     let mut servers = resources
         .mcp_servers
         .iter()
-        .filter(|server| is_live_filesystem_server(server.value.id.as_str(), server.value.target.as_str()))
+        .filter(|server| {
+            is_live_filesystem_server(server.value.id.as_str(), server.value.target.as_str())
+        })
         .map(|server| LiveResourceServer {
             id: server.value.id.clone(),
         })
@@ -156,7 +159,9 @@ fn configured_live_resource_servers(resources: &LoadedResources) -> Vec<LiveReso
     servers.extend(
         plugin_mcp_servers(resources)
             .into_iter()
-            .filter(|(_, server)| is_live_filesystem_server(server.id.as_str(), server.target.as_str()))
+            .filter(|(_, server)| {
+                is_live_filesystem_server(server.id.as_str(), server.target.as_str())
+            })
             .map(|(_, server)| LiveResourceServer {
                 id: server.id.clone(),
             }),
@@ -222,7 +227,11 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
 }
 
 fn mime_type_for_path(path: &Path) -> String {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
         "md" => "text/markdown",
         "json" => "application/json",
         "yaml" | "yml" => "application/yaml",
@@ -269,7 +278,8 @@ mod tests {
         fs::write(temp.path().join("data.bin"), [0xff, 0x00, 0x01]).unwrap();
 
         let output =
-            list_live_mcp_resources(&filesystem_resources(), temp.path(), Some("filesystem")).unwrap();
+            list_live_mcp_resources(&filesystem_resources(), temp.path(), Some("filesystem"))
+                .unwrap();
 
         assert!(output.contains("mcp://filesystem/guide.md"));
         assert!(output.contains("mcp://filesystem/data.bin"));

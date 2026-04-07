@@ -20,8 +20,9 @@ description: |-
   - `line`: the 1-based line number, as shown in editors
   - `character`: the 1-based character offset, as shown in editors
 
-  If no LSP server is configured or available for the file type, the operation
-  may return an error or reduced results.
+  If no LSP server is configured or installed for the file type, the operation
+  returns an explanatory result. When a configured server binary is missing,
+  the result includes install guidance when available.
 handler: runtime:workflow:lsp
 approval_policy: auto
 sandbox_policy: read-only

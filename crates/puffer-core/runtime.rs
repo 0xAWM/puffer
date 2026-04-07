@@ -1,4 +1,5 @@
 use crate::hooks::run_resource_hooks;
+use crate::permissions::load_runtime_permission_context;
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_registry::{
@@ -14,6 +15,8 @@ use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
+#[cfg(test)]
+mod agent_runtime_tests;
 mod agents;
 mod claude_tools;
 mod local_mcp_resources;
@@ -22,8 +25,6 @@ mod openai;
 mod openai_sse;
 mod structured_output_support;
 mod tool_executor;
-#[cfg(test)]
-mod agent_runtime_tests;
 
 #[cfg(test)]
 use self::openai::{
@@ -35,7 +36,10 @@ use self::openai::{
     execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response,
 };
 pub use self::structured_output_support::StructuredOutputConfig;
-use self::structured_output_support::{anthropic_tool_definitions, validate_structured_output_schema};
+use self::structured_output_support::{
+    anthropic_tool_definitions, anthropic_tool_definitions_for_request,
+    validate_structured_output_schema,
+};
 use self::tool_executor::{execute_tool_call, ToolExecutionBackend};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -310,6 +314,7 @@ fn execute_anthropic(
 ) -> Result<TurnExecution> {
     let auth = anthropic_auth_for_provider(auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
+    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
     let mut messages = transcript_to_anthropic_messages(state, input);
     let mut invocations = Vec::new();
     let plan_mode_context = crate::command_helpers::prompt::plan_mode_context_message(state)?;
@@ -350,7 +355,11 @@ fn execute_anthropic(
             )
         });
 
-        let tools = anthropic_tool_definitions(&registry, structured_output)?;
+        let tools = anthropic_tool_definitions_for_request(
+            &registry,
+            structured_output,
+            Some(&permission_context),
+        )?;
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
         }
@@ -490,13 +499,7 @@ fn trace_http_response(url: &str, status: u16, body: &str) {
         .open(path)
         .and_then(|mut file| {
             use std::io::Write as _;
-            writeln!(
-                file,
-                "--- RESPONSE {} {} ---\n{}\n",
-                status,
-                url,
-                body
-            )
+            writeln!(file, "--- RESPONSE {} {} ---\n{}\n", status, url, body)
         });
 }
 

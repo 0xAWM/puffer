@@ -462,8 +462,11 @@ fn tool_definitions_filter_disabled_tools() {
 
 #[test]
 fn openai_tool_definitions_exclude_structured_output_workflow_helper() {
-    let mut structured_output =
-        loaded_tool("StructuredOutput", "Structured output helper", "runtime:workflow:structured_output");
+    let mut structured_output = loaded_tool(
+        "StructuredOutput",
+        "Structured output helper",
+        "runtime:workflow:structured_output",
+    );
     structured_output.value.input_schema = Some(json!({
         "type": "object",
         "description": "Dynamic structured output payload.",
@@ -477,7 +480,9 @@ fn openai_tool_definitions_exclude_structured_output_workflow_helper() {
 
     let openai_tools = openai_tool_definitions(&registry, None, false).unwrap();
 
-    assert!(!openai_tools.iter().any(|tool| tool.name == "StructuredOutput"));
+    assert!(!openai_tools
+        .iter()
+        .any(|tool| tool.name == "StructuredOutput"));
     assert!(openai_tools.iter().any(|tool| tool.name == "bash"));
 }
 
@@ -953,7 +958,8 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
     assert_eq!(openai_tools[0].name, "read_file");
 }
 
-
+#[path = "tests/permissions.rs"]
+mod permissions;
 #[path = "tests/tool_execution.rs"]
 mod tool_execution;
 

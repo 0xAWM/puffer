@@ -201,6 +201,8 @@ pub struct LspServerSpec {
     pub display_name: String,
     pub command: String,
     #[serde(default)]
+    pub install_hint: Option<String>,
+    #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub extension_to_language: std::collections::BTreeMap<String, String>,

@@ -61,7 +61,9 @@ fn main() -> Result<()> {
         resources.tools.clear();
     }
     if let Some(tool_ids) = probe_tool_ids() {
-        resources.tools.retain(|tool| tool_ids.contains(&tool.value.id));
+        resources
+            .tools
+            .retain(|tool| tool_ids.contains(&tool.value.id));
     }
     if std::env::var("PROBE_LIST_TOOLS").ok().as_deref() == Some("1") {
         for tool in &resources.tools {

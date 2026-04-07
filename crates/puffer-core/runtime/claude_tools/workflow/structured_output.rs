@@ -1,7 +1,7 @@
-use crate::AppState;
 use crate::runtime::structured_output_support::{
     validate_structured_output_payload, StructuredOutputConfig,
 };
+use crate::AppState;
 use anyhow::Result;
 use serde_json::json;
 use serde_json::Value;
@@ -57,7 +57,8 @@ mod tests {
     fn structured_output_falls_back_without_request_schema() {
         let mut state = temp_state();
         let cwd = state.cwd.clone();
-        let output = execute_structured_output(&mut state, &cwd, json!({"value": 1}), None).unwrap();
+        let output =
+            execute_structured_output(&mut state, &cwd, json!({"value": 1}), None).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["structured_output"]["value"], json!(1));
     }

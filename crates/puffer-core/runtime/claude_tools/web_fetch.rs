@@ -257,8 +257,7 @@ fn build_binary_notice(bytes: &[u8], content_type: Option<&str>) -> Result<Strin
 
 fn persist_binary_payload(bytes: &[u8], content_type: Option<&str>) -> Result<String> {
     let root = std::env::temp_dir().join("puffer-web-fetch");
-    fs::create_dir_all(&root)
-        .with_context(|| format!("failed to create {}", root.display()))?;
+    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -274,7 +273,12 @@ fn extension_for_content_type(content_type: Option<&str>) -> &'static str {
     let Some(content_type) = content_type else {
         return ".bin";
     };
-    match content_type.split(';').next().unwrap_or(content_type).trim() {
+    match content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+    {
         "application/pdf" => ".pdf",
         "image/png" => ".png",
         "image/jpeg" => ".jpg",
@@ -375,12 +379,11 @@ mod tests {
 
     #[test]
     fn html_content_is_normalized_before_prompting() {
-        let normalized =
-            normalize_web_content(
-                b"<html><body><h1>Title</h1><p>Hello<br>world</p></body></html>",
-                Some("text/html"),
-            )
-            .unwrap();
+        let normalized = normalize_web_content(
+            b"<html><body><h1>Title</h1><p>Hello<br>world</p></body></html>",
+            Some("text/html"),
+        )
+        .unwrap();
         assert!(normalized.contains("Title"));
         assert!(normalized.contains("Hello"));
         assert!(normalized.contains("world"));

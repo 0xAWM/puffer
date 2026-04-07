@@ -104,6 +104,27 @@ pub(super) fn extend_input_with_continuation(input: Value, continuation: Value) 
     Value::Array(items)
 }
 
+pub(super) fn openai_responses_path(base_url: &str) -> &'static str {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
+        "/responses"
+    } else {
+        "/v1/responses"
+    }
+}
+
+pub(super) fn openai_model_supports_reasoning(
+    provider: &ProviderDescriptor,
+    model_id: &str,
+) -> bool {
+    provider
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .map(|model| model.supports_reasoning)
+        .unwrap_or(false)
+}
+
 fn codex_input_items(input: Value) -> Value {
     match input {
         Value::Array(_) => input,

@@ -1,6 +1,6 @@
-use super::*;
 use super::super::lsp::shutdown_lsp_services;
 use super::super::lsp_live_diagnostics::diagnostics_for_file;
+use super::*;
 use puffer_resources::{LoadedItem, LspServerSpec, PluginSpec, SourceInfo, SourceKind};
 use std::fs;
 use std::path::Path;
@@ -16,7 +16,10 @@ fn execute_lsp_uses_real_stdio_session_for_hover() {
     let server = temp.path().join("mock-rust-analyzer");
     fs::write(&server, mock_lsp_server_script()).unwrap();
     make_executable(&server);
-    std::env::set_var("PUFFER_LSP_COMMAND_RUST_ANALYZER", server.display().to_string());
+    std::env::set_var(
+        "PUFFER_LSP_COMMAND_RUST_ANALYZER",
+        server.display().to_string(),
+    );
     let resources = test_resources();
 
     let output = execute_lsp(
@@ -48,7 +51,10 @@ fn execute_lsp_runs_call_hierarchy_and_workspace_symbol_requests() {
     let server = temp.path().join("mock-rust-analyzer");
     fs::write(&server, mock_lsp_server_script()).unwrap();
     make_executable(&server);
-    std::env::set_var("PUFFER_LSP_COMMAND_RUST_ANALYZER", server.display().to_string());
+    std::env::set_var(
+        "PUFFER_LSP_COMMAND_RUST_ANALYZER",
+        server.display().to_string(),
+    );
     let resources = test_resources();
 
     let outgoing = execute_lsp(
@@ -95,7 +101,10 @@ fn execute_lsp_reuses_session_and_sends_did_change_for_updated_files() {
     let log_path = temp.path().join("lsp.log");
     fs::write(&server, mock_lsp_server_script()).unwrap();
     make_executable(&server);
-    std::env::set_var("PUFFER_LSP_COMMAND_RUST_ANALYZER", server.display().to_string());
+    std::env::set_var(
+        "PUFFER_LSP_COMMAND_RUST_ANALYZER",
+        server.display().to_string(),
+    );
     std::env::set_var("PUFFER_LSP_MOCK_LOG", log_path.display().to_string());
     let resources = test_resources();
 
@@ -149,11 +158,7 @@ fn execute_lsp_works_on_real_python_workspace_with_pyright() {
         "def add(x: int, y: int) -> int:\n    return x + y\n",
     )
     .unwrap();
-    fs::write(
-        &main,
-        "from helper import add\n\nresult = add(1, 2)\n",
-    )
-    .unwrap();
+    fs::write(&main, "from helper import add\n\nresult = add(1, 2)\n").unwrap();
     std::env::set_var("PUFFER_LSP_COMMAND_PYRIGHT_LANGSERVER", server);
     let resources = python_test_resources();
 
@@ -216,7 +221,10 @@ fn execute_lsp_persists_publish_diagnostics_notifications() {
     let server = temp.path().join("mock-rust-analyzer");
     fs::write(&server, mock_lsp_server_script()).unwrap();
     make_executable(&server);
-    std::env::set_var("PUFFER_LSP_COMMAND_RUST_ANALYZER", server.display().to_string());
+    std::env::set_var(
+        "PUFFER_LSP_COMMAND_RUST_ANALYZER",
+        server.display().to_string(),
+    );
     std::env::set_var("PUFFER_LSP_MOCK_DIAGNOSTICS", "1");
     let resources = test_resources();
     let file_uri = url::Url::from_file_path(&source).unwrap().to_string();
@@ -259,6 +267,83 @@ fn execute_lsp_persists_publish_diagnostics_notifications() {
 }
 
 #[test]
+fn execute_lsp_reports_persisted_diagnostics() {
+    let _guard = test_env_lock().lock().unwrap();
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("main.rs");
+    fs::write(&source, "fn first() {}\n").unwrap();
+    let server = temp.path().join("mock-rust-analyzer");
+    fs::write(&server, mock_lsp_server_script()).unwrap();
+    make_executable(&server);
+    std::env::set_var(
+        "PUFFER_LSP_COMMAND_RUST_ANALYZER",
+        server.display().to_string(),
+    );
+    std::env::set_var("PUFFER_LSP_MOCK_DIAGNOSTICS", "1");
+    let resources = test_resources();
+
+    let _ = execute_lsp(
+        &resources,
+        temp.path(),
+        json!({
+            "operation": "hover",
+            "filePath": source.display().to_string(),
+            "line": 1,
+            "character": 4,
+        }),
+    )
+    .unwrap();
+
+    let diagnostics = execute_lsp(
+        &resources,
+        temp.path(),
+        json!({
+            "operation": "diagnostics",
+            "filePath": source.display().to_string(),
+            "line": 1,
+            "character": 1,
+        }),
+    )
+    .unwrap();
+
+    std::env::remove_var("PUFFER_LSP_COMMAND_RUST_ANALYZER");
+    std::env::remove_var("PUFFER_LSP_MOCK_DIAGNOSTICS");
+
+    let diagnostics_json: Value = serde_json::from_str(&diagnostics).unwrap();
+    assert!(diagnostics_json["result"]
+        .as_str()
+        .is_some_and(|value| value.contains("opened diagnostic")));
+}
+
+#[test]
+fn execute_lsp_reports_missing_server_install_guidance() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("main.py");
+    fs::write(&source, "print('hi')\n").unwrap();
+    let resources = missing_python_server_resources();
+
+    let output = execute_lsp(
+        &resources,
+        temp.path(),
+        json!({
+            "operation": "hover",
+            "filePath": source.display().to_string(),
+            "line": 1,
+            "character": 1,
+        }),
+    )
+    .unwrap();
+
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert!(parsed["result"]
+        .as_str()
+        .is_some_and(|value| value.contains("npm install -g pyright")));
+    assert!(parsed["result"]
+        .as_str()
+        .is_some_and(|value| value.contains("No LSP server is installed")));
+}
+
+#[test]
 fn shutdown_lsp_services_stops_cached_sessions() {
     let _guard = test_env_lock().lock().unwrap();
     let temp = tempdir().unwrap();
@@ -268,7 +353,10 @@ fn shutdown_lsp_services_stops_cached_sessions() {
     let log_path = temp.path().join("shutdown.log");
     fs::write(&server, mock_lsp_server_script()).unwrap();
     make_executable(&server);
-    std::env::set_var("PUFFER_LSP_COMMAND_RUST_ANALYZER", server.display().to_string());
+    std::env::set_var(
+        "PUFFER_LSP_COMMAND_RUST_ANALYZER",
+        server.display().to_string(),
+    );
     std::env::set_var("PUFFER_LSP_MOCK_LOG", log_path.display().to_string());
     let resources = test_resources();
 
@@ -319,6 +407,7 @@ fn test_resources() -> puffer_resources::LoadedResources {
                     id: "rust-analyzer".to_string(),
                     display_name: "Rust Analyzer".to_string(),
                     command: "rust-analyzer".to_string(),
+                    install_hint: Some("rustup component add rust-analyzer".to_string()),
                     args: Vec::new(),
                     extension_to_language: std::collections::BTreeMap::from([(
                         ".rs".to_string(),
@@ -351,6 +440,40 @@ fn python_test_resources() -> puffer_resources::LoadedResources {
                     id: "pyright-langserver".to_string(),
                     display_name: "Pyright".to_string(),
                     command: "pyright-langserver".to_string(),
+                    install_hint: Some("npm install -g pyright".to_string()),
+                    args: vec!["--stdio".to_string()],
+                    extension_to_language: std::collections::BTreeMap::from([(
+                        ".py".to_string(),
+                        "python".to_string(),
+                    )]),
+                    env: Default::default(),
+                    workspace_folder: None,
+                }],
+            },
+            source_info: SourceInfo {
+                path: "resources/plugins/puffer-builtins.yaml".into(),
+                kind: SourceKind::Builtin,
+            },
+        }],
+        ..Default::default()
+    }
+}
+
+fn missing_python_server_resources() -> puffer_resources::LoadedResources {
+    puffer_resources::LoadedResources {
+        plugins: vec![LoadedItem {
+            value: PluginSpec {
+                id: "puffer-builtins".to_string(),
+                display_name: "Puffer Builtins".to_string(),
+                description: "builtin lsp".to_string(),
+                commands: Vec::new(),
+                skills: Vec::new(),
+                mcp_servers: Vec::new(),
+                lsp_servers: vec![LspServerSpec {
+                    id: "pyright-langserver".to_string(),
+                    display_name: "Pyright".to_string(),
+                    command: "missing-pyright-langserver".to_string(),
+                    install_hint: Some("npm install -g pyright".to_string()),
                     args: vec!["--stdio".to_string()],
                     extension_to_language: std::collections::BTreeMap::from([(
                         ".py".to_string(),

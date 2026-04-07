@@ -267,7 +267,10 @@ impl AppState {
         model_id: &str,
         endpoint_id: &str,
     ) -> String {
-        let endpoint_id = endpoint_id.trim().trim_end_matches('/').to_ascii_lowercase();
+        let endpoint_id = endpoint_id
+            .trim()
+            .trim_end_matches('/')
+            .to_ascii_lowercase();
         format!(
             "{}::{}::{}::{}",
             family.trim().to_ascii_lowercase(),

@@ -1,3 +1,4 @@
+use super::super::lsp_live_diagnostics::StoredDiagnostic;
 use super::{LocationSummary, LspExecutionResult, LspSession};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
@@ -106,6 +107,38 @@ pub(super) fn format_document_symbol_result(
         result_count: Some(symbols.len()),
         file_count: Some(1),
     })
+}
+
+pub(super) fn format_diagnostics_result(diagnostics: &[StoredDiagnostic]) -> LspExecutionResult {
+    if diagnostics.is_empty() {
+        return LspExecutionResult {
+            result: "No diagnostics found.".to_string(),
+            result_count: Some(0),
+            file_count: Some(0),
+        };
+    }
+    let mut lines = vec![format!("Found {} diagnostics:", diagnostics.len())];
+    for diagnostic in diagnostics {
+        let mut detail = format!(
+            "- line {}:{} [{}]",
+            diagnostic.line,
+            diagnostic.character,
+            severity_label(diagnostic.severity)
+        );
+        if let Some(source) = diagnostic.source.as_deref() {
+            detail.push_str(&format!(" source={source}"));
+        }
+        if let Some(code) = diagnostic.code.as_deref() {
+            detail.push_str(&format!(" code={code}"));
+        }
+        detail.push_str(&format!(" {}", diagnostic.message));
+        lines.push(detail);
+    }
+    LspExecutionResult {
+        result: lines.join("\n"),
+        result_count: Some(diagnostics.len()),
+        file_count: Some(1),
+    }
 }
 
 pub(super) fn format_workspace_symbol_result(
@@ -222,6 +255,16 @@ fn extract_hover_text_from_item(value: &Value) -> String {
     String::new()
 }
 
+fn severity_label(severity: Option<u64>) -> &'static str {
+    match severity {
+        Some(1) => "error",
+        Some(2) => "warning",
+        Some(3) => "information",
+        Some(4) => "hint",
+        _ => "unknown",
+    }
+}
+
 fn extract_locations(result: &Value, cwd: &Path) -> Result<Vec<LocationSummary>> {
     if result.is_null() {
         return Ok(Vec::new());
@@ -252,11 +295,7 @@ fn location_from_value(value: &Value, cwd: &Path) -> Result<LocationSummary> {
     Ok(LocationSummary {
         file_path: format_uri(uri, cwd),
         line: start.get("line").and_then(Value::as_u64).unwrap_or(0) as usize + 1,
-        character: start
-            .get("character")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize
-            + 1,
+        character: start.get("character").and_then(Value::as_u64).unwrap_or(0) as usize + 1,
     })
 }
 
@@ -276,7 +315,10 @@ fn flatten_document_symbol(value: &Value, cwd: &Path, output: &mut Vec<String>) 
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("document symbol missing name"))?;
-    let detail = value.get("detail").and_then(Value::as_str).unwrap_or_default();
+    let detail = value
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let location = value
         .get("selectionRange")
         .or_else(|| value.get("range"))
@@ -291,11 +333,16 @@ fn flatten_document_symbol(value: &Value, cwd: &Path, output: &mut Vec<String>) 
         .unwrap_or_else(|| "?:?".to_string());
     let kind = symbol_kind_name(value.get("kind").and_then(Value::as_u64));
     output.push(
-        [name.to_string(), kind.to_string(), detail.to_string(), location]
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>()
-            .join(" - "),
+        [
+            name.to_string(),
+            kind.to_string(),
+            detail.to_string(),
+            location,
+        ]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(" - "),
     );
     if let Some(children) = value.get("children").and_then(Value::as_array) {
         for child in children {
@@ -371,7 +418,11 @@ fn extract_call_hierarchy_calls(result: &Value, label: &str, cwd: &Path) -> Resu
     let mut output = Vec::new();
     for value in array {
         let item = value
-            .get(if label == "incoming calls" { "from" } else { "to" })
+            .get(if label == "incoming calls" {
+                "from"
+            } else {
+                "to"
+            })
             .ok_or_else(|| anyhow!("call hierarchy entry missing item"))?;
         let name = item
             .get("name")
@@ -409,7 +460,9 @@ fn format_uri(uri: &str, cwd: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn group_locations_by_file(locations: &[LocationSummary]) -> BTreeMap<String, Vec<LocationSummary>> {
+fn group_locations_by_file(
+    locations: &[LocationSummary],
+) -> BTreeMap<String, Vec<LocationSummary>> {
     let mut grouped = BTreeMap::new();
     for location in locations {
         grouped

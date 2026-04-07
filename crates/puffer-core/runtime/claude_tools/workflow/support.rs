@@ -2,17 +2,17 @@ use super::store::{
     agents_path, append_agent_message, detect_powershell_binary, ensure_plan_file,
     get_config_value, git_ahead_count, git_dirty, git_head_commit, git_toplevel, is_git_repo,
     load_store, messages_path, next_task_id, now_ms, process_is_running, resolve_recipients,
-    save_store, set_config_value, task_output_path, tasks_path, teams_path,
-    terminate_process, todos_path, validate_ask_user_questions, wait_for_process_exit,
-    workflow_root, worktrees_path, AgentInput, AgentStore, AskUserQuestionInput, ConfigInput,
-    EnterWorktreeInput, ExitPlanModeInput, ExitWorktreeInput, MessageStore, PowerShellInput,
-    SendMessageInput, StoredAgent, StoredMessage, StoredTask, StoredTeam, StoredTodo,
-    StoredWorktree, TaskCreateInput, TaskIdInput, TaskOutputInput, TaskStopInput, TaskStore,
-    TaskUpdateInput, TeamCreateInput, TeamStore, TodoStore, TodoWriteInput, WorktreeStore,
+    save_store, set_config_value, task_output_path, tasks_path, teams_path, terminate_process,
+    todos_path, validate_ask_user_questions, wait_for_process_exit, workflow_root, worktrees_path,
+    AgentInput, AgentStore, AskUserQuestionInput, ConfigInput, EnterWorktreeInput,
+    ExitPlanModeInput, ExitWorktreeInput, MessageStore, PowerShellInput, SendMessageInput,
+    StoredAgent, StoredMessage, StoredTask, StoredTeam, StoredTodo, StoredWorktree,
+    TaskCreateInput, TaskIdInput, TaskOutputInput, TaskStopInput, TaskStore, TaskUpdateInput,
+    TeamCreateInput, TeamStore, TodoStore, TodoWriteInput, WorktreeStore,
 };
 use super::task_runtime::{
-    read_task_output, read_runtime_agent_output, refresh_stored_task, runtime_agent_terminal_status,
-    runtime_agent_output_path, terminal_task_status, validate_todos, wait_for_child_output,
+    read_runtime_agent_output, read_task_output, refresh_stored_task, runtime_agent_output_path,
+    runtime_agent_terminal_status, terminal_task_status, validate_todos, wait_for_child_output,
     wait_for_runtime_agent_output, wait_for_stored_task,
 };
 use crate::AppState;
@@ -153,12 +153,13 @@ pub(super) fn execute_team_create(
     input: Value,
 ) -> Result<String> {
     let _ = cwd;
-    let parsed: TeamCreateInput = serde_json::from_value(input).context("invalid TeamCreate input")?;
+    let parsed: TeamCreateInput =
+        serde_json::from_value(input).context("invalid TeamCreate input")?;
     let mut teams = load_store::<TeamStore>(&teams_path(state.session.cwd.as_path()))?;
     if teams
         .teams
         .iter()
-            .any(|team| team.team_name == parsed.team_name)
+        .any(|team| team.team_name == parsed.team_name)
     {
         bail!("team `{}` already exists", parsed.team_name);
     }
@@ -290,11 +291,7 @@ pub(super) fn execute_task_create(
 }
 
 /// Executes the live `TaskGet` workflow tool.
-pub(super) fn execute_task_get(
-    state: &mut AppState,
-    _cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub(super) fn execute_task_get(state: &mut AppState, _cwd: &Path, input: Value) -> Result<String> {
     let parsed: TaskIdInput = serde_json::from_value(input).context("invalid TaskGet input")?;
     let task = refresh_stored_task(state.session.cwd.as_path(), &parsed.task_id)?
         .ok_or_else(|| anyhow!("unknown task `{}`", parsed.task_id))?;
@@ -351,7 +348,10 @@ pub(super) fn execute_task_update(
         if task.status == "in_progress" && task.started_at_ms.is_none() {
             task.started_at_ms = Some(now_ms());
         }
-        if matches!(task.status.as_str(), "completed" | "failed" | "stopped" | "deleted") {
+        if matches!(
+            task.status.as_str(),
+            "completed" | "failed" | "stopped" | "deleted"
+        ) {
             task.process_id = None;
         }
     }
@@ -388,11 +388,7 @@ pub(super) fn execute_task_update(
 }
 
 /// Executes the live `TaskStop` workflow tool.
-pub(super) fn execute_task_stop(
-    state: &mut AppState,
-    _cwd: &Path,
-    input: Value,
-) -> Result<String> {
+pub(super) fn execute_task_stop(state: &mut AppState, _cwd: &Path, input: Value) -> Result<String> {
     let parsed: TaskStopInput = serde_json::from_value(input).context("invalid TaskStop input")?;
     let target = parsed
         .task_id

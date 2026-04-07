@@ -1,7 +1,5 @@
-use pulldown_cmark::{
-    CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
-};
 use dirs::home_dir;
+use pulldown_cmark::{CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use regex_lite::Regex;
@@ -364,10 +362,9 @@ where
     fn end_code_block(&mut self) {
         let lang = self.code_block_lang.take();
         let code = std::mem::take(&mut self.code_block_buffer);
-        let rendered = if lang
-            .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case("diff") || value.eq_ignore_ascii_case("patch"))
-        {
+        let rendered = if lang.as_deref().is_some_and(|value| {
+            value.eq_ignore_ascii_case("diff") || value.eq_ignore_ascii_case("patch")
+        }) {
             diff_code_to_lines(&code)
         } else {
             plain_code_to_lines(&code, self.styles.code)
@@ -565,7 +562,8 @@ where
                         continue;
                     }
                 }
-                if context.is_list && last_marker_index.is_some_and(|marker_index| marker_index > index)
+                if context.is_list
+                    && last_marker_index.is_some_and(|marker_index| marker_index > index)
                 {
                     continue;
                 }
@@ -687,7 +685,9 @@ fn plain_code_to_lines(code: &str, style: Style) -> Vec<Line<'static>> {
 }
 
 fn diff_code_to_lines(code: &str) -> Vec<Line<'static>> {
-    let meta = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let meta = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let added = Style::default().fg(Color::Green);
     let removed = Style::default().fg(Color::Red);
     let context = Style::default().fg(Color::DarkGray);
@@ -727,7 +727,12 @@ mod tests {
     fn text_lines(text: &Text<'_>) -> Vec<String> {
         text.lines
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .collect()
     }
 
@@ -738,7 +743,10 @@ mod tests {
 
     #[test]
     fn paragraph_single() {
-        assert_eq!(text_lines(&render_markdown_text("Hello, world!")), vec!["Hello, world!"]);
+        assert_eq!(
+            text_lines(&render_markdown_text("Hello, world!")),
+            vec!["Hello, world!"]
+        );
     }
 
     #[test]

@@ -62,6 +62,53 @@ fn execute_openai_tool_calls_serializes_outputs() {
 }
 
 #[test]
+fn execute_openai_tool_calls_return_permission_denials_as_tool_results() {
+    let mut state = temp_state();
+    let permissions_dir = ConfigPaths::discover(&state.cwd).workspace_config_dir;
+    std::fs::create_dir_all(&permissions_dir).unwrap();
+    std::fs::write(
+        permissions_dir.join("permissions.toml"),
+        "[tools]\nbash = \"deny\"\n",
+    )
+    .unwrap();
+
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("bash", "Run shell", "bash")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    let provider = openai_provider("http://127.0.0.1".to_string());
+    providers.register(provider);
+    let tool_calls = vec![OpenAIResponseToolCall {
+        item_id: Some("fc_1".to_string()),
+        status: Some("completed".to_string()),
+        call_id: "call_1".to_string(),
+        name: "bash".to_string(),
+        arguments: json!({ "command": "printf hi" }),
+    }];
+    let request_config = test_openai_request_config();
+    let cwd = state.cwd.clone();
+
+    let result = execute_openai_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &tool_calls,
+        &registry,
+        &cwd,
+        &request_config,
+        "gpt-5",
+        None,
+    )
+    .unwrap();
+
+    assert!(!result.invocations[0].success);
+    assert!(result.outputs[0].output.contains("Permission denied"));
+}
+
+#[test]
 fn tool_hooks_run_for_completed_tool_calls() {
     let temp = tempfile::tempdir().unwrap();
     let hook_output = temp.path().join("hook.txt");
@@ -161,16 +208,17 @@ fn send_user_message_stores_resolved_attachment_paths() {
     let attachment = cwd.join("note.txt");
     fs::write(&attachment, "hello").unwrap();
 
-    let output = super::super::claude_tools::workflow::send_user_message::execute_send_user_message(
-        &mut state,
-        &cwd,
-        json!({
-            "message": "hello",
-            "attachments": ["note.txt"],
-            "status": "normal"
-        }),
-    )
-    .unwrap();
+    let output =
+        super::super::claude_tools::workflow::send_user_message::execute_send_user_message(
+            &mut state,
+            &cwd,
+            json!({
+                "message": "hello",
+                "attachments": ["note.txt"],
+                "status": "normal"
+            }),
+        )
+        .unwrap();
     let parsed: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(
         parsed["message"]["attachments"][0].as_str(),
@@ -239,7 +287,11 @@ fn config_tool_supports_openai_map_settings() {
     assert_eq!(parsed["value"]["x-test"], "one");
     assert_eq!(parsed["newValue"]["x-another"], "two");
     assert_eq!(
-        state.config.openai_headers.get("x-test").map(String::as_str),
+        state
+            .config
+            .openai_headers
+            .get("x-test")
+            .map(String::as_str),
         Some("one")
     );
 }

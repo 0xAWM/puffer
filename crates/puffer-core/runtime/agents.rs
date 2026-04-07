@@ -502,7 +502,12 @@ fn cleanup_agent_worktree(worktree: AgentWorktree) -> Result<()> {
 
 fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
     let output = Command::new("git")
-        .args(["-C", cwd.to_string_lossy().as_ref(), "rev-parse", "--show-toplevel"])
+        .args([
+            "-C",
+            cwd.to_string_lossy().as_ref(),
+            "rev-parse",
+            "--show-toplevel",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {

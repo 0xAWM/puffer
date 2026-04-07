@@ -187,8 +187,7 @@ fn shell_output_dir(cwd: &Path) -> Result<std::path::PathBuf> {
         .join("runtime")
         .join("claude_workflow")
         .join("shell_outputs");
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create {}", dir.display()))?;
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(dir)
 }
 

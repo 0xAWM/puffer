@@ -105,7 +105,9 @@ pub struct OpenAIResponseToolCall {
     pub arguments: Value,
 }
 
-fn deserialize_tool_calls<'de, D>(deserializer: D) -> std::result::Result<Vec<OpenAIChatToolCall>, D::Error>
+fn deserialize_tool_calls<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<OpenAIChatToolCall>, D::Error>
 where
     D: Deserializer<'de>,
 {

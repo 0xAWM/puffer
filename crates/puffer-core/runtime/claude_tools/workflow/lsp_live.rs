@@ -22,12 +22,12 @@ mod manager;
 mod tests;
 
 use self::format::{
-    format_call_hierarchy_result, format_document_symbol_result, format_hover_result,
-    format_location_result, format_prepare_call_hierarchy_result, format_references_result,
-    format_workspace_symbol_result,
+    format_call_hierarchy_result, format_diagnostics_result, format_document_symbol_result,
+    format_hover_result, format_location_result, format_prepare_call_hierarchy_result,
+    format_references_result, format_workspace_symbol_result,
 };
 use self::manager::with_lsp_session;
-use super::lsp_live_diagnostics::record_publish_diagnostics;
+use super::lsp_live_diagnostics::{diagnostics_for_file, record_publish_diagnostics};
 
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_LSP_FILE_SIZE_BYTES: u64 = 10_000_000;
@@ -61,6 +61,25 @@ pub(super) struct ResolvedLspServer {
     env: std::collections::BTreeMap<String, String>,
     workspace_folder: Option<String>,
     language_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct MissingLspServer {
+    display_name: String,
+    command: String,
+    install_hint: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum LspServerResolution {
+    Available(ResolvedLspServer),
+    Missing {
+        extension: String,
+        servers: Vec<MissingLspServer>,
+    },
+    Unconfigured {
+        extension: String,
+    },
 }
 
 #[derive(Debug)]
@@ -128,22 +147,26 @@ fn execute_lsp_inner(
     file_path: &Path,
 ) -> Result<LspExecutionResult> {
     validate_lsp_input(file_path)?;
-    let Some(server) = resolve_lsp_server(resources, file_path) else {
-        let extension = file_path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| format!(".{value}"))
-            .unwrap_or_else(|| "<unknown>".to_string());
-        return Ok(LspExecutionResult {
-            result: format!("No LSP server available for file type: {extension}"),
-            result_count: None,
-            file_count: None,
-        });
+    let server = match resolve_lsp_server(resources, file_path) {
+        LspServerResolution::Available(server) => server,
+        LspServerResolution::Missing { extension, servers } => {
+            return Ok(LspExecutionResult {
+                result: format_missing_lsp_server_message(&extension, &servers),
+                result_count: None,
+                file_count: None,
+            });
+        }
+        LspServerResolution::Unconfigured { extension } => {
+            return Ok(LspExecutionResult {
+                result: format!("No LSP server available for file type: {extension}"),
+                result_count: None,
+                file_count: None,
+            });
+        }
     };
-
     let workspace_root = workspace_root(cwd, file_path);
     let file_uri = file_uri(file_path)?;
-    let file_sync = if input.operation == "workspaceSymbol" {
+    let file_sync = if matches!(input.operation.as_str(), "workspaceSymbol" | "diagnostics") {
         None
     } else {
         Some(LspFileSync {
@@ -213,6 +236,13 @@ fn run_lsp_operation(
             )?;
             format_document_symbol_result(response, workspace_root)
         }
+        "diagnostics" => {
+            session.drain_pending_messages()?;
+            Ok(format_diagnostics_result(&diagnostics_for_file(
+                workspace_root,
+                file_uri,
+            )?))
+        }
         "workspaceSymbol" => {
             let response = session.request("workspace/symbol", json!({ "query": "" }))?;
             format_workspace_symbol_result(response, workspace_root)
@@ -263,7 +293,11 @@ fn run_lsp_operation(
     Ok(result)
 }
 
-fn prepare_call_hierarchy(session: &mut LspSession, file_uri: &str, input: &LspInput) -> Result<Value> {
+fn prepare_call_hierarchy(
+    session: &mut LspSession,
+    file_uri: &str,
+    input: &LspInput,
+) -> Result<Value> {
     session.request(
         "textDocument/prepareCallHierarchy",
         json!({
@@ -590,9 +624,13 @@ fn is_server_request(message: &Value) -> bool {
     message.get("id").is_some() && message.get("method").is_some()
 }
 
-fn resolve_lsp_server(resources: &LoadedResources, file_path: &Path) -> Option<ResolvedLspServer> {
-    let extension = file_path.extension().and_then(|value| value.to_str())?;
-    let extension = format!(".{}", extension.to_ascii_lowercase());
+fn resolve_lsp_server(resources: &LoadedResources, file_path: &Path) -> LspServerResolution {
+    let extension = file_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{}", value.to_ascii_lowercase()))
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let mut missing_servers = Vec::new();
     for (_, server) in plugin_lsp_servers(resources) {
         let Some(language_id) = server.extension_to_language.get(&extension) else {
             continue;
@@ -601,7 +639,7 @@ fn resolve_lsp_server(resources: &LoadedResources, file_path: &Path) -> Option<R
             continue;
         };
         if command_exists(&command) {
-            return Some(ResolvedLspServer {
+            return LspServerResolution::Available(ResolvedLspServer {
                 id: server.id.clone(),
                 command,
                 args: server.args.clone(),
@@ -610,8 +648,42 @@ fn resolve_lsp_server(resources: &LoadedResources, file_path: &Path) -> Option<R
                 language_id: language_id.clone(),
             });
         }
+        missing_servers.push(MissingLspServer {
+            display_name: if server.display_name.trim().is_empty() {
+                server.id.clone()
+            } else {
+                server.display_name.clone()
+            },
+            command,
+            install_hint: server.install_hint.clone(),
+        });
     }
-    None
+    if missing_servers.is_empty() {
+        LspServerResolution::Unconfigured { extension }
+    } else {
+        LspServerResolution::Missing {
+            extension,
+            servers: missing_servers,
+        }
+    }
+}
+
+fn format_missing_lsp_server_message(extension: &str, servers: &[MissingLspServer]) -> String {
+    let mut lines = vec![format!(
+        "No LSP server is installed for file type: {extension}"
+    )];
+    lines.push("Configured servers for this file type:".to_string());
+    for server in servers {
+        lines.push(format!("- {} (`{}`)", server.display_name, server.command));
+        if let Some(install_hint) = server.install_hint.as_deref() {
+            lines.push(format!("  Install: {install_hint}"));
+        }
+    }
+    lines.push(
+        "Install one of the servers above or configure a plugin-provided LSP server for this file type."
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 fn resolve_server_cwd(server: &ResolvedLspServer, workspace_root: &Path) -> PathBuf {
@@ -641,7 +713,11 @@ fn resolved_command(command: &str) -> Option<String> {
         "PUFFER_LSP_COMMAND_{}",
         command
             .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_uppercase() } else { '_' })
+            .map(|ch| if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            })
             .collect::<String>()
     );
     if let Ok(value) = std::env::var(&override_name) {
@@ -670,8 +746,7 @@ fn read_lsp_file(file_path: &Path) -> Result<String> {
             ((metadata.len() as f64) / 1_000_000.0).ceil() as u64
         );
     }
-    fs::read_to_string(file_path)
-        .with_context(|| format!("failed to read {}", file_path.display()))
+    fs::read_to_string(file_path).with_context(|| format!("failed to read {}", file_path.display()))
 }
 
 fn lsp_position(line: usize, character: usize) -> Value {

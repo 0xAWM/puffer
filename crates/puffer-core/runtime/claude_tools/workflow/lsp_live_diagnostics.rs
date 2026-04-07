@@ -78,23 +78,21 @@ fn parse_diagnostic(value: &Value) -> Option<StoredDiagnostic> {
     Some(StoredDiagnostic {
         message: value.get("message")?.as_str()?.to_string(),
         severity: value.get("severity").and_then(Value::as_u64),
-        source: value.get("source").and_then(Value::as_str).map(ToOwned::to_owned),
-        code: value.get("code").map(|code| match code {
-            Value::String(text) => text.clone(),
-            Value::Number(number) => number.to_string(),
-            _ => String::new(),
-        }).filter(|value| !value.is_empty()),
+        source: value
+            .get("source")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        code: value
+            .get("code")
+            .map(|code| match code {
+                Value::String(text) => text.clone(),
+                Value::Number(number) => number.to_string(),
+                _ => String::new(),
+            })
+            .filter(|value| !value.is_empty()),
         line: start.get("line").and_then(Value::as_u64).unwrap_or(0) as usize + 1,
-        character: start
-            .get("character")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize
-            + 1,
+        character: start.get("character").and_then(Value::as_u64).unwrap_or(0) as usize + 1,
         end_line: end.get("line").and_then(Value::as_u64).unwrap_or(0) as usize + 1,
-        end_character: end
-            .get("character")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize
-            + 1,
+        end_character: end.get("character").and_then(Value::as_u64).unwrap_or(0) as usize + 1,
     })
 }

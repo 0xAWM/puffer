@@ -1,6 +1,6 @@
+use crate::runtime::structured_output_support::StructuredOutputConfig;
 use crate::state::ClaudeReadState;
 use crate::AppState;
-use crate::runtime::structured_output_support::StructuredOutputConfig;
 use anyhow::{bail, Context, Result};
 use puffer_provider_openai::OpenAIRequestConfig;
 use puffer_resources::LoadedResources;
@@ -69,8 +69,9 @@ pub(crate) fn execute_tool(
                     if let Some(snapshot) = state.claude_read_state.get(&path) {
                         let timestamp_ms = file_timestamp_ms(&path)?;
                         if !snapshot.is_partial_view && timestamp_ms == snapshot.timestamp_ms {
-                            let output =
-                                read::execute_claude_file_unchanged(path.display().to_string().as_str())?;
+                            let output = read::execute_claude_file_unchanged(
+                                path.display().to_string().as_str(),
+                            )?;
                             return Ok(tool_result(definition, true, output));
                         }
                     }
@@ -323,14 +324,12 @@ fn execute_workflow_tool(
         "SendUserMessage" | "Brief" => {
             workflow::send_user_message::execute_send_user_message(state, cwd, input)
         }
-        "StructuredOutput" => {
-            workflow::structured_output::execute_structured_output(
-                state,
-                cwd,
-                input,
-                structured_output,
-            )
-        }
+        "StructuredOutput" => workflow::structured_output::execute_structured_output(
+            state,
+            cwd,
+            input,
+            structured_output,
+        ),
         "TaskCreate" => workflow::task_create::execute_task_create(state, cwd, input),
         "TaskGet" => workflow::task_get::execute_task_get(state, cwd, input),
         "TaskList" => workflow::task_list::execute_task_list(state, cwd, input),

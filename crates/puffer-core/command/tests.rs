@@ -356,7 +356,7 @@ fn permissions_command_creates_workspace_permissions_file() {
     let permissions_path = paths.workspace_config_dir.join("permissions.toml");
     let contents = std::fs::read_to_string(permissions_path).unwrap();
     assert!(contents.contains("[tools]"));
-    assert!(contents.contains("bash = \"ask\""));
+    assert!(contents.contains("bash = \"on-request\""));
 }
 
 #[test]

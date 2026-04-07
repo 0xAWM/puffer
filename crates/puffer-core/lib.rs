@@ -2,6 +2,7 @@ mod command;
 mod command_helpers;
 mod command_summary;
 mod hooks;
+mod permissions;
 mod runtime;
 mod state;
 

@@ -13,8 +13,11 @@ pub(crate) fn append_markdown(
     cwd: Option<&Path>,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let rendered =
-        crate::markdown_render::render_markdown_text_with_width_and_cwd(markdown_source, width, cwd);
+    let rendered = crate::markdown_render::render_markdown_text_with_width_and_cwd(
+        markdown_source,
+        width,
+        cwd,
+    );
     lines.extend(rendered.lines);
 }
 

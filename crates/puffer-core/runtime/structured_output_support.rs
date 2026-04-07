@@ -1,3 +1,4 @@
+use crate::permissions::RuntimePermissionContext;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_provider_openai::{
     OpenAIChatCompletionTool, OpenAIChatCompletionToolFunction, OpenAIChatResponseFormat,
@@ -81,9 +82,19 @@ pub(super) fn anthropic_tool_definitions(
     registry: &ToolRegistry,
     structured_output: Option<&StructuredOutputConfig>,
 ) -> Result<Vec<Value>> {
-    let definitions = anthropic_tool_definitions_with_structured_output(registry, structured_output)?;
+    anthropic_tool_definitions_for_request(registry, structured_output, None)
+}
+
+pub(super) fn anthropic_tool_definitions_for_request(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+    permission_context: Option<&RuntimePermissionContext>,
+) -> Result<Vec<Value>> {
+    let definitions =
+        anthropic_tool_definitions_with_structured_output(registry, structured_output)?;
     Ok(definitions
         .into_iter()
+        .filter(|definition| tool_visible_to_model(permission_context, definition))
         .map(|definition| {
             json!({
                 "name": definition.id,
@@ -99,13 +110,20 @@ pub(super) fn openai_tool_definitions(
     structured_output: Option<&StructuredOutputConfig>,
     use_native: bool,
 ) -> Result<Vec<OpenAIResponsesTool>> {
-    let definitions = openai_tool_definitions_with_structured_output(
-        registry,
-        structured_output,
-        use_native,
-    )?;
+    openai_tool_definitions_for_request(registry, structured_output, use_native, None)
+}
+
+pub(super) fn openai_tool_definitions_for_request(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+    use_native: bool,
+    permission_context: Option<&RuntimePermissionContext>,
+) -> Result<Vec<OpenAIResponsesTool>> {
+    let definitions =
+        openai_tool_definitions_with_structured_output(registry, structured_output, use_native)?;
     Ok(definitions
         .into_iter()
+        .filter(|definition| tool_visible_to_model(permission_context, definition))
         .map(|definition| OpenAIResponsesTool {
             kind: "function".to_string(),
             name: definition.id.clone(),
@@ -124,13 +142,20 @@ pub(super) fn openai_chat_completion_tools(
     structured_output: Option<&StructuredOutputConfig>,
     use_native: bool,
 ) -> Result<Vec<OpenAIChatCompletionTool>> {
-    let definitions = openai_tool_definitions_with_structured_output(
-        registry,
-        structured_output,
-        use_native,
-    )?;
+    openai_chat_completion_tools_for_request(registry, structured_output, use_native, None)
+}
+
+pub(super) fn openai_chat_completion_tools_for_request(
+    registry: &ToolRegistry,
+    structured_output: Option<&StructuredOutputConfig>,
+    use_native: bool,
+    permission_context: Option<&RuntimePermissionContext>,
+) -> Result<Vec<OpenAIChatCompletionTool>> {
+    let definitions =
+        openai_tool_definitions_with_structured_output(registry, structured_output, use_native)?;
     Ok(definitions
         .into_iter()
+        .filter(|definition| tool_visible_to_model(permission_context, definition))
         .map(|definition| OpenAIChatCompletionTool {
             kind: "function".to_string(),
             function: OpenAIChatCompletionToolFunction {
@@ -216,6 +241,15 @@ fn openai_tool_definitions_with_structured_output(
         }
     }
     Ok(definitions)
+}
+
+fn tool_visible_to_model(
+    permission_context: Option<&RuntimePermissionContext>,
+    definition: &ToolDefinition,
+) -> bool {
+    permission_context
+        .map(|context| context.tool_visible_to_model(definition))
+        .unwrap_or(true)
 }
 
 fn requested_structured_output_definition(
