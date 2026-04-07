@@ -1,14 +1,15 @@
 use crate::command_helpers::{
     append_tool_invocations, describe_context, describe_files_in_context, describe_git_diff,
     emit_system, execute_skill_command, handle_agents_command, handle_branch_command,
-    handle_config_command, handle_copy_command, handle_effort_command, handle_export_command,
-    handle_fast_command, handle_hooks_command, handle_ide_command, handle_keybindings_command,
-    handle_mcp_command, handle_memory_command, handle_model_command, handle_permissions_command,
-    handle_plan_command, handle_plugin_command, handle_remote_control_command,
-    handle_remote_env_command, handle_resume_command, handle_sandbox_command,
-    handle_session_command, handle_tag_command, handle_tasks_command, list_skills,
-    persist_user_settings, record_command_checkpoint, reload_config_from_disk,
-    render_login_guidance, rewind_transcript, run_doctor, terminal_setup_advice,
+    handle_btw_command, handle_compact_command, handle_config_command, handle_copy_command,
+    handle_effort_command, handle_export_command, handle_fast_command, handle_hooks_command,
+    handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
+    handle_model_command, handle_permissions_command, handle_plan_command,
+    handle_plugin_command, handle_remote_control_command, handle_remote_env_command,
+    handle_resume_command, handle_sandbox_command, handle_session_command, handle_tag_command,
+    handle_tasks_command, list_skills, persist_user_settings, record_command_checkpoint,
+    reload_config_from_disk, remove_provider_credentials, render_login_guidance,
+    rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::{
     render_buddy_summary, render_cost_summary, render_status_summary, render_usage_summary,
@@ -68,7 +69,7 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             &[],
             "Ask a quick side question without interrupting the main conversation",
             Some("<question>"),
-            CommandKind::Prompt,
+            CommandKind::Local,
         ),
         cmd(
             "buddy",
@@ -92,11 +93,18 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             CommandKind::Ui,
         ),
         cmd(
+            "commit",
+            &[],
+            "Create a git commit",
+            None,
+            CommandKind::Prompt,
+        ),
+        cmd(
             "compact",
             &[],
             "Summarize the conversation to preserve context budget",
             Some("<optional custom summarization instructions>"),
-            CommandKind::Prompt,
+            CommandKind::Local,
         ),
         cmd(
             "config",
@@ -739,6 +747,14 @@ fn execute_local_command(
             session_store,
             render_status_summary(state, resources, providers, auth_store),
         ),
+        "btw" => handle_btw_command(
+            state,
+            resources,
+            providers,
+            auth_store,
+            session_store,
+            args,
+        ),
         "usage" => emit_system(
             state,
             session_store,
@@ -749,6 +765,9 @@ fn execute_local_command(
             session_store.append_transcript_clear(state.session.id)?;
             state.apply_transcript_rewrite(&puffer_session_store::TranscriptRewrite::Clear);
             emit_system(state, session_store, "Transcript cleared.".to_string())
+        }
+        "compact" => {
+            handle_compact_command(state, resources, providers, auth_store, session_store, args)
         }
         "add-dir" => {
             let validation = workspace_paths::validate_directory_for_workspace(
@@ -902,13 +921,8 @@ fn execute_local_command(
                     format!("{provider} does not use stored credentials."),
                 );
             }
-            emit_system(
-                state,
-                session_store,
-                format!(
-                    "Run `puffer auth clear {provider}` to remove stored credentials for {provider}."
-                ),
-            )
+            let message = remove_provider_credentials(state, auth_store, provider)?;
+            emit_system(state, session_store, message)
         }
         "session" => handle_session_command(state, session_store, args),
         "tag" => handle_tag_command(state, session_store, args),

@@ -1,8 +1,11 @@
+use crate::AppState;
+use anyhow::Result;
+use puffer_config::{save_user_config, ConfigPaths};
 use puffer_provider_openai::{
     build_authorization_url as build_openai_authorization_url,
     generate_pkce as generate_openai_pkce, OpenAIOAuthConfig,
 };
-use puffer_provider_registry::{AuthMode, ProviderDescriptor};
+use puffer_provider_registry::{AuthMode, AuthStore, ProviderDescriptor};
 use puffer_transport_anthropic::{
     build_authorization_url as build_anthropic_authorization_url,
     generate_pkce as generate_anthropic_pkce, AnthropicOAuthConfig, CONSOLE_AUTHORIZE_URL,
@@ -145,4 +148,58 @@ pub(crate) fn render_login_guidance(
             format!("\n{session_hint}")
         }
     )
+}
+
+/// Removes stored credentials for one provider and clears the active selection when needed.
+pub(crate) fn remove_provider_credentials(
+    state: &mut AppState,
+    auth_store: &mut AuthStore,
+    provider_id: &str,
+) -> Result<String> {
+    let provider_id = provider_id.trim();
+    let removed = auth_store.remove(provider_id);
+    let cleared_active_provider = active_selection_uses_provider(state, provider_id);
+
+    if removed.is_some() {
+        let auth_path = ConfigPaths::discover(&state.cwd)
+            .user_config_dir
+            .join("auth.json");
+        auth_store.save(&auth_path)?;
+    }
+
+    if cleared_active_provider {
+        state.current_provider = None;
+        state.current_model = None;
+        state.config.default_provider = None;
+        state.config.default_model = None;
+        let paths = ConfigPaths::discover(&state.cwd);
+        save_user_config(&paths, &state.config)?;
+    }
+
+    let message = if removed.is_some() {
+        if cleared_active_provider {
+            format!(
+                "Removed stored credentials for {provider_id} and cleared the active selection."
+            )
+        } else {
+            format!("Removed stored credentials for {provider_id}.")
+        }
+    } else if cleared_active_provider {
+        format!("No stored credentials exist for {provider_id}; cleared the active selection.")
+    } else {
+        format!("No stored credentials exist for {provider_id}.")
+    };
+    Ok(message)
+}
+
+fn active_selection_uses_provider(state: &AppState, provider_id: &str) -> bool {
+    if state.current_provider.as_deref() == Some(provider_id) {
+        return true;
+    }
+    state
+        .current_model
+        .as_deref()
+        .and_then(|selector| selector.split_once('/'))
+        .map(|(provider, _)| provider == provider_id)
+        .unwrap_or(false)
 }

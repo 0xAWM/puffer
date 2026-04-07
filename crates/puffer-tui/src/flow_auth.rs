@@ -1,6 +1,5 @@
-use crate::flow::persist_user_config;
 use anyhow::Result;
-use puffer_core::{AppState, MessageRole};
+use puffer_core::{logout_provider_credentials, AppState, MessageRole};
 use puffer_provider_registry::AuthStore;
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use std::io;
@@ -50,46 +49,14 @@ pub(crate) fn handle_auth_command(
         args
     }
     .to_string();
-    let removed = auth_store.remove(&provider);
-    let cleared_active_provider = active_selection_uses_provider(state, provider.as_str());
-    if cleared_active_provider {
-        state.current_provider = None;
-        state.current_model = None;
-        state.config.default_provider = None;
-        state.config.default_model = None;
-        persist_user_config(state)?;
-    }
-    let message = if removed.is_some() {
-        auth_store.save(auth_path)?;
-        if cleared_active_provider {
-            format!("Removed stored credentials for {provider} and cleared the active selection.")
-        } else {
-            format!("Removed stored credentials for {provider}.")
-        }
-    } else if cleared_active_provider {
-        format!("No stored credentials exist for {provider}; cleared the active selection.")
-    } else {
-        format!("No stored credentials exist for {provider}.")
-    };
+    let _ = auth_path;
+    let message = logout_provider_credentials(state, auth_store, &provider)?;
     state.push_message(MessageRole::System, message.clone());
     session_store.append_event(
         state.session.id,
         TranscriptEvent::SystemMessage { text: message },
     )?;
     Ok(true)
-}
-
-/// Returns true when the active selection belongs to the provider being logged out.
-pub(crate) fn active_selection_uses_provider(state: &AppState, provider_id: &str) -> bool {
-    if state.current_provider.as_deref() == Some(provider_id) {
-        return true;
-    }
-    state
-        .current_model
-        .as_deref()
-        .and_then(|selector| selector.split_once('/'))
-        .map(|(provider, _)| provider == provider_id)
-        .unwrap_or(false)
 }
 
 /// Runs the external `puffer auth login` flow and reloads stored credentials.

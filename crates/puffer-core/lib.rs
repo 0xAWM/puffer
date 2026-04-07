@@ -169,6 +169,15 @@ pub fn apply_model_preferences(
     command_helpers::apply_model_preferences(state, provider_id, model_id, effort, fast_mode)
 }
 
+/// Removes stored credentials for one provider and clears the active selection when it matches.
+pub fn logout_provider_credentials(
+    state: &mut AppState,
+    auth_store: &mut AuthStore,
+    provider_id: &str,
+) -> Result<String> {
+    command_helpers::remove_provider_credentials(state, auth_store, provider_id)
+}
+
 /// Lists the sessions that should appear in the current `/resume` picker.
 pub fn resumable_sessions_for_picker(
     session_store: &SessionStore,

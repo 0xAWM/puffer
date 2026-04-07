@@ -1,4 +1,5 @@
 use super::*;
+use puffer_config::save_user_config;
 use puffer_provider_registry::AuthMode;
 
 fn provider(
@@ -148,5 +149,127 @@ fn login_command_reports_when_provider_has_no_auth_modes() {
             role: MessageRole::System,
             text,
         }) if text == "ollama does not require stored credentials."
+    ));
+}
+
+#[test]
+fn logout_command_removes_anthropic_credentials_and_clears_active_selection() {
+    let tempdir = tempdir().unwrap();
+    let _home_lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("anthropic".to_string());
+    config.default_model = Some("anthropic/model".to_string());
+    save_user_config(&paths, &config).unwrap();
+
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("anthropic".to_string());
+    state.current_model = Some("anthropic/model".to_string());
+
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider(
+        "anthropic",
+        "anthropic-messages",
+        vec![AuthMode::ApiKey, AuthMode::OAuth],
+    ));
+
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = AuthStore::default();
+    auth_store.set_api_key("anthropic", "sk-ant");
+    auth_store.save(&auth_path).unwrap();
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut auth_store,
+        &session_store,
+        "/logout anthropic",
+    )
+    .unwrap();
+
+    assert_eq!(state.current_provider, None);
+    assert_eq!(state.current_model, None);
+    assert_eq!(state.config.default_provider, None);
+    assert_eq!(state.config.default_model, None);
+    assert!(!auth_store.has_auth("anthropic"));
+    assert!(!AuthStore::load(&auth_path).unwrap().has_auth("anthropic"));
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text == "Removed stored credentials for anthropic and cleared the active selection."
+    ));
+}
+
+#[test]
+fn logout_command_clears_selection_when_model_provider_matches_openai() {
+    let tempdir = tempdir().unwrap();
+    let _home_lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("anthropic".to_string());
+    config.default_model = Some("openai/model".to_string());
+    save_user_config(&paths, &config).unwrap();
+
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("anthropic".to_string());
+    state.current_model = Some("openai/model".to_string());
+
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider(
+        "openai",
+        "openai-responses",
+        vec![AuthMode::ApiKey, AuthMode::OAuth],
+    ));
+
+    let auth_path = paths.user_config_dir.join("auth.json");
+    let mut auth_store = AuthStore::default();
+    auth_store.set_api_key("openai", "sk-openai");
+    auth_store.save(&auth_path).unwrap();
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut auth_store,
+        &session_store,
+        "/logout openai",
+    )
+    .unwrap();
+
+    assert_eq!(state.current_provider, None);
+    assert_eq!(state.current_model, None);
+    assert_eq!(state.config.default_provider, None);
+    assert_eq!(state.config.default_model, None);
+    assert!(!auth_store.has_auth("openai"));
+    assert!(!AuthStore::load(&auth_path).unwrap().has_auth("openai"));
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text == "Removed stored credentials for openai and cleared the active selection."
     ));
 }

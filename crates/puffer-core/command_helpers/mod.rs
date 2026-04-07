@@ -17,7 +17,7 @@ mod tasks;
 pub use actions::CommandActionEntry;
 pub(crate) use agents::handle_agents_command;
 pub(crate) use artifacts::{handle_copy_command, handle_export_command};
-pub(crate) use auth::render_login_guidance;
+pub(crate) use auth::{remove_provider_credentials, render_login_guidance};
 pub(crate) use branch::handle_branch_command;
 pub(crate) use common::{
     describe_context, describe_files_in_context, describe_git_diff, emit_system,
@@ -43,7 +43,7 @@ pub use plugins::PluginActionEntry;
 pub(crate) use plugins::{
     handle_plugin_command, reload_plugins_summary, render_plugin_actions, render_plugin_summary,
 };
-pub(crate) use prompt::handle_plan_command;
+pub(crate) use prompt::{handle_btw_command, handle_compact_command, handle_plan_command};
 pub(crate) use resume::{handle_resume_command, resumable_sessions_for_picker};
 pub use session::SessionOverlayView;
 pub(crate) use session::{
