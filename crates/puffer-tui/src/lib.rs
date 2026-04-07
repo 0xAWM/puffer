@@ -1,8 +1,11 @@
+mod approval_overlay;
 mod flow;
+mod list_selection_view;
 mod markdown;
 mod markdown_render;
 #[path = "onboarding/mod.rs"]
 mod onboarding;
+mod permission_prompt_flow;
 mod popup;
 mod render;
 #[path = "state.rs"]
@@ -35,6 +38,7 @@ use crate::flow::{
     poll_pending_submit, run_embedded_auth_login, set_overlay_state, submit_next_queued_prompt,
     submit_queued_prompt_if_ready, try_open_overlay,
 };
+use crate::permission_prompt_flow::handle_permission_prompt_key;
 use state::TuiState;
 pub(crate) use state::{AuthPickerAction, ModelPickerEntry, OverlayState};
 
@@ -388,6 +392,12 @@ fn handle_overlay_key(
     tui: &mut TuiState,
     no_alt_screen: bool,
 ) -> Result<bool> {
+    if matches!(tui.overlay.as_ref(), Some(OverlayState::PermissionPrompt { .. }))
+        && handle_permission_prompt_key(key, tui)
+    {
+        return Ok(false);
+    }
+
     let Some(active_overlay) = tui.overlay.as_ref() else {
         return Ok(false);
     };

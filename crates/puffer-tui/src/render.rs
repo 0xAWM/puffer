@@ -4,6 +4,7 @@ mod summary;
 mod top_panel;
 mod tool_messages;
 
+use crate::approval_overlay::render_permission_overlay;
 use self::overlay_list::{onboarding_fixed_line_count, overlay_selection, visible_overlay_rows};
 use self::panes::{render_empty_state, render_help_pane};
 #[cfg(test)]
@@ -579,6 +580,10 @@ fn render_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState)
         render_onboarding_overlay(frame, viewport, overlay);
         return;
     }
+    if let OverlayState::PermissionPrompt { overlay } = overlay {
+        render_permission_overlay(frame, viewport, overlay);
+        return;
+    }
     if matches!(overlay, OverlayState::LoginPicker { .. }) {
         render_login_overlay(frame, viewport, overlay);
         return;
@@ -673,6 +678,7 @@ fn overlay_title(overlay: &OverlayState) -> &'static str {
         OverlayState::LogoutPicker { .. } => "Logout Provider",
         OverlayState::ThemePicker { .. } => "Select Theme",
         OverlayState::CommandPicker { .. } => "Select Command",
+        OverlayState::PermissionPrompt { .. } => "Permission Needed",
         OverlayState::OnboardingTheme { .. } => "Select Theme",
         OverlayState::OnboardingProvider { .. } => "Select Provider",
         OverlayState::OnboardingAuth { .. } => "Select Login Method",
@@ -757,6 +763,7 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
                 text: format!("key  {}", masked_secret(input)),
             },
         ],
+        OverlayState::PermissionPrompt { .. } => Vec::new(),
         OverlayState::Usage(..) => Vec::new(),
     }
 }

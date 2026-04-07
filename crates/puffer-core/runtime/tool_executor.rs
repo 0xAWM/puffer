@@ -1,5 +1,8 @@
 use super::agents::execute_agent_tool;
 use super::claude_tools::{self, ProviderToolContext};
+use super::permission_prompt::{
+    build_permission_prompt_request, prompt_for_permission, PermissionPromptAction,
+};
 use super::structured_output_support::{
     requested_structured_output_definition_for_request, StructuredOutputConfig,
 };
@@ -56,12 +59,32 @@ pub(super) fn execute_tool_call(
     };
     let permission_context = load_runtime_permission_context(cwd, resources, state)?;
     let permission_decision = permission_context.decision_for_tool_call(&definition, &input);
-    if permission_decision.behavior != ToolPermissionBehavior::Allow {
-        return Ok(blocked_runtime_tool(
-            tool_id,
-            permission_decision.behavior,
-            permission_decision.reason,
-        ));
+    match permission_decision.behavior {
+        ToolPermissionBehavior::Allow => {}
+        ToolPermissionBehavior::Deny => {
+            return Ok(blocked_runtime_tool(
+                tool_id,
+                ToolPermissionBehavior::Deny,
+                permission_decision.reason,
+            ));
+        }
+        ToolPermissionBehavior::Ask => match prompt_for_permission(build_permission_prompt_request(
+            &definition,
+            &input,
+            permission_decision.reason.as_deref(),
+        )) {
+            PermissionPromptAction::AllowOnce => {}
+            PermissionPromptAction::AllowSession => {
+                state.allow_tool_for_session(&definition.id);
+            }
+            PermissionPromptAction::Deny => {
+                return Ok(blocked_runtime_tool(
+                    tool_id,
+                    ToolPermissionBehavior::Deny,
+                    Some("permission denied by user".to_string()),
+                ));
+            }
+        },
     }
     if definition.handler == "runtime:agent" {
         let output = execute_agent_tool(state, resources, providers, auth_store, cwd, input)?;

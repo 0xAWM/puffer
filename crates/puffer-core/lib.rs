@@ -14,10 +14,12 @@ pub use hooks::run_resource_hooks;
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::{
     execute_user_prompt_streaming as execute_user_turn_streaming,
+    execute_user_prompt_streaming_with_permissions as execute_user_turn_streaming_with_permissions,
     execute_user_prompt_streaming_with_structured_output as execute_user_turn_streaming_with_structured_output,
     execute_user_prompt_with_structured_output as execute_user_turn_with_structured_output,
-    shutdown_runtime_services, StructuredOutputConfig, ToolInvocation, TurnExecution,
-    TurnStreamEvent,
+    shutdown_runtime_services, with_permission_prompt_handler, PermissionPromptRequest,
+    PermissionPromptAction,
+    StructuredOutputConfig, ToolInvocation, TurnExecution, TurnStreamEvent,
 };
 pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
 

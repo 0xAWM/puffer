@@ -1,15 +1,18 @@
+use crate::approval_overlay::ApprovalOverlay;
 use crate::popup::popup_rows;
 use crate::usage::UsageOverlay;
 use anyhow::Result;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
-use puffer_core::{CommandSpec, ToolInvocation, TurnExecution};
+use puffer_core::{
+    CommandSpec, PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnExecution,
+};
 use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
 /// Stores editable TUI input state plus the active overlay and deferred prompt.
 pub(crate) struct TuiState {
@@ -20,6 +23,7 @@ pub(crate) struct TuiState {
     pub(crate) follow_output: bool,
     pub(crate) tool_details_expanded: bool,
     pub(crate) overlay: Option<OverlayState>,
+    pub(crate) pending_permission_request: Option<PendingPermissionRequest>,
     pub(crate) deferred_prompt: Option<String>,
     pub(crate) pending_submit: Option<PendingSubmit>,
     pub(crate) queued_prompts: VecDeque<String>,
@@ -35,6 +39,7 @@ pub(crate) struct PendingSubmitResult {
 pub(crate) enum PendingSubmitEvent {
     TextDelta(String),
     ToolInvocations(Vec<ToolInvocation>),
+    PermissionRequest(PermissionPromptRequest, Sender<PermissionPromptAction>),
     Finished(PendingSubmitResult),
 }
 
@@ -43,6 +48,11 @@ pub(crate) struct PendingSubmit {
     pub(crate) prompt: String,
     pub(crate) receiver: Receiver<PendingSubmitEvent>,
     pub(crate) rendered_tool_invocations: usize,
+}
+
+/// Stores the response channel for the currently visible permission prompt.
+pub(crate) struct PendingPermissionRequest {
+    pub(crate) response_tx: Sender<PermissionPromptAction>,
 }
 
 impl Default for TuiState {
@@ -55,6 +65,7 @@ impl Default for TuiState {
             follow_output: true,
             tool_details_expanded: false,
             overlay: None,
+            pending_permission_request: None,
             deferred_prompt: None,
             pending_submit: None,
             queued_prompts: VecDeque::new(),
@@ -324,6 +335,7 @@ pub(crate) enum OverlayState {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
     },
+    PermissionPrompt { overlay: ApprovalOverlay },
     Usage(UsageOverlay),
     OnboardingTheme {
         entries: Vec<ModelPickerEntry>,
@@ -372,6 +384,7 @@ impl OverlayState {
             | Self::OnboardingModel { selection, .. } => {
                 *selection = selection.saturating_sub(1);
             }
+            Self::PermissionPrompt { overlay } => overlay.select_previous(),
             Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
@@ -413,21 +426,32 @@ impl OverlayState {
             } => {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
+            Self::PermissionPrompt { overlay } => overlay.select_next(),
             Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
 
     /// Moves up by a larger page-sized jump.
     pub(crate) fn page_up(&mut self) {
-        for _ in 0..10 {
-            self.select_previous();
+        match self {
+            Self::PermissionPrompt { overlay } => overlay.page_up(),
+            _ => {
+                for _ in 0..10 {
+                    self.select_previous();
+                }
+            }
         }
     }
 
     /// Moves down by a larger page-sized jump.
     pub(crate) fn page_down(&mut self) {
-        for _ in 0..10 {
-            self.select_next();
+        match self {
+            Self::PermissionPrompt { overlay } => overlay.page_down(),
+            _ => {
+                for _ in 0..10 {
+                    self.select_next();
+                }
+            }
         }
     }
 
@@ -476,6 +500,7 @@ impl OverlayState {
             Self::ProviderPicker { .. }
             | Self::AuthPicker { .. }
             | Self::ApiKeyPrompt { .. }
+            | Self::PermissionPrompt { .. }
             | Self::Usage(..)
             | Self::OnboardingTheme { .. }
             | Self::OnboardingProvider { .. }
@@ -506,6 +531,7 @@ impl OverlayState {
             | Self::LogoutPicker { .. }
             | Self::ThemePicker { .. }
             | Self::CommandPicker { .. }
+            | Self::PermissionPrompt { .. }
             | Self::Usage(..)
             | Self::OnboardingTheme { .. } => None,
         }
@@ -584,6 +610,7 @@ impl OverlayState {
                     *selection = index;
                 }
             }
+            Self::PermissionPrompt { .. } => {}
             Self::AuthPicker {
                 entries, selection, ..
             } => {
@@ -594,7 +621,9 @@ impl OverlayState {
                     *selection = index;
                 }
             }
-            Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
+            Self::ApiKeyPrompt { .. }
+            | Self::Usage(..)
+            | Self::OnboardingApiKey { .. } => {}
         }
     }
 
@@ -640,6 +669,25 @@ impl OverlayState {
             self,
             Self::ApiKeyPrompt { .. } | Self::OnboardingApiKey { .. }
         )
+    }
+
+    /// Returns the selected permission action when the overlay is a permission prompt.
+    pub(crate) fn selected_permission_action(&self) -> Option<PermissionPromptAction> {
+        match self {
+            Self::PermissionPrompt { overlay } => Some(overlay.selected_action()),
+            _ => None,
+        }
+    }
+
+    /// Returns the direct shortcut action for a permission prompt, if any.
+    pub(crate) fn permission_shortcut_action(
+        &mut self,
+        ch: char,
+    ) -> Option<PermissionPromptAction> {
+        match self {
+            Self::PermissionPrompt { overlay } => overlay.activate_shortcut(ch),
+            _ => None,
+        }
     }
 
     /// Moves the text cursor left for inline API-key input.

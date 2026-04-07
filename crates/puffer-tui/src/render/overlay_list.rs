@@ -20,6 +20,7 @@ pub(super) fn overlay_selection(overlay: &OverlayState) -> Option<usize> {
         | OverlayState::OnboardingProvider { selection, .. }
         | OverlayState::OnboardingAuth { selection, .. }
         | OverlayState::OnboardingModel { selection, .. } => Some(*selection),
+        OverlayState::PermissionPrompt { overlay } => Some(overlay.selection()),
         OverlayState::ApiKeyPrompt { .. }
         | OverlayState::Usage(..)
         | OverlayState::OnboardingApiKey { .. } => None,

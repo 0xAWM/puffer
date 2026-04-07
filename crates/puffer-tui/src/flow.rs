@@ -1,8 +1,9 @@
 use anyhow::Result;
 use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
-    dispatch_command, execute_user_turn, execute_user_turn_streaming, reload_runtime_resources,
-    run_resource_hooks, supported_commands, AppState, MessageRole, ToolInvocation, TurnStreamEvent,
+    dispatch_command, execute_user_turn, execute_user_turn_streaming_with_permissions,
+    reload_runtime_resources, run_resource_hooks, supported_commands, AppState, MessageRole,
+    PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -15,7 +16,10 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
 use crate::onboarding;
-use crate::state::{PendingSubmit, PendingSubmitEvent, PendingSubmitResult};
+use crate::approval_overlay::ApprovalOverlay;
+use crate::state::{
+    PendingPermissionRequest, PendingSubmit, PendingSubmitEvent, PendingSubmitResult,
+};
 use crate::{OverlayState, TuiState};
 
 /// Opens a TUI overlay for slash commands that map to picker UI.
@@ -105,12 +109,14 @@ pub(crate) fn handle_prompt_submit(
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let event_sender = sender.clone();
-        let outcome = execute_user_turn_streaming(
+        let permission_sender = sender.clone();
+        let outcome = execute_user_turn_streaming_with_permissions(
             &mut worker_state,
             &worker_resources,
             &worker_providers,
             &mut worker_auth_store,
             &worker_prompt,
+            None,
             |event| match event {
                 TurnStreamEvent::TextDelta(delta) => {
                     let _ = event_sender.send(PendingSubmitEvent::TextDelta(delta));
@@ -118,6 +124,14 @@ pub(crate) fn handle_prompt_submit(
                 TurnStreamEvent::ToolInvocations(invocations) => {
                     let _ = event_sender.send(PendingSubmitEvent::ToolInvocations(invocations));
                 }
+            },
+            move |request: PermissionPromptRequest| {
+                let (response_tx, response_rx) = mpsc::channel();
+                let _ = permission_sender.send(PendingSubmitEvent::PermissionRequest(
+                    request,
+                    response_tx,
+                ));
+                response_rx.recv().unwrap_or(PermissionPromptAction::Deny)
             },
         )
         .map_err(|error| error.to_string());
@@ -207,6 +221,13 @@ pub(crate) fn poll_pending_submit(
                 pending.rendered_tool_invocations += invocations.len();
                 append_tool_messages(state, session_store, &invocations)?;
             }
+            PendingSubmitEvent::PermissionRequest(request, response_tx) => {
+                tui.pending_permission_request = Some(PendingPermissionRequest { response_tx });
+                tui.overlay = Some(OverlayState::PermissionPrompt {
+                    overlay: ApprovalOverlay::new(request),
+                });
+                break;
+            }
             PendingSubmitEvent::Finished(result) => {
                 completed = true;
                 let rendered_tool_invocations = pending.rendered_tool_invocations;
@@ -243,6 +264,19 @@ pub(crate) fn poll_pending_submit(
         tui.pending_submit = None;
     }
     Ok(completed)
+}
+
+/// Resolves the active permission prompt and unblocks the worker thread.
+pub(crate) fn respond_to_permission_prompt(
+    tui: &mut TuiState,
+    action: PermissionPromptAction,
+) -> bool {
+    let Some(pending) = tui.pending_permission_request.take() else {
+        return false;
+    };
+    let _ = pending.response_tx.send(action);
+    set_overlay_state(tui, None);
+    true
 }
 
 /// Submits prompt/auth/shell input from the TUI prompt.

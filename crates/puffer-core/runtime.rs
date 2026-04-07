@@ -23,6 +23,7 @@ mod local_mcp_resources;
 mod local_tools;
 mod openai;
 mod openai_sse;
+mod permission_prompt;
 mod structured_output_support;
 mod tool_executor;
 
@@ -36,6 +37,9 @@ use self::openai::{
     execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response,
 };
 pub use self::structured_output_support::StructuredOutputConfig;
+pub use self::permission_prompt::{
+    with_permission_prompt_handler, PermissionPromptAction, PermissionPromptRequest,
+};
 use self::structured_output_support::{
     anthropic_tool_definitions, anthropic_tool_definitions_for_request,
     validate_structured_output_schema,
@@ -178,6 +182,34 @@ where
         None,
         &mut on_event,
     )
+}
+
+/// Executes one user prompt with streaming events and interactive permission handling.
+pub fn execute_user_prompt_streaming_with_permissions<F, P>(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    structured_output: Option<&StructuredOutputConfig>,
+    mut on_event: F,
+    on_permission: P,
+) -> Result<TurnExecution>
+where
+    F: FnMut(TurnStreamEvent),
+    P: FnMut(PermissionPromptRequest) -> PermissionPromptAction + 'static,
+{
+    with_permission_prompt_handler(on_permission, || {
+        execute_user_prompt_streaming_with_options(
+            state,
+            resources,
+            providers,
+            auth_store,
+            input,
+            structured_output,
+            &mut on_event,
+        )
+    })
 }
 
 /// Executes one user prompt with a request-scoped structured output contract and streaming events.

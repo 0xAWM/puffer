@@ -153,6 +153,7 @@ pub(crate) fn back_overlay(
         | OverlayState::LogoutPicker { .. }
         | OverlayState::ThemePicker { .. }
         | OverlayState::CommandPicker { .. }
+        | OverlayState::PermissionPrompt { .. }
         | OverlayState::OnboardingTheme { .. }
         | OverlayState::OnboardingProvider { .. }
         | OverlayState::OnboardingAuth { .. }

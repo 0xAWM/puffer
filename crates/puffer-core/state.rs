@@ -69,6 +69,7 @@ pub struct AppState {
     pub should_exit: bool,
     pub reload_resources_requested: bool,
     pub(crate) claude_read_state: HashMap<PathBuf, ClaudeReadState>,
+    pub(crate) session_tool_permissions: HashMap<String, String>,
     pub(crate) native_structured_output_unsupported: HashSet<String>,
     tasks: Vec<TaskRecord>,
     next_task_id: u64,
@@ -100,6 +101,7 @@ impl AppState {
             should_exit: false,
             reload_resources_requested: false,
             claude_read_state: HashMap::new(),
+            session_tool_permissions: HashMap::new(),
             native_structured_output_unsupported: HashSet::new(),
             tasks: Vec::new(),
             next_task_id: 1,
@@ -259,6 +261,11 @@ impl AppState {
 
     pub(crate) fn tasks(&self) -> &[TaskRecord] {
         &self.tasks
+    }
+
+    pub(crate) fn allow_tool_for_session(&mut self, tool_id: &str) {
+        self.session_tool_permissions
+            .insert(tool_id.to_ascii_lowercase(), "allow".to_string());
     }
 
     pub(crate) fn native_structured_output_key(
