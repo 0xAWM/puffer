@@ -27,6 +27,7 @@ mod session_local;
 mod status;
 mod tag;
 mod tasks;
+mod terminal_setup;
 mod usage_buddy;
 
 pub(super) fn puffer_home_lock() -> &'static Mutex<()> {

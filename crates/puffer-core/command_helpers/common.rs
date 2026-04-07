@@ -2,12 +2,14 @@ use super::append_tool_invocations;
 use crate::{AppState, MessageRole};
 use anyhow::{Context, Result};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use puffer_resources::{skill_by_name, LoadedResources, SkillSpec, SourceKind};
+use puffer_resources::{skill_by_name, LoadedItem, LoadedResources, SkillSpec, SourceKind};
 use puffer_session_store::{GitDiffSnapshot, SessionStore, TranscriptEvent};
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+const SKILL_DESCRIPTION_CHARS_PER_TOKEN: usize = 4;
 
 /// Lists loaded skills in slash-command form.
 pub(crate) fn list_skills(
@@ -27,6 +29,8 @@ pub fn render_skills_panel(resources: &LoadedResources) -> String {
             "Create skills in one of these locations:",
             "- ~/.puffer/resources/skills/",
             "- .puffer/resources/skills/",
+            "",
+            "Use /skill:<name> as a compatibility alias after adding a user-invocable skill.",
         ]
         .join("\n");
     }
@@ -35,7 +39,7 @@ pub fn render_skills_panel(resources: &LoadedResources) -> String {
     let skill_count = resources.skills.len();
     let _ = writeln!(
         &mut text,
-        "{} {} loaded.",
+        "{} {}",
         skill_count,
         if skill_count == 1 { "skill" } else { "skills" }
     );
@@ -43,6 +47,11 @@ pub fn render_skills_panel(resources: &LoadedResources) -> String {
     append_skill_group(&mut text, resources, SourceKind::Workspace);
     append_skill_group(&mut text, resources, SourceKind::User);
     append_skill_group(&mut text, resources, SourceKind::Builtin);
+    let _ = writeln!(&mut text);
+    let _ = writeln!(
+        &mut text,
+        "Use /skill:<name> as a compatibility alias for any user-invocable skill."
+    );
 
     text.trim_end().to_string()
 }
@@ -321,16 +330,6 @@ pub(crate) fn record_command_checkpoint(
     session_store.append_git_diff_snapshot(state.session.id, snapshot)
 }
 
-/// Returns terminal setup guidance for the current runtime mode.
-pub(crate) fn terminal_setup_advice(state: &AppState) -> String {
-    format!(
-        "Terminal setup:\n- current cwd: {}\n- no_alt_screen: {}\n- tmux_golden_mode: {}",
-        state.cwd.display(),
-        state.config.ui.no_alt_screen,
-        state.config.ui.tmux_golden_mode
-    )
-}
-
 fn render_git_diff_summary(
     cwd: &PathBuf,
     session_store: &SessionStore,
@@ -467,34 +466,35 @@ fn append_skill_group(text: &mut String, resources: &LoadedResources, kind: Sour
 
     skills.sort_by(|left, right| left.value.name.cmp(&right.value.name));
     let _ = writeln!(text);
-    let _ = writeln!(text, "{}:", skill_source_heading(kind));
+    let _ = writeln!(
+        text,
+        "{} ({})",
+        skill_source_heading(kind),
+        skill_group_root(&skills)
+    );
     for skill in skills {
-        let command_label = if skill.value.user_invocable {
-            format!("/{}  (alias /skill:{})", skill.value.name, skill.value.name)
-        } else {
-            skill.value.name.clone()
-        };
-        let _ = writeln!(text, "- {}  {}", command_label, skill.value.description);
-        let _ = writeln!(text, "  {}", skill.source_info.path.display());
-        if let Some(argument_hint) = skill.value.argument_hint.as_deref() {
-            let _ = writeln!(text, "  args: {}", argument_hint);
-        }
-        if !skill.value.allowed_tools.is_empty() {
-            let _ = writeln!(
-                text,
-                "  allowed tools: {}",
-                skill.value.allowed_tools.join(", ")
-            );
-        }
-        if let Some(model) = skill.value.model.as_deref() {
-            let _ = writeln!(text, "  model: {model}");
-        }
+        let mut details = vec![format!(
+            "~{} description tokens",
+            estimate_skill_description_tokens(&skill.value)
+        )];
         if !skill.value.user_invocable {
-            let _ = writeln!(text, "  hidden from slash-command invocation");
+            details.push("hidden from slash-command invocation".to_string());
         }
         if skill.value.disable_model_invocation {
-            let _ = writeln!(text, "  model invocation disabled");
+            details.push("model invocation disabled".to_string());
         }
+        if let Some(argument_hint) = skill.value.argument_hint.as_deref() {
+            details.push(format!("args {argument_hint}"));
+        }
+        if let Some(model) = skill.value.model.as_deref() {
+            details.push(format!("model {model}"));
+        }
+        let _ = writeln!(
+            text,
+            "- {} · {}",
+            skill_command_label(skill),
+            details.join(" · ")
+        );
     }
 }
 
@@ -504,6 +504,37 @@ fn skill_source_heading(kind: SourceKind) -> &'static str {
         SourceKind::User => "User skills",
         SourceKind::Builtin => "Built-in skills",
     }
+}
+
+fn skill_group_root(skills: &[&LoadedItem<SkillSpec>]) -> String {
+    skills
+        .first()
+        .map(|skill| {
+            skill
+                .source_info
+                .path
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or(skill.source_info.path.as_path())
+                .display()
+                .to_string()
+        })
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+fn skill_command_label(skill: &LoadedItem<SkillSpec>) -> String {
+    if skill.value.user_invocable {
+        format!("/{}", skill.value.name)
+    } else {
+        skill.value.name.clone()
+    }
+}
+
+fn estimate_skill_description_tokens(skill: &SkillSpec) -> usize {
+    let description_chars = skill.description.chars().count();
+    description_chars
+        .div_ceil(SKILL_DESCRIPTION_CHARS_PER_TOKEN)
+        .max(1)
 }
 
 fn rewind_pop_count(state: &AppState, trimmed: &str) -> Option<usize> {
@@ -614,18 +645,15 @@ mod tests {
         };
 
         let rendered = render_skills_panel(&resources);
-        assert!(rendered.contains("3 skills loaded."));
-        assert!(rendered.contains("Workspace skills:"));
-        assert!(rendered.contains(
-            "/workspace-review  (alias /skill:workspace-review)  Review workspace changes"
-        ));
-        assert!(rendered.contains("User skills:"));
-        assert!(
-            rendered.contains("/user-review  (alias /skill:user-review)  Review shared changes")
-        );
-        assert!(rendered.contains("Built-in skills:"));
+        assert!(rendered.contains("3 skills"));
+        assert!(rendered.contains("Workspace skills (/tmp/project/.puffer/resources/skills)"));
+        assert!(rendered.contains("/workspace-review · ~6 description tokens"));
+        assert!(rendered.contains("User skills (/home/test/.puffer/resources/skills)"));
+        assert!(rendered.contains("/user-review · ~6 description tokens"));
+        assert!(rendered.contains("Built-in skills (/app/resources/skills)"));
+        assert!(rendered.contains("/builtin-review · ~6 description tokens"));
         assert!(rendered
-            .contains("/builtin-review  (alias /skill:builtin-review)  Review builtin changes"));
+            .contains("Use /skill:<name> as a compatibility alias for any user-invocable skill."));
     }
 
     #[test]
@@ -633,6 +661,34 @@ mod tests {
         let rendered = render_skills_panel(&LoadedResources::default());
         assert!(rendered.contains("No skills found."));
         assert!(rendered.contains("~/.puffer/resources/skills/"));
+        assert!(rendered.contains("/skill:<name>"));
+    }
+
+    #[test]
+    fn render_skills_panel_marks_hidden_and_model_disabled_skills() {
+        let resources = LoadedResources {
+            skills: vec![LoadedItem {
+                value: SkillSpec {
+                    name: "hidden-review".to_string(),
+                    description: "Hidden review entry".to_string(),
+                    user_invocable: false,
+                    disable_model_invocation: true,
+                    ..SkillSpec::default()
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from(
+                        "/tmp/project/.puffer/resources/skills/hidden-review/SKILL.md",
+                    ),
+                    kind: SourceKind::Workspace,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+
+        let rendered = render_skills_panel(&resources);
+        assert!(rendered.contains(
+            "- hidden-review · ~5 description tokens · hidden from slash-command invocation · model invocation disabled"
+        ));
     }
 }
 

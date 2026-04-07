@@ -260,6 +260,7 @@ fn resume_switches_to_matching_session_record() {
                 remote_session_id: None,
                 remote_session_url: None,
                 remote_session_status: None,
+                active_team_name: None,
                 statusline_enabled: true,
                 working_dirs: vec![tempdir.path().join("secondary").display().to_string()],
                 claude_read_state: Vec::new(),

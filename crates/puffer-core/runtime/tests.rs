@@ -188,7 +188,7 @@ fn fake_jwt(payload: Value) -> String {
     format!("header.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()))
 }
 
-fn refresh_env_lock() -> &'static Mutex<()> {
+pub(super) fn refresh_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }

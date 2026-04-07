@@ -651,8 +651,11 @@ fn assert_tool_description_matches_expected(
         .find(|item| item["name"] == json!(tool_id))
         .expect("anthropic tool definition");
     assert_eq!(
-        anthropic_definition["description"],
-        json!(expected),
+        anthropic_definition["description"]
+            .as_str()
+            .expect("anthropic description")
+            .trim_end(),
+        expected.trim_end(),
         "anthropic description for {tool_id}"
     );
 
@@ -715,28 +718,29 @@ fn reference_powershell_prompt() -> String {
             .expect("PowerShell unknown edition section"),
         "  return `",
     ));
-
-    prompt
-        .replace("${getEditionSection(edition)}", &edition)
-        .replace("${getMaxTimeoutMs()}", "600000")
-        .replace("${getMaxTimeoutMs() / 60000}", "10")
-        .replace("${getDefaultTimeoutMs()}", "120000")
-        .replace("${getDefaultTimeoutMs() / 60000}", "2")
-        .replace("${getMaxOutputLength()}", "30000")
-        .replace(
-            "${backgroundNote ? backgroundNote + '\\n' : ''}\\",
-            &(background + "\n"),
-        )
-        .replace(
-            "${sleepGuidance ? sleepGuidance + '\\n' : ''}\\",
-            &(sleep + "\n"),
-        )
-        .replace("${GLOB_TOOL_NAME}", "Glob")
-        .replace("${GREP_TOOL_NAME}", "Grep")
-        .replace("${FILE_READ_TOOL_NAME}", "Read")
-        .replace("${FILE_EDIT_TOOL_NAME}", "Edit")
-        .replace("${FILE_WRITE_TOOL_NAME}", "Write")
-        .replace("${POWERSHELL_TOOL_NAME}", "PowerShell")
+    decode_js_escapes(
+        &prompt
+            .replace("${getEditionSection(edition)}", &edition)
+            .replace("${getMaxTimeoutMs()}", "600000")
+            .replace("${getMaxTimeoutMs() / 60000}", "10")
+            .replace("${getDefaultTimeoutMs()}", "120000")
+            .replace("${getDefaultTimeoutMs() / 60000}", "2")
+            .replace("${getMaxOutputLength()}", "30000")
+            .replace(
+                "${backgroundNote ? backgroundNote + '\\n' : ''}\\",
+                &(indent_block(&background, 2) + "\n"),
+            )
+            .replace(
+                "${sleepGuidance ? sleepGuidance + '\\n' : ''}\\",
+                &(indent_block(&sleep, 2) + "\n"),
+            )
+            .replace("${GLOB_TOOL_NAME}", "Glob")
+            .replace("${GREP_TOOL_NAME}", "Grep")
+            .replace("${FILE_READ_TOOL_NAME}", "Read")
+            .replace("${FILE_EDIT_TOOL_NAME}", "Edit")
+            .replace("${FILE_WRITE_TOOL_NAME}", "Write")
+            .replace("${POWERSHELL_TOOL_NAME}", "PowerShell"),
+    )
 }
 
 fn reference_task_create_prompt() -> String {
@@ -1063,6 +1067,12 @@ fn decode_js_escapes(raw: &str) -> String {
             Some('n') => decoded.push('\n'),
             Some('r') => decoded.push('\r'),
             Some('t') => decoded.push('\t'),
+            Some('\n') => {}
+            Some('\r') => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
             Some('\'') => decoded.push('\''),
             Some('"') => decoded.push('"'),
             Some('`') => decoded.push('`'),
@@ -1088,6 +1098,21 @@ fn decode_js_escapes(raw: &str) -> String {
 
 fn normalize_inline_whitespace(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn indent_block(block: &str, spaces: usize) -> String {
+    let prefix = " ".repeat(spaces);
+    block
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn reference_explore_agent_description() -> String {
@@ -1164,9 +1189,12 @@ fn reference_verification_agent_description() -> String {
 fn reference_verification_agent_prompt() -> String {
     let reference =
         read_repo_file("references/claude-code/src/tools/AgentTool/built-in/verificationAgent.ts");
-    trim_line_trailing_whitespace(&decode_js_template_escapes(&normalize_reference_template(
-        &extract_template_literal(&reference, "const VERIFICATION_SYSTEM_PROMPT = `"),
-    )))
-    .replace("${BASH_TOOL_NAME}", "Bash")
-    .replace("${WEB_FETCH_TOOL_NAME}", "WebFetch")
+    trim_line_trailing_whitespace(&decode_js_template_escapes(
+        &normalize_reference_template(&extract_template_literal(
+            &reference,
+            "const VERIFICATION_SYSTEM_PROMPT = `",
+        ))
+        .replace("${BASH_TOOL_NAME}", "Bash")
+        .replace("${WEB_FETCH_TOOL_NAME}", "WebFetch"),
+    ))
 }

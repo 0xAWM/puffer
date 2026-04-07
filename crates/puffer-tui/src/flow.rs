@@ -7,8 +7,8 @@ use puffer_core::{
     execute_user_turn_streaming_with_permissions, reload_runtime_resources, render_config_summary,
     render_context_panel, render_copy_actions, render_doctor_report, render_hooks_actions,
     render_ide_actions, render_mcp_actions, render_permissions_panel, render_plugin_actions,
-    render_sandbox_actions, render_skills_panel, render_task_actions, run_resource_hooks, AppState,
-    MessageRole, PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
+    render_sandbox_actions, render_skills_panel, run_resource_hooks, AppState, MessageRole,
+    PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -27,6 +27,7 @@ use crate::session_overlay::SessionOverlay;
 use crate::state::{
     PendingPermissionRequest, PendingSubmit, PendingSubmitEvent, PendingSubmitResult,
 };
+use crate::task_overlay::open_task_overlay;
 use crate::{
     status_overlay::StatusOverlay, task_panels::task_text_overlay, text_overlay::TextOverlay,
 };
@@ -74,6 +75,10 @@ pub(crate) fn try_open_overlay(
             set_overlay_state(tui, Some(overlay));
             return Ok(true);
         }
+    }
+    if name == "tasks" && args.is_empty() {
+        set_overlay_state(tui, Some(open_task_overlay(state)?));
+        return Ok(true);
     }
     if name == "tasks" && !args.is_empty() {
         if let Some(overlay) = task_text_overlay(state, args)? {
@@ -178,13 +183,6 @@ pub(crate) fn try_open_overlay(
     }
     if name == "tag" && flow_pickers::open_tag_confirmation_picker(state, tui, args) {
         return Ok(true);
-    }
-    if name == "tasks" && args.is_empty() {
-        let entries =
-            flow_pickers::command_picker_entries(render_task_actions(&mut state.clone())?);
-        if flow_pickers::open_command_picker(tui, "Background Tasks", entries) {
-            return Ok(true);
-        }
     }
     if let Some(overlay) =
         onboarding::overlay_from_command(state, providers, auth_store, session_store, submitted)?

@@ -81,6 +81,11 @@ fn try_open_overlay_builds_permissions_panel() {
 }
 
 #[test]
+fn try_open_overlay_builds_skills_panel() {
+    assert!(matches!(open_panel("/skills"), OverlayState::Text(..)));
+}
+
+#[test]
 fn try_open_overlay_builds_hooks_panel() {
     let (title, entries, selection) = open_command_picker_panel("/hooks");
 
@@ -309,10 +314,17 @@ fn try_open_overlay_skips_copy_picker_when_preference_is_enabled() {
 
 #[test]
 fn try_open_overlay_builds_tasks_panel() {
-    assert!(matches!(
-        open_panel("/tasks"),
-        OverlayState::CommandPicker { .. }
-    ));
+    let (title, entries, selection) = open_command_picker_panel("/tasks");
+    assert_eq!(title, "Background Tasks");
+    assert_eq!(selection, 0);
+    assert_eq!(entries[0].selector, "dashboard");
+    assert_eq!(entries[0].command.as_deref(), Some("/tasks show"));
+    assert!(entries.iter().all(|entry| {
+        entry
+            .command
+            .as_deref()
+            .is_some_and(|command| !command.starts_with("/tasks output "))
+    }));
 }
 
 #[test]

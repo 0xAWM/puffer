@@ -6,10 +6,11 @@ use crate::command_helpers::{
     handle_mcp_command, handle_memory_command, handle_model_command, handle_permissions_command,
     handle_plan_command, handle_plugin_command, handle_remote_control_command,
     handle_remote_env_command, handle_resume_command, handle_sandbox_command,
-    handle_session_command, handle_tag_command, handle_tasks_command, list_skills,
-    persist_user_settings, record_command_checkpoint, reload_config_from_disk,
-    remove_provider_credentials, render_login_guidance, rewind_transcript, run_doctor,
-    run_provider_login_flow, supports_auth_mode, terminal_setup_advice,
+    handle_session_command, handle_tag_command, handle_tasks_command,
+    handle_terminal_setup_command, list_skills, persist_user_settings, record_command_checkpoint,
+    reload_config_from_disk, remove_provider_credentials, render_login_guidance, rewind_transcript,
+    run_doctor, run_provider_login_flow, should_hide_terminal_setup_command, supports_auth_mode,
+    terminal_setup_command_description,
 };
 use crate::{
     render_buddy_summary, render_cost_summary, render_status_summary, render_usage_summary,
@@ -38,6 +39,7 @@ pub struct CommandSpec {
     pub description: String,
     pub argument_hint: Option<String>,
     pub kind: CommandKind,
+    pub hidden: bool,
 }
 
 /// Returns the full built-in slash-command surface supported by Puffer.
@@ -381,12 +383,13 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             None,
             CommandKind::Ui,
         ),
-        cmd(
+        cmd_hidden(
             "terminal-setup",
             &[],
-            "Show terminal setup guidance",
+            terminal_setup_command_description(),
             None,
             CommandKind::Local,
+            should_hide_terminal_setup_command(),
         ),
         cmd("theme", &[], "Change the theme", None, CommandKind::Local),
         cmd(
@@ -426,6 +429,7 @@ pub fn command_surface(resources: &LoadedResources) -> Vec<CommandSpec> {
             description: skill.value.description.clone(),
             argument_hint: skill.value.argument_hint.clone(),
             kind: CommandKind::Prompt,
+            hidden: false,
         })
         .collect::<Vec<_>>();
     skills.sort_by(|left, right| left.name.cmp(&right.name));
@@ -723,7 +727,7 @@ fn execute_local_command(
         "help" => {
             let commands = command_surface(resources);
             let mut text = String::from("Supported commands:\n");
-            for command in &commands {
+            for command in commands.iter().filter(|command| !command.hidden) {
                 let _ = writeln!(&mut text, "/{:<16} {}", command.name, command.description);
             }
             let _ = writeln!(
@@ -952,7 +956,7 @@ fn execute_local_command(
         "resume" => handle_resume_command(state, session_store, args),
         "branch" => handle_branch_command(state, session_store, args),
         "rewind" => rewind_transcript(state, session_store, args),
-        "terminal-setup" => emit_system(state, session_store, terminal_setup_advice(state)),
+        "terminal-setup" => handle_terminal_setup_command(state, session_store),
         _ => emit_system(
             state,
             session_store,
@@ -967,16 +971,28 @@ fn execute_local_command(
 fn cmd(
     name: &'static str,
     aliases: &'static [&'static str],
-    description: &'static str,
+    description: impl Into<String>,
     argument_hint: Option<&'static str>,
     kind: CommandKind,
+) -> CommandSpec {
+    cmd_hidden(name, aliases, description, argument_hint, kind, false)
+}
+
+fn cmd_hidden(
+    name: &'static str,
+    aliases: &'static [&'static str],
+    description: impl Into<String>,
+    argument_hint: Option<&'static str>,
+    kind: CommandKind,
+    hidden: bool,
 ) -> CommandSpec {
     CommandSpec {
         name: name.to_string(),
         aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
-        description: description.to_string(),
+        description: description.into(),
         argument_hint: argument_hint.map(str::to_string),
         kind,
+        hidden,
     }
 }
 

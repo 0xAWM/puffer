@@ -14,6 +14,7 @@ mod session_overlay;
 mod state;
 mod status_overlay;
 mod statusline;
+mod task_overlay;
 mod task_panels;
 mod text_overlay;
 mod usage;

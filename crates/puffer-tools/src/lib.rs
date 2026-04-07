@@ -1,3 +1,4 @@
+mod agent_prompt;
 mod builtins;
 mod config_prompt;
 mod external;

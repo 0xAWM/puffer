@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 /// Backward-compatible alias for task action picker rows.
@@ -100,7 +101,7 @@ pub(crate) fn render_tasks_panel_text(state: &mut AppState, args: &str) -> Resul
 /// Builds the interactive `/tasks` action list used by the TUI picker.
 pub(crate) fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskActionEntry>> {
     let tasks = load_workflow_tasks(state)?;
-    let agents = load_json_store::<WorkflowAgentStoreView>(&workflow_paths(state)?.agents)?;
+    let agents = load_workflow_agents(state)?;
     let mut actions = vec![
         TaskActionEntry {
             command: "/tasks show".to_string(),
@@ -158,7 +159,7 @@ pub(crate) fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskAction
         }
     }
 
-    for agent in &agents.agents {
+    for agent in &agents {
         actions.push(TaskActionEntry {
             command: format!("/tasks show {}", agent.agent_id),
             description: format!(
@@ -171,7 +172,7 @@ pub(crate) fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskAction
                 )
             ),
         });
-        if !agent_status_is_terminal(&agent.status) {
+        if agent.can_stop && !agent_status_is_terminal(&agent.status) {
             actions.push(TaskActionEntry {
                 command: format!("/tasks stop {}", agent.agent_id),
                 description: format!(
@@ -335,6 +336,8 @@ struct WorkflowAgentView {
     cwd: Option<String>,
     status: String,
     output_file: String,
+    #[serde(default = "default_can_stop")]
+    can_stop: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -359,6 +362,32 @@ struct WorkflowWorktreeView {
     original_head_commit: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RuntimeAgentOutputView {
+    status: String,
+    #[serde(alias = "agentId")]
+    agent_id: String,
+    #[serde(default, alias = "agentType")]
+    agent_type: Option<String>,
+    description: String,
+    prompt: String,
+    #[serde(default)]
+    name: Option<String>,
+    cwd: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default, alias = "teamName")]
+    team_name: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    isolation: Option<String>,
+}
+
+fn default_can_stop() -> bool {
+    true
+}
+
 #[derive(Debug)]
 struct WorkflowPaths {
     root: PathBuf,
@@ -374,8 +403,8 @@ struct WorkflowPaths {
 fn render_tasks_dashboard(state: &mut AppState) -> Result<String> {
     let paths = workflow_paths(state)?;
     let tasks = load_workflow_tasks(state)?;
-    let agents = load_json_store::<WorkflowAgentStoreView>(&paths.agents)?;
-    let teams = load_json_store::<WorkflowTeamStoreView>(&paths.teams)?;
+    let agents = load_workflow_agents(state)?;
+    let teams = load_workflow_teams(state, &agents)?;
     let worktrees = load_json_store::<WorkflowWorktreeStoreView>(&paths.worktrees)?;
     let todos = load_json_store::<WorkflowTodoStoreView>(&paths.todos)?;
     let mut text = String::new();
@@ -394,14 +423,14 @@ fn render_tasks_dashboard(state: &mut AppState) -> Result<String> {
         paths.root.display(),
         structured_tasks.len(),
         background_tasks.len(),
-        agents.agents.len(),
+        agents.len(),
         todos.todos.len(),
         state.tasks().len()
     );
     append_task_section(&mut text, "Task list", &structured_tasks);
     append_task_section(&mut text, "Background tasks", &background_tasks);
-    append_agent_section(&mut text, &agents.agents);
-    append_team_section(&mut text, &teams.teams);
+    append_agent_section(&mut text, &agents);
+    append_team_section(&mut text, &teams);
     append_worktree_section(&mut text, &worktrees.worktrees);
     append_todo_section(&mut text, &todos.todos);
     append_runtime_section(&mut text, state);
@@ -424,16 +453,17 @@ fn render_task_paths(state: &AppState) -> Result<String> {
 }
 
 fn render_agent_list(state: &AppState) -> Result<String> {
-    let agents = load_json_store::<WorkflowAgentStoreView>(&workflow_paths(state)?.agents)?;
+    let agents = load_workflow_agents(state)?;
     let mut text = String::new();
-    append_agent_section(&mut text, &agents.agents);
+    append_agent_section(&mut text, &agents);
     Ok(text.trim_end().to_string())
 }
 
 fn render_team_list(state: &AppState) -> Result<String> {
-    let teams = load_json_store::<WorkflowTeamStoreView>(&workflow_paths(state)?.teams)?;
+    let agents = load_workflow_agents(state)?;
+    let teams = load_workflow_teams(state, &agents)?;
     let mut text = String::new();
-    append_team_section(&mut text, &teams.teams);
+    append_team_section(&mut text, &teams);
     Ok(text.trim_end().to_string())
 }
 
@@ -457,8 +487,8 @@ fn render_task_details(state: &mut AppState, task_id: &str) -> Result<String> {
         return Ok(render_task_detail(&task));
     }
 
-    let agents = load_json_store::<WorkflowAgentStoreView>(&workflow_paths(state)?.agents)?;
-    if let Some(agent) = agents.agents.iter().find(|agent| agent.agent_id == task_id) {
+    let agents = load_workflow_agents(state)?;
+    if let Some(agent) = agents.iter().find(|agent| agent.agent_id == task_id) {
         return Ok(render_agent_detail(agent));
     }
 
@@ -598,6 +628,104 @@ fn load_workflow_tasks(state: &mut AppState) -> Result<Vec<WorkflowTaskView>> {
         .collect())
 }
 
+fn load_workflow_agents(state: &AppState) -> Result<Vec<WorkflowAgentView>> {
+    let paths = workflow_paths(state)?;
+    let mut agents = load_json_store::<WorkflowAgentStoreView>(&paths.agents)?
+        .agents
+        .into_iter()
+        .map(|mut agent| {
+            agent.can_stop = true;
+            (agent.agent_id.clone(), agent)
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for agent in load_runtime_agents(&paths.agent_outputs)? {
+        agents.insert(agent.agent_id.clone(), agent);
+    }
+
+    Ok(agents.into_values().collect())
+}
+
+fn load_runtime_agents(agent_outputs_dir: &Path) -> Result<Vec<WorkflowAgentView>> {
+    let entries = match fs::read_dir(agent_outputs_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read {}", agent_outputs_dir.display()));
+        }
+    };
+    let mut agents = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("failed to read {}", agent_outputs_dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to read {}", path.display()))
+            }
+        };
+        let Ok(payload) = serde_json::from_str::<RuntimeAgentOutputView>(&raw) else {
+            continue;
+        };
+        agents.push(WorkflowAgentView {
+            agent_id: payload.agent_id,
+            name: payload.name,
+            description: payload.description,
+            prompt: payload.prompt,
+            subagent_type: payload.agent_type,
+            model: payload.model,
+            team_name: payload.team_name,
+            mode: payload.mode,
+            isolation: payload.isolation,
+            cwd: Some(payload.cwd),
+            status: payload.status,
+            output_file: path.display().to_string(),
+            can_stop: false,
+        });
+    }
+    Ok(agents)
+}
+
+fn load_workflow_teams(
+    state: &AppState,
+    agents: &[WorkflowAgentView],
+) -> Result<Vec<WorkflowTeamView>> {
+    let mut teams = load_json_store::<WorkflowTeamStoreView>(&workflow_paths(state)?.teams)?
+        .teams
+        .into_iter()
+        .map(|team| (team.team_name.clone(), team))
+        .collect::<BTreeMap<_, _>>();
+
+    for agent in agents {
+        let Some(team_name) = agent.team_name.as_deref() else {
+            continue;
+        };
+        let team = teams
+            .entry(team_name.to_string())
+            .or_insert_with(|| WorkflowTeamView {
+                team_name: team_name.to_string(),
+                description: None,
+                agent_type: None,
+                members: Vec::new(),
+            });
+        if !team.members.iter().any(|member| member == &agent.agent_id) {
+            team.members.push(agent.agent_id.clone());
+        }
+    }
+
+    for team in teams.values_mut() {
+        team.members.sort();
+    }
+
+    Ok(teams.into_values().collect())
+}
+
 fn workflow_paths(state: &AppState) -> Result<WorkflowPaths> {
     let paths = ConfigPaths::discover(&state.cwd);
     ensure_workspace_dirs(&paths)?;
@@ -606,6 +734,12 @@ fn workflow_paths(state: &AppState) -> Result<WorkflowPaths> {
         .join("runtime")
         .join("claude_workflow");
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
+    let agent_outputs = paths
+        .workspace_config_dir
+        .join("runtime")
+        .join("agent_outputs");
+    fs::create_dir_all(&agent_outputs)
+        .with_context(|| format!("failed to create {}", agent_outputs.display()))?;
     Ok(WorkflowPaths {
         tasks: root.join("tasks.json"),
         todos: root.join("todos.json"),
@@ -613,7 +747,7 @@ fn workflow_paths(state: &AppState) -> Result<WorkflowPaths> {
         teams: root.join("teams.json"),
         worktrees: root.join("worktrees.json"),
         shell_outputs: root.join("shell_outputs"),
-        agent_outputs: root.join("agent_outputs"),
+        agent_outputs,
         root,
     })
 }

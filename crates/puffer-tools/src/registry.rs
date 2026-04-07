@@ -1,3 +1,4 @@
+use crate::agent_prompt::render_agent_tool_description;
 use crate::config_prompt::render_config_tool_description;
 use crate::external::{
     builtin_handler_name, execute_runtime, runtime_from_definition, ToolRuntime,
@@ -54,6 +55,9 @@ impl ToolRegistry {
         );
         registry.has_mcp_resource_servers =
             !resources.mcp_servers.is_empty() || !plugin_mcp_servers(resources).is_empty();
+        if let Some(tool) = registry.tools.get_mut("Agent") {
+            tool.spec.description = render_agent_tool_description(resources);
+        }
         if let Some(tool) = registry.tools.get_mut("Config") {
             tool.spec.description = render_config_tool_description(resources);
         }
@@ -274,7 +278,10 @@ fn infer_schema_type(property: &serde_json::Value) -> ToolSchemaType {
 }
 
 fn render_tool_description(description: &str) -> String {
-    description.replace("{{CURRENT_MONTH_YEAR}}", &current_month_year())
+    description
+        .replace("{{CURRENT_MONTH_YEAR}}", &current_month_year())
+        .trim_end()
+        .to_string()
 }
 
 fn current_month_year() -> String {

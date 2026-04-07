@@ -64,6 +64,7 @@ pub struct AppState {
     pub remote_session_id: Option<String>,
     pub remote_session_url: Option<String>,
     pub remote_session_status: Option<String>,
+    pub active_team_name: Option<String>,
     pub statusline_enabled: bool,
     pub status_line_text: Option<String>,
     pub vim_mode: bool,
@@ -106,6 +107,7 @@ impl AppState {
             remote_session_id: None,
             remote_session_url: None,
             remote_session_status: None,
+            active_team_name: None,
             statusline_enabled: true,
             status_line_text: None,
             vim_mode,
@@ -157,6 +159,7 @@ impl AppState {
                     remote_session_id,
                     remote_session_url,
                     remote_session_status,
+                    active_team_name,
                     statusline_enabled,
                     working_dirs,
                     claude_read_state,
@@ -174,6 +177,7 @@ impl AppState {
                     state.remote_session_id = remote_session_id;
                     state.remote_session_url = remote_session_url;
                     state.remote_session_status = remote_session_status;
+                    state.active_team_name = active_team_name;
                     state.statusline_enabled = statusline_enabled;
                     state.working_dirs = working_dirs.into_iter().map(Into::into).collect();
                     state.claude_read_state = claude_read_state
@@ -263,6 +267,7 @@ impl AppState {
             remote_session_id: self.remote_session_id.clone(),
             remote_session_url: self.remote_session_url.clone(),
             remote_session_status: self.remote_session_status.clone(),
+            active_team_name: self.active_team_name.clone(),
             statusline_enabled: self.statusline_enabled,
             working_dirs: self
                 .working_dirs

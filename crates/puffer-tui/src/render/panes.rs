@@ -297,12 +297,21 @@ fn help_compact_lines(
 }
 
 fn featured_help_commands(commands: &[CommandSpec]) -> Vec<&CommandSpec> {
+    let visible = commands
+        .iter()
+        .filter(|command| !command.hidden)
+        .collect::<Vec<_>>();
     let mut featured = FEATURED_HELP_COMMANDS
         .iter()
-        .filter_map(|name| commands.iter().find(|command| command.name == *name))
+        .filter_map(|name| {
+            visible
+                .iter()
+                .copied()
+                .find(|command| command.name == *name)
+        })
         .collect::<Vec<_>>();
     if featured.is_empty() {
-        featured.extend(commands.iter().take(10));
+        featured.extend(visible.into_iter().take(10));
     }
     featured
 }
@@ -326,6 +335,38 @@ fn mascot_status(state: &AppState) -> String {
         format!("{} on duty", state.config.mascot.display_name)
     } else {
         "Mascot disabled".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::featured_help_commands;
+    use puffer_core::{CommandKind, CommandSpec};
+
+    #[test]
+    fn featured_help_commands_skip_hidden_entries() {
+        let commands = vec![
+            CommandSpec {
+                name: "help".to_string(),
+                aliases: Vec::new(),
+                description: "Visible".to_string(),
+                argument_hint: None,
+                kind: CommandKind::Local,
+                hidden: false,
+            },
+            CommandSpec {
+                name: "terminal-setup".to_string(),
+                aliases: Vec::new(),
+                description: "Hidden".to_string(),
+                argument_hint: None,
+                kind: CommandKind::Local,
+                hidden: true,
+            },
+        ];
+
+        let featured = featured_help_commands(&commands);
+        assert_eq!(featured.len(), 1);
+        assert_eq!(featured[0].name, "help");
     }
 }
 

@@ -2,15 +2,13 @@ use crate::workspace_paths;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const MAX_LINES_TO_READ: usize = 2000;
 const MAX_PDF_PAGES_PER_READ: u32 = 20;
-
-const CLAUDE_READ_DESCRIPTION: &str = "Reads a file from the local filesystem. You can access any file directly by using this tool.\nAssume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- The file_path parameter must be an absolute path, not a relative path\n- By default, it reads up to 2000 lines starting from the beginning of the file\n- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters\n- Results are returned using cat -n format, with line numbers starting at 1\n- This tool allows Claude Code to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Claude Code is a multimodal LLM.\n- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: \"1-5\"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.\n- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.\n- This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.\n- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.";
 
 #[derive(Debug, Deserialize)]
 struct ClaudeReadInput {
@@ -75,38 +73,6 @@ struct PdfFilePayload {
 struct UnchangedFilePayload {
     #[serde(rename = "filePath")]
     file_path: String,
-}
-
-/// Returns the Claude-style model-facing description for the `Read` tool.
-pub fn claude_read_description() -> &'static str {
-    CLAUDE_READ_DESCRIPTION
-}
-
-/// Returns the Claude-style JSON schema for the `Read` tool input payload.
-pub fn claude_read_input_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "The absolute path to the file to read",
-            },
-            "offset": {
-                "type": "integer",
-                "description": "The line number to start reading from. Only provide if the file is too large to read at once",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "The number of lines to read. Only provide if the file is too large to read at once.",
-            },
-            "pages": {
-                "type": "string",
-                "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request.",
-            },
-        },
-        "required": ["file_path"],
-        "additionalProperties": false,
-    })
 }
 
 /// Executes the Claude-style `Read` tool and returns a JSON-serialized result payload.
@@ -447,21 +413,11 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     #[test]
-    fn schema_exposes_claude_fields() {
-        let schema = claude_read_input_schema();
-        assert_eq!(schema["required"], json!(["file_path"]));
-        assert!(schema["properties"].get("file_path").is_some());
-        assert!(schema["properties"].get("offset").is_some());
-        assert!(schema["properties"].get("limit").is_some());
-        assert!(schema["properties"].get("pages").is_some());
-    }
-
-    #[test]
     fn text_read_uses_one_indexed_offset() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("file.txt");
         fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
-        let payload = json!({
+        let payload = serde_json::json!({
             "file_path": path.display().to_string(),
             "offset": 2,
             "limit": 2,
@@ -484,7 +440,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(&path, content).unwrap();
-        let payload = json!({
+        let payload = serde_json::json!({
             "file_path": path.display().to_string(),
         });
         let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
@@ -501,7 +457,7 @@ mod tests {
     #[test]
     fn relative_paths_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
-        let payload = json!({
+        let payload = serde_json::json!({
             "file_path": "relative.txt",
         });
         let error = execute_claude_read_tool(temp.path(), &[], payload).unwrap_err();
@@ -516,7 +472,7 @@ mod tests {
         let path = temp.path().join("notebook.ipynb");
         fs::write(
             &path,
-            json!({
+            serde_json::json!({
                 "cells": [
                     {"cell_type": "markdown", "source": ["hello"]},
                     {"cell_type": "code", "source": ["print(1)"]},
@@ -525,7 +481,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let payload = json!({
+        let payload = serde_json::json!({
             "file_path": path.display().to_string(),
         });
         let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
@@ -539,7 +495,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("image.png");
         fs::write(&path, [0u8, 1u8, 2u8, 3u8]).unwrap();
-        let payload = json!({
+        let payload = serde_json::json!({
             "file_path": path.display().to_string(),
         });
         let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
@@ -554,7 +510,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("doc.pdf");
         fs::write(&path, "pdf").unwrap();
-        let payload = json!({
+        let payload = serde_json::json!({
             "file_path": path.display().to_string(),
             "pages": "1-30",
         });
@@ -570,7 +526,7 @@ mod tests {
         let output = execute_claude_read_tool(
             temp.path(),
             &[],
-            json!({ "file_path": path.display().to_string() }),
+            serde_json::json!({ "file_path": path.display().to_string() }),
         )
         .unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
@@ -587,7 +543,7 @@ mod tests {
         let output = execute_claude_read_tool(
             temp.path(),
             &[],
-            json!({
+            serde_json::json!({
                 "file_path": path.display().to_string(),
                 "offset": 5,
             }),
@@ -631,7 +587,7 @@ mod tests {
         let output = execute_claude_read_tool(
             temp.path(),
             &[],
-            json!({
+            serde_json::json!({
                 "file_path": pdf_path.display().to_string(),
                 "pages": "1-2",
             }),
@@ -663,7 +619,7 @@ mod tests {
         let output = execute_claude_read_tool(
             temp.path(),
             &[extra],
-            json!({ "file_path": path.display().to_string() }),
+            serde_json::json!({ "file_path": path.display().to_string() }),
         )
         .unwrap();
 
@@ -684,7 +640,7 @@ mod tests {
         let error = execute_claude_read_tool(
             temp.path(),
             &[],
-            json!({ "file_path": path.display().to_string() }),
+            serde_json::json!({ "file_path": path.display().to_string() }),
         )
         .unwrap_err()
         .to_string();

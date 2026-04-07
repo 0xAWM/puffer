@@ -1,7 +1,7 @@
 id: Config
 name: Config
 description: |-
-  Get or set Puffer Code configuration settings.
+  Get or set Claude Code configuration settings.
 handler: runtime:workflow:config
 approval_policy: auto
 sandbox_policy: workspace-write

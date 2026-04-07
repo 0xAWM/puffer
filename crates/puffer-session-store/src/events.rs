@@ -80,6 +80,8 @@ pub enum TranscriptEvent {
         remote_session_url: Option<String>,
         #[serde(default)]
         remote_session_status: Option<String>,
+        #[serde(default)]
+        active_team_name: Option<String>,
         statusline_enabled: bool,
         working_dirs: Vec<String>,
         #[serde(default)]

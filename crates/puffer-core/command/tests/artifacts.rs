@@ -152,7 +152,10 @@ fn copy_internal_commands_copy_code_blocks_and_persist_preference() {
 
     assert!(state.config.copy_full_response);
     let saved = std::fs::read_to_string(paths.user_config_file()).unwrap();
-    assert!(saved.contains("copy_full_response = true"));
+    assert!(
+        saved.contains("copy_full_response = true"),
+        "saved config:\n{saved}"
+    );
 }
 
 #[test]

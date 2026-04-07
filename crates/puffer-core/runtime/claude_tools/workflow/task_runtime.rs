@@ -11,6 +11,8 @@ use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
 
+const MAX_PROCESS_OUTPUT_CHARS: usize = 30_000;
+
 /// Returns the persisted runtime-agent output path for a task id.
 pub(super) fn runtime_agent_output_path(session_cwd: &Path, task_id: &str) -> std::path::PathBuf {
     ConfigPaths::discover(session_cwd)
@@ -171,8 +173,12 @@ pub(super) fn wait_for_child_output(
                 .wait_with_output()
                 .context("failed to collect child output")?;
             return Ok(TimedProcessOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                stdout: truncate_process_output(
+                    String::from_utf8_lossy(&output.stdout).to_string(),
+                ),
+                stderr: truncate_process_output(
+                    String::from_utf8_lossy(&output.stderr).to_string(),
+                ),
                 timed_out: false,
             });
         }
@@ -187,11 +193,41 @@ pub(super) fn wait_for_child_output(
             }
             stderr.push_str(&format!("command timed out after {timeout_ms}ms"));
             return Ok(TimedProcessOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr,
+                stdout: truncate_process_output(
+                    String::from_utf8_lossy(&output.stdout).to_string(),
+                ),
+                stderr: truncate_process_output(stderr),
                 timed_out: true,
             });
         }
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn truncate_process_output(output: String) -> String {
+    if output.chars().count() <= MAX_PROCESS_OUTPUT_CHARS {
+        return output;
+    }
+    output.chars().take(MAX_PROCESS_OUTPUT_CHARS).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_process_output, MAX_PROCESS_OUTPUT_CHARS};
+
+    #[test]
+    fn truncate_process_output_leaves_short_text_unchanged() {
+        let output = "ready".to_string();
+
+        assert_eq!(truncate_process_output(output.clone()), output);
+    }
+
+    #[test]
+    fn truncate_process_output_caps_long_text_at_reference_limit() {
+        let output = "x".repeat(MAX_PROCESS_OUTPUT_CHARS + 128);
+        let truncated = truncate_process_output(output);
+
+        assert_eq!(truncated.chars().count(), MAX_PROCESS_OUTPUT_CHARS);
+        assert!(truncated.chars().all(|ch| ch == 'x'));
     }
 }

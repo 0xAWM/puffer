@@ -5,8 +5,6 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
 
-const EDIT_DESCRIPTION: &str = "A tool for editing files";
-
 #[derive(Debug, Deserialize)]
 struct ClaudeEditInput {
     file_path: String,
@@ -14,38 +12,6 @@ struct ClaudeEditInput {
     new_string: String,
     #[serde(default)]
     replace_all: bool,
-}
-
-/// Returns the Claude Code model-facing description for the `Edit` tool.
-pub fn claude_edit_tool_description() -> &'static str {
-    EDIT_DESCRIPTION
-}
-
-/// Returns the Claude Code model-facing JSON schema for the `Edit` tool input.
-pub fn claude_edit_input_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "The absolute path to the file to modify"
-            },
-            "old_string": {
-                "type": "string",
-                "description": "The text to replace"
-            },
-            "new_string": {
-                "type": "string",
-                "description": "The text to replace it with (must be different from old_string)"
-            },
-            "replace_all": {
-                "type": "boolean",
-                "description": "Replace all occurrences of old_string (default false)"
-            }
-        },
-        "required": ["file_path", "old_string", "new_string"],
-        "additionalProperties": false
-    })
 }
 
 /// Executes a Claude-style `Edit` operation and returns a JSON tool result payload.
@@ -169,21 +135,7 @@ fn split_lines(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn schema_uses_claude_field_names() {
-        let schema = claude_edit_input_schema();
-        let properties = schema["properties"].as_object().unwrap();
-        assert!(properties.contains_key("file_path"));
-        assert!(properties.contains_key("old_string"));
-        assert!(properties.contains_key("new_string"));
-        assert!(properties.contains_key("replace_all"));
-        assert_eq!(
-            schema["required"].as_array().unwrap().len(),
-            3,
-            "expected file_path, old_string, new_string to be required"
-        );
-    }
+    use serde_json::json;
 
     #[test]
     fn edit_replaces_unique_occurrence() {

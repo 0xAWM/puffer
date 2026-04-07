@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use puffer_resources::LoadedResources;
+use puffer_resources::{skill_by_name, LoadedResources};
 use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::Write as _;
@@ -19,10 +19,14 @@ fn normalize_skill_name(raw: &str) -> Result<String> {
         bail!("Skill name cannot be empty");
     }
     let without_slash = trimmed.strip_prefix('/').unwrap_or(trimmed);
-    if without_slash.trim().is_empty() {
+    let without_alias = without_slash
+        .strip_prefix("skill:")
+        .unwrap_or(without_slash)
+        .trim();
+    if without_alias.is_empty() {
         bail!("Skill name cannot be empty");
     }
-    Ok(without_slash.to_string())
+    Ok(without_alias.to_string())
 }
 
 /// Executes Claude-style `Skill` tool input by resolving one loaded skill and
@@ -30,16 +34,7 @@ fn normalize_skill_name(raw: &str) -> Result<String> {
 pub fn execute_claude_skill_tool(resources: &LoadedResources, input: Value) -> Result<String> {
     let parsed: SkillToolInput = serde_json::from_value(input)?;
     let normalized_skill = normalize_skill_name(&parsed.skill)?;
-    let skill = resources
-        .skills
-        .iter()
-        .find(|item| item.value.name == normalized_skill)
-        .or_else(|| {
-            resources
-                .skills
-                .iter()
-                .find(|item| item.value.name.eq_ignore_ascii_case(&normalized_skill))
-        })
+    let skill = skill_by_name(resources, &normalized_skill)
         .ok_or_else(|| anyhow!("unknown skill `{normalized_skill}`"))?;
 
     if skill.value.disable_model_invocation {
@@ -128,6 +123,14 @@ mod tests {
         assert!(output.contains("<command-name>review-pr</command-name>"));
         assert!(output.contains("<skill name=\"review-pr\">"));
         assert!(output.contains("ARGUMENTS: 123"));
+    }
+
+    #[test]
+    fn accepts_compatibility_skill_alias_prefix() {
+        let output =
+            execute_claude_skill_tool(&sample_resources(), json!({"skill": "/skill:review-pr"}))
+                .unwrap();
+        assert!(output.contains("<command-name>review-pr</command-name>"));
     }
 
     #[test]

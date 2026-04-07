@@ -24,6 +24,7 @@ use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
 use crate::session_overlay::render_session_overlay;
 use crate::status_overlay::render_status_overlay;
+use crate::task_overlay::{is_task_overlay, render_task_overlay};
 use crate::text_overlay::render_text_overlay;
 use crate::usage::render_usage_overlay;
 use crate::OverlayState;
@@ -376,6 +377,9 @@ pub(crate) fn render(
             OverlayState::Session(session) => render_session_overlay(frame, frame.area(), session),
             OverlayState::Status(status) => render_status_overlay(frame, frame.area(), status),
             OverlayState::Text(text) => render_text_overlay(frame, frame.area(), text),
+            _ if is_task_overlay(overlay) => {
+                render_task_overlay(frame, frame.area(), state, overlay)
+            }
             _ => render_overlay(frame, layout[1], overlay),
         }
     }

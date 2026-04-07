@@ -13,6 +13,7 @@ pub(crate) mod prompt;
 mod resume;
 mod session;
 mod tasks;
+mod terminal_setup;
 
 pub use actions::CommandActionEntry;
 pub(crate) use agents::handle_agents_command;
@@ -27,7 +28,7 @@ pub(crate) use branch::handle_branch_command;
 pub(crate) use common::{
     describe_context, describe_files_in_context, describe_git_diff, emit_system,
     execute_skill_command, list_skills, record_command_checkpoint, render_skills_panel,
-    rewind_transcript, terminal_setup_advice,
+    rewind_transcript,
 };
 pub(crate) use config::{
     handle_config_command, handle_hooks_command, handle_keybindings_command,
@@ -58,6 +59,10 @@ pub(crate) use session::{
 };
 pub use tasks::TaskActionEntry;
 pub(crate) use tasks::{handle_tasks_command, render_task_actions, render_tasks_panel_text};
+pub(crate) use terminal_setup::{
+    handle_terminal_setup_command, should_hide_terminal_setup_command,
+    terminal_setup_command_description,
+};
 
 use crate::AppState;
 use anyhow::Result;
