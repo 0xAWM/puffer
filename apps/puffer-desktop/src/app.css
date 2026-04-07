@@ -129,7 +129,7 @@ a {
 }
 
 .workspace-split.no-diff {
-  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.55fr);
+  grid-template-columns: minmax(0, 1.72fr) minmax(220px, 0.28fr);
 }
 
 .workspace-split {

@@ -228,13 +228,20 @@
               {/if}
             </div>
 
-            <div class="markdown">
-              {#if isCollapsed(item)}
-                <pre class="collapsed-preview">{previewText(item)}</pre>
-              {:else}
-                <MessageBody body={transcriptText(item)} />
-              {/if}
-            </div>
+            {#if item.kind === "command"}
+              <div class="command-log">
+                <span class="command-prefix">/</span>
+                <code>{item.body}</code>
+              </div>
+            {:else}
+              <div class="markdown">
+                {#if isCollapsed(item)}
+                  <pre class="collapsed-preview">{previewText(item)}</pre>
+                {:else}
+                  <MessageBody body={transcriptText(item)} />
+                {/if}
+              </div>
+            {/if}
           {/if}
         </article>
       {/each}
@@ -367,7 +374,7 @@
   .entry {
     display: grid;
     gap: 0.45rem;
-    max-width: 44rem;
+    max-width: 50rem;
   }
 
   .entry.user {
@@ -415,8 +422,8 @@
 
   .tool-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.8rem;
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
   }
 
   .tool-section {
@@ -443,6 +450,30 @@
     font-size: 0.84rem;
     line-height: 1.65;
     overflow: auto;
+  }
+
+  .command-log {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.72rem 0.85rem;
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.55) inset,
+      0 0 0 1px rgba(118, 97, 72, 0.1);
+  }
+
+  .command-prefix {
+    color: var(--text-soft);
+    font-size: 0.9rem;
+  }
+
+  .command-log code {
+    font-family: var(--font-mono);
+    font-size: 0.86rem;
+    white-space: pre;
+    overflow-x: auto;
   }
 
   .collapsed-preview {
