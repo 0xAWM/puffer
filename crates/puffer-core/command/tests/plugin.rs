@@ -55,6 +55,7 @@ fn plugin_disable_and_enable_commands_toggle_workspace_override() {
             description: "Builtin docs helpers".to_string(),
             commands: Vec::new(),
             skills: Vec::new(),
+            agents: Vec::new(),
             mcp_servers: Vec::new(),
             lsp_servers: Vec::new(),
         },
@@ -99,4 +100,107 @@ fn plugin_disable_and_enable_commands_toggle_workspace_override() {
 
     assert!(!workspace_override.exists());
     assert!(state.reload_resources_requested);
+}
+
+#[test]
+fn plugin_validate_reports_duplicate_entries() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let mut resources = LoadedResources::default();
+    resources.plugins.push(LoadedItem {
+        value: PluginSpec {
+            id: "docs".to_string(),
+            display_name: "Docs".to_string(),
+            description: "Builtin docs helpers".to_string(),
+            commands: vec![
+                puffer_resources::PluginCommandSpec {
+                    name: "search".to_string(),
+                    description: String::new(),
+                },
+                puffer_resources::PluginCommandSpec {
+                    name: "search".to_string(),
+                    description: String::new(),
+                },
+            ],
+            skills: vec!["reviewer".to_string(), "reviewer".to_string()],
+            agents: Vec::new(),
+            mcp_servers: Vec::new(),
+            lsp_servers: Vec::new(),
+        },
+        source_info: SourceInfo {
+            path: paths.builtin_resources_dir.join("plugins/docs.yaml"),
+            kind: SourceKind::Builtin,
+        },
+    });
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/plugin validate docs",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("duplicate command `search`") && text.contains("duplicate skill `reviewer`")
+    ));
+}
+
+#[test]
+fn plugin_errors_filters_resource_diagnostics() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let mut resources = LoadedResources::default();
+    resources
+        .diagnostics
+        .push("workspace plugin `docs` from /tmp/plugins/docs.yaml overrides builtin resource from /builtin/plugins/docs.yaml".to_string());
+    resources
+        .diagnostics
+        .push("workspace prompt `review` from /tmp/prompts/review.yaml overrides builtin resource from /builtin/prompts/review.yaml".to_string());
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/plugin errors",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("errors=1") && text.contains("plugin `docs`") && !text.contains("prompt `review`")
+    ));
 }

@@ -1,8 +1,11 @@
+use crate::agent_catalog::load_agent_resources;
 use crate::{AppState, MessageRole};
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use puffer_resources::{agent_by_id, LoadedResources};
+use puffer_resources::{
+    agent_by_id, plugin_mcp_servers, skill_by_name, AgentSpec, LoadedResources,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
@@ -20,6 +23,12 @@ struct AgentToolInput {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    effort: Option<AgentEffortInput>,
+    #[serde(default, alias = "permissionMode")]
+    permission_mode: Option<String>,
+    #[serde(default, alias = "maxTurns")]
+    max_turns: Option<u32>,
+    #[serde(default)]
     run_in_background: bool,
     #[serde(default)]
     cwd: Option<String>,
@@ -31,6 +40,24 @@ struct AgentToolInput {
     team_name: Option<String>,
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default, alias = "initialPrompt")]
+    initial_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum AgentEffortInput {
+    Name(String),
+    Number(u32),
+}
+
+impl AgentEffortInput {
+    fn as_label(&self) -> String {
+        match self {
+            Self::Name(name) => name.trim().to_string(),
+            Self::Number(value) => value.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -47,10 +74,14 @@ struct AgentCompletedOutput {
     cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "teamName")]
     team_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "maxTurns")]
+    max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     isolation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "worktreePath")]
@@ -76,10 +107,14 @@ struct AgentAsyncOutput {
     cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "teamName")]
     team_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "maxTurns")]
+    max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     isolation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "worktreePath")]
@@ -112,9 +147,11 @@ struct PreparedAgentExecution {
     nested_state: AppState,
     nested_resources: LoadedResources,
     resolved_model: Option<String>,
+    resolved_effort: Option<String>,
     isolation: Option<String>,
     team_name: Option<String>,
     mode: Option<String>,
+    max_turns: Option<u32>,
     worktree: Option<AgentWorktree>,
 }
 
@@ -134,14 +171,17 @@ pub(super) fn execute_agent_tool(
     if input.cwd.is_some() && input.isolation.as_deref() == Some("worktree") {
         bail!("agent cwd override is incompatible with isolation=worktree");
     }
-    if let Some(isolation) = input
-        .isolation
+    let requested_isolation = input.isolation.clone();
+    if let Some(isolation) = requested_isolation
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
         if isolation != "worktree" {
             bail!("unsupported agent isolation `{isolation}`");
         }
+    }
+    if input.max_turns == Some(0) {
+        bail!("agent max_turns must be greater than zero");
     }
 
     let prepared = prepare_agent_execution(state, resources, providers, cwd, input)?;
@@ -166,20 +206,33 @@ fn prepare_agent_execution(
     cwd: &Path,
     input: AgentToolInput,
 ) -> Result<PreparedAgentExecution> {
+    let current_resources = load_agent_resources(cwd, state.current_model.as_deref())
+        .unwrap_or_else(|_| resources.clone());
     let selected_agent = input
         .subagent_type
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("general-purpose");
-    let agent = agent_by_id(resources, selected_agent)
+    let (agent_source, agent) = agent_by_id(&current_resources, selected_agent)
         .or_else(|| {
-            resources
+            current_resources
                 .agents
                 .iter()
                 .find(|item| item.value.id.eq_ignore_ascii_case(selected_agent))
         })
+        .map(|agent| (&current_resources, agent))
+        .or_else(|| {
+            agent_by_id(resources, selected_agent)
+                .or_else(|| {
+                    resources
+                        .agents
+                        .iter()
+                        .find(|item| item.value.id.eq_ignore_ascii_case(selected_agent))
+                })
+                .map(|agent| (resources, agent))
+        })
         .ok_or_else(|| {
-            let available = resources
+            let available = current_resources
                 .agents
                 .iter()
                 .map(|item| item.value.id.as_str())
@@ -187,64 +240,112 @@ fn prepare_agent_execution(
                 .join(", ");
             anyhow!("unknown agent `{selected_agent}`. Available agents: {available}")
         })?;
+    ensure_required_mcp_servers(agent_source, &agent.value.required_mcp_servers)?;
 
     let nested_cwd = resolve_agent_cwd(cwd, input.cwd.as_deref())?;
-    let nested_resources = filter_resources_for_agent(resources, &agent.value.tools);
+    let nested_resources = filter_resources_for_agent(
+        agent_source,
+        &agent.value.tools,
+        &agent.value.disallowed_tools,
+    );
     let mut nested_state = state.clone();
     let mut nested_cwd = nested_cwd;
     let mut worktree = None;
-    if input.isolation.as_deref() == Some("worktree") {
+    let effective_isolation = input
+        .isolation
+        .clone()
+        .or_else(|| agent.value.isolation.clone());
+    if let Some(isolation) = effective_isolation
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if isolation != "worktree" {
+            bail!("unsupported agent isolation `{isolation}`");
+        }
+    }
+    if effective_isolation.as_deref() == Some("worktree") {
         let created = create_agent_worktree(cwd, &Uuid::new_v4().simple().to_string())?;
         nested_cwd = created.path.clone();
         worktree = Some(created);
     }
     nested_state.cwd = nested_cwd.clone();
     nested_state.transcript.clear();
-    nested_state.push_message(MessageRole::System, agent.value.prompt.trim().to_string());
-    if input.mode.as_deref() == Some("plan") {
+    nested_state.push_message(
+        MessageRole::System,
+        build_agent_system_prompt(agent_source, &agent.value)?,
+    );
+    let effective_mode = input
+        .mode
+        .as_deref()
+        .or(input.permission_mode.as_deref())
+        .or(agent.value.permission_mode.as_deref());
+    if effective_mode == Some("plan") {
         nested_state.plan_mode = true;
+    }
+    if let Some(effort) = input
+        .effort
+        .as_ref()
+        .map(AgentEffortInput::as_label)
+        .or_else(|| agent.value.effort.clone())
+        .filter(|value| !value.trim().is_empty())
+    {
+        nested_state.effort_level = effort;
     }
 
     if let Some(model) = input
         .model
         .as_deref()
         .or(agent.value.model.as_deref())
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("inherit"))
     {
-        let resolved = providers.resolve_model(model);
-        nested_state.current_model = Some(model.to_string());
+        let resolved = providers
+            .resolve_model(model)
+            .or_else(|| resolve_model_case_insensitive(providers, model));
+        let selector = resolved
+            .as_ref()
+            .map(|descriptor| format!("{}/{}", descriptor.provider, descriptor.id))
+            .unwrap_or_else(|| model.to_string());
+        nested_state.current_model = Some(selector.clone());
         nested_state.current_provider = resolved
             .map(|descriptor| descriptor.provider.clone())
             .or_else(|| {
-                model
+                selector
                     .split_once('/')
                     .map(|(provider, _)| provider.to_string())
             })
             .or_else(|| state.current_provider.clone());
     }
+    let prompt = combine_agent_prompt(
+        input
+            .initial_prompt
+            .as_deref()
+            .or(agent.value.initial_prompt.as_deref()),
+        &input.prompt,
+    );
     Ok(PreparedAgentExecution {
         agent_id: format!("agent-{}", Uuid::new_v4().simple()),
         agent_type: agent.value.id.clone(),
         description: input.description.trim().to_string(),
-        prompt: input.prompt,
+        prompt,
         name: input
             .name
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        run_in_background: input.run_in_background,
+        run_in_background: input.run_in_background || agent.value.background,
         nested_cwd,
         resolved_model: nested_state.current_model.clone(),
+        resolved_effort: Some(nested_state.effort_level.clone()),
         nested_state,
         nested_resources,
-        isolation: input.isolation,
+        isolation: effective_isolation,
         team_name: input
             .team_name
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        mode: input
-            .mode
+        mode: effective_mode
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        max_turns: input.max_turns.or(agent.value.max_turns),
         worktree,
     })
 }
@@ -270,8 +371,10 @@ fn run_agent_synchronously(
         name: prepared.name,
         cwd: prepared.nested_cwd.display().to_string(),
         model: prepared.resolved_model,
+        effort: prepared.resolved_effort,
         team_name: prepared.team_name,
         mode: prepared.mode,
+        max_turns: prepared.max_turns,
         isolation: prepared.isolation.clone(),
         worktree_path: prepared
             .worktree
@@ -310,6 +413,7 @@ fn launch_background_agent(
             "name": prepared.name,
             "cwd": prepared.nested_cwd.display().to_string(),
             "model": prepared.resolved_model,
+            "effort": prepared.resolved_effort.clone(),
         }))?,
     )
     .with_context(|| format!("failed to initialize {}", output_file.display()))?;
@@ -323,8 +427,10 @@ fn launch_background_agent(
         name: prepared.name.clone(),
         cwd: prepared.nested_cwd.display().to_string(),
         model: prepared.resolved_model.clone(),
+        effort: prepared.resolved_effort.clone(),
         team_name: prepared.team_name.clone(),
         mode: prepared.mode.clone(),
+        max_turns: prepared.max_turns,
         isolation: prepared.isolation.clone(),
         worktree_path: prepared
             .worktree
@@ -362,8 +468,10 @@ fn launch_background_agent(
                 name: prepared.name,
                 cwd: prepared.nested_cwd.display().to_string(),
                 model: prepared.resolved_model,
+                effort: prepared.resolved_effort,
                 team_name: prepared.team_name,
                 mode: prepared.mode,
+                max_turns: prepared.max_turns,
                 isolation: prepared.isolation,
                 worktree_path: prepared
                     .worktree
@@ -385,8 +493,10 @@ fn launch_background_agent(
                 "name": prepared.name,
                 "cwd": prepared.nested_cwd.display().to_string(),
                 "model": prepared.resolved_model,
+                "effort": prepared.resolved_effort,
                 "teamName": prepared.team_name,
                 "mode": prepared.mode,
+                "maxTurns": prepared.max_turns,
                 "isolation": prepared.isolation,
                 "worktreePath": prepared
                     .worktree
@@ -528,11 +638,21 @@ fn agent_output_path(session_cwd: &Path, agent_id: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{agent_id}.json")))
 }
 
-fn filter_resources_for_agent(resources: &LoadedResources, tools: &[String]) -> LoadedResources {
+fn filter_resources_for_agent(
+    resources: &LoadedResources,
+    tools: &[String],
+    disallowed_tools: &[String],
+) -> LoadedResources {
     let mut filtered = resources.clone();
     let wildcard = tools.is_empty() || tools.iter().any(|tool| tool == "*");
     filtered.tools.retain(|tool| {
         if tool.value.id.eq_ignore_ascii_case("Agent") {
+            return false;
+        }
+        if disallowed_tools
+            .iter()
+            .any(|blocked| blocked.eq_ignore_ascii_case(&tool.value.id))
+        {
             return false;
         }
         wildcard
@@ -541,4 +661,80 @@ fn filter_resources_for_agent(resources: &LoadedResources, tools: &[String]) -> 
                 .any(|allowed| allowed.eq_ignore_ascii_case(&tool.value.id))
     });
     filtered
+}
+
+fn build_agent_system_prompt(resources: &LoadedResources, agent: &AgentSpec) -> Result<String> {
+    let mut sections = vec![agent.prompt.trim().to_string()];
+    for skill_name in &agent.skills {
+        let Some(skill) = skill_by_name(resources, skill_name) else {
+            bail!(
+                "agent `{}` references unknown skill `{skill_name}`",
+                agent.id
+            );
+        };
+        sections.push(format!(
+            "<skill name=\"{}\">\n{}\n</skill>",
+            skill.value.name,
+            skill.value.content.trim()
+        ));
+    }
+    Ok(sections.join("\n\n"))
+}
+
+fn combine_agent_prompt(initial_prompt: Option<&str>, prompt: &str) -> String {
+    if let Some(initial_prompt) = initial_prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        format!("{initial_prompt}\n\n{}", prompt.trim())
+    } else {
+        prompt.to_string()
+    }
+}
+
+fn ensure_required_mcp_servers(resources: &LoadedResources, required: &[String]) -> Result<()> {
+    if required.is_empty() {
+        return Ok(());
+    }
+    let available = resources
+        .mcp_servers
+        .iter()
+        .map(|server| server.value.id.to_ascii_lowercase())
+        .chain(
+            plugin_mcp_servers(resources)
+                .into_iter()
+                .map(|(_, server)| server.id.to_ascii_lowercase()),
+        )
+        .collect::<Vec<_>>();
+    let missing = required
+        .iter()
+        .filter(|pattern| {
+            let normalized = pattern.trim().to_ascii_lowercase();
+            !normalized.is_empty()
+                && !available
+                    .iter()
+                    .any(|candidate| candidate.contains(normalized.as_str()))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "required MCP servers are unavailable for this agent: {}",
+            missing.join(", ")
+        )
+    }
+}
+
+fn resolve_model_case_insensitive<'a>(
+    providers: &'a ProviderRegistry,
+    selector: &str,
+) -> Option<&'a puffer_provider_registry::ModelDescriptor> {
+    providers.providers().find_map(|provider| {
+        provider.models.iter().find(|model| {
+            format!("{}/{}", model.provider, model.id).eq_ignore_ascii_case(selector)
+                || model.id.eq_ignore_ascii_case(selector)
+        })
+    })
 }

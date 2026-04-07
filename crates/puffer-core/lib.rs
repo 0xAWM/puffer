@@ -1,3 +1,4 @@
+mod agent_catalog;
 mod command;
 mod command_helpers;
 mod command_summary;
@@ -6,10 +7,12 @@ mod permissions;
 mod runtime;
 mod state;
 
+pub use agent_catalog::{load_agent_catalog, AgentCatalogEntry};
 pub use command::{dispatch_command, find_command, supported_commands, CommandKind, CommandSpec};
 pub use command_helpers::McpActionEntry;
 pub use command_helpers::PluginActionEntry;
 pub use command_helpers::SessionOverlayView;
+pub use command_helpers::TaskActionEntry;
 pub(crate) use command_summary::{render_buddy_summary, render_cost_summary, render_usage_summary};
 pub use hooks::run_resource_hooks;
 pub use runtime::execute_user_prompt as execute_user_turn;
@@ -77,6 +80,11 @@ pub fn render_plugin_actions(
     resources: &LoadedResources,
 ) -> Result<Vec<PluginActionEntry>> {
     command_helpers::render_plugin_actions(state, resources)
+}
+
+/// Builds the interactive `/tasks` action list used by the TUI picker.
+pub fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskActionEntry>> {
+    command_helpers::render_task_actions(state)
 }
 
 /// Renders the current `/memory` summary used by interactive overlays.

@@ -119,6 +119,7 @@ fn loaded_agent(
             prompt: prompt.to_string(),
             tools: tools.iter().map(|tool| tool.to_string()).collect(),
             model: None,
+            ..AgentSpec::default()
         },
         source_info: SourceInfo {
             path: format!("{id}.yaml").into(),
@@ -552,6 +553,22 @@ fn build_codex_openai_request_body_matches_codex_shape() {
     assert_eq!(body["reasoning"]["summary"], json!("auto"));
     assert_eq!(body["reasoning"]["effort"], json!("medium"));
     assert!(body.get("previous_response_id").is_none());
+}
+
+#[test]
+fn build_codex_openai_request_body_supports_xhigh_effort() {
+    let mut state = state();
+    state.effort_level = "xhigh".to_string();
+    let body = build_codex_openai_request_body(
+        &state,
+        "gpt-5",
+        Value::String("hello".to_string()),
+        &Vec::new(),
+        true,
+        None,
+    );
+
+    assert_eq!(body["reasoning"]["effort"], json!("xhigh"));
 }
 
 #[test]

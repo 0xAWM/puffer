@@ -373,6 +373,75 @@ fn config_tool_allows_null_to_clear_openai_map_settings() {
 }
 
 #[test]
+fn config_tool_supports_camel_case_aliases_and_status_line_settings() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let output = super::super::claude_tools::workflow::config::execute_config(
+        &mut state,
+        &cwd,
+        json!({
+            "setting": "statusLineCommand",
+            "value": "echo status"
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["persisted"], true);
+    assert_eq!(parsed["value"], "echo status");
+    assert_eq!(
+        state
+            .config
+            .ui
+            .status_line
+            .as_ref()
+            .map(|status_line| status_line.command.as_str()),
+        Some("echo status")
+    );
+}
+
+#[test]
+fn config_tool_supports_session_only_settings_without_persisting() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let output = super::super::claude_tools::workflow::config::execute_config(
+        &mut state,
+        &cwd,
+        json!({
+            "setting": "fastMode",
+            "value": true
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["persisted"], false);
+    assert_eq!(parsed["path"], Value::Null);
+    assert!(state.fast_mode);
+}
+
+#[test]
+fn config_tool_allows_null_to_clear_model_override() {
+    let mut state = temp_state();
+    state.current_model = Some("openai/gpt-5".to_string());
+    state.current_provider = Some("openai".to_string());
+    let cwd = state.cwd.clone();
+    let output = super::super::claude_tools::workflow::config::execute_config(
+        &mut state,
+        &cwd,
+        json!({
+            "setting": "model",
+            "value": null
+        }),
+    )
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["value"], Value::Null);
+    assert_eq!(state.current_model, None);
+}
+
+#[test]
 fn ask_user_question_rejects_duplicate_headers() {
     let mut state = temp_state();
     let cwd = state.cwd.clone();

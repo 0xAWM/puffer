@@ -148,7 +148,8 @@ fn model_command_lists_only_models_for_selected_provider() {
     assert!(matches!(
         state.transcript.last(),
         Some(RenderedMessage { text, .. })
-            if text.contains("Available models for openai: gpt-5, gpt-5-mini")
+            if text.contains("Current model: openai/gpt-5")
+                && text.contains("Available models for openai: gpt-5, gpt-5-mini")
                 && !text.contains("compound")
     ));
 }
@@ -203,7 +204,7 @@ fn model_command_refreshes_active_provider_before_listing() {
 }
 
 #[test]
-fn model_command_rejects_cross_provider_selection() {
+fn model_command_allows_cross_provider_selection_when_selector_is_explicit() {
     let tempdir = tempdir().unwrap();
     let _lock = lock_puffer_home();
     let home = tempdir.path().join("home");
@@ -236,11 +237,8 @@ fn model_command_rejects_cross_provider_selection() {
     )
     .unwrap();
 
-    assert!(matches!(
-        state.transcript.last(),
-        Some(RenderedMessage { text, .. })
-            if text.contains("/model only selects models for the active provider (openai).")
-    ));
+    assert_eq!(state.current_provider.as_deref(), Some("groq"));
+    assert_eq!(state.current_model.as_deref(), Some("groq/compound"));
 }
 
 #[test]
@@ -279,4 +277,115 @@ fn model_command_persists_selected_model_to_user_config() {
     let saved = std::fs::read_to_string(paths.user_config_file()).unwrap();
     assert!(saved.contains("default_provider = \"openai\""));
     assert!(saved.contains("default_model = \"openai/gpt-5-mini\""));
+}
+
+#[test]
+fn model_command_supports_alias_matching_for_active_provider() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("anthropic".to_string());
+    config.default_model = Some("anthropic/claude-sonnet-4-5".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("anthropic".to_string());
+    state.current_model = Some("anthropic/claude-sonnet-4-5".to_string());
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider(
+        "anthropic",
+        &["claude-sonnet-4-5", "claude-opus-4-1"],
+    ));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &session_store,
+        "/model opus",
+    )
+    .unwrap();
+
+    assert_eq!(
+        state.current_model.as_deref(),
+        Some("anthropic/claude-opus-4-1")
+    );
+}
+
+#[test]
+fn model_command_help_lists_default_and_provider_selector_usage() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let state = AppState::new(PufferConfig::default(), workspace, session);
+    let mut state = state;
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/model help",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage { text, .. })
+            if text.contains("/model default") && text.contains("/model <provider/model>")
+    ));
+}
+
+#[test]
+fn model_command_default_restores_configured_default_model() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("openai".to_string());
+    config.default_model = Some("openai/gpt-5".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("groq".to_string());
+    state.current_model = Some("groq/compound".to_string());
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/model default",
+    )
+    .unwrap();
+
+    assert_eq!(state.current_provider.as_deref(), Some("openai"));
+    assert_eq!(state.current_model.as_deref(), Some("openai/gpt-5"));
 }

@@ -67,6 +67,14 @@ fn try_open_overlay_builds_memory_panel() {
 }
 
 #[test]
+fn try_open_overlay_builds_tasks_panel() {
+    assert!(matches!(
+        open_panel("/tasks"),
+        OverlayState::CommandPicker { .. }
+    ));
+}
+
+#[test]
 fn try_open_overlay_builds_session_panel() {
     assert!(matches!(open_panel("/session"), OverlayState::Session(..)));
 }

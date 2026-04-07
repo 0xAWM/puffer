@@ -22,7 +22,7 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// List configured agents.
     Agents {
-        /// Accepted for Claude compatibility; Puffer currently reads workspace agents.
+        /// Accepted for Claude compatibility; Puffer maps user to user resources and project/local to workspace resources.
         #[arg(long = "setting-sources")]
         setting_sources: Option<String>,
     },

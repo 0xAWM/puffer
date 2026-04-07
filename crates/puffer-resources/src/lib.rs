@@ -8,9 +8,10 @@ pub use loader::{
     prompt_by_id, skill_by_name,
 };
 pub use model::{
-    AgentSpec, HookSpec, IdeSpec, LoadedItem, LoadedResources, LspServerSpec, MascotSpec,
-    McpServerSpec, PluginCommandSpec, PluginSpec, PromptTemplate, PromptVariableSpec, ProviderPack,
-    SkillSpec, SourceInfo, SourceKind, ToolDisplaySpec, ToolMetadataSpec, ToolSpec,
+    AgentMcpServerSpec, AgentMemoryScope, AgentSpec, HookSpec, IdeSpec, LoadedItem,
+    LoadedResources, LspServerSpec, MascotSpec, McpServerSpec, PluginCommandSpec, PluginSpec,
+    PromptTemplate, PromptVariableSpec, ProviderPack, SkillSpec, SourceInfo, SourceKind,
+    ToolDisplaySpec, ToolMetadataSpec, ToolSpec,
 };
 
 /// Looks up a mascot by id.

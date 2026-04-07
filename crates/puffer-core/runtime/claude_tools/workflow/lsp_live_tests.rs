@@ -402,6 +402,7 @@ fn test_resources() -> puffer_resources::LoadedResources {
                 description: "builtin lsp".to_string(),
                 commands: Vec::new(),
                 skills: Vec::new(),
+                agents: Vec::new(),
                 mcp_servers: Vec::new(),
                 lsp_servers: vec![LspServerSpec {
                     id: "rust-analyzer".to_string(),
@@ -435,6 +436,7 @@ fn python_test_resources() -> puffer_resources::LoadedResources {
                 description: "builtin lsp".to_string(),
                 commands: Vec::new(),
                 skills: Vec::new(),
+                agents: Vec::new(),
                 mcp_servers: Vec::new(),
                 lsp_servers: vec![LspServerSpec {
                     id: "pyright-langserver".to_string(),
@@ -468,6 +470,7 @@ fn missing_python_server_resources() -> puffer_resources::LoadedResources {
                 description: "builtin lsp".to_string(),
                 commands: Vec::new(),
                 skills: Vec::new(),
+                agents: Vec::new(),
                 mcp_servers: Vec::new(),
                 lsp_servers: vec![LspServerSpec {
                     id: "pyright-langserver".to_string(),

@@ -94,8 +94,49 @@ pub struct AgentSpec {
     pub prompt: String,
     #[serde(default)]
     pub tools: Vec<String>,
+    #[serde(default, alias = "disallowedTools")]
+    pub disallowed_tools: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default, alias = "permissionMode")]
+    pub permission_mode: Option<String>,
+    #[serde(default, alias = "maxTurns")]
+    pub max_turns: Option<u32>,
+    #[serde(default, alias = "initialPrompt")]
+    pub initial_prompt: Option<String>,
+    #[serde(default)]
+    pub background: bool,
+    #[serde(default)]
+    pub memory: Option<AgentMemoryScope>,
+    #[serde(default, alias = "requiredMcpServers")]
+    pub required_mcp_servers: Vec<String>,
+    #[serde(default, alias = "mcpServers")]
+    pub mcp_servers: Vec<AgentMcpServerSpec>,
+    #[serde(default)]
+    pub hooks: Vec<HookSpec>,
+    #[serde(default)]
+    pub isolation: Option<String>,
+}
+
+/// Declares the supported persistent memory scopes for one agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMemoryScope {
+    User,
+    Project,
+    Local,
+}
+
+/// Declares one MCP server attachment for an agent definition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum AgentMcpServerSpec {
+    Reference(String),
+    Inline(std::collections::BTreeMap<String, McpServerSpec>),
 }
 
 impl PromptTemplate {
@@ -223,6 +264,8 @@ pub struct PluginSpec {
     pub commands: Vec<PluginCommandSpec>,
     #[serde(default)]
     pub skills: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<AgentSpec>,
     #[serde(default)]
     pub mcp_servers: Vec<McpServerSpec>,
     #[serde(default)]

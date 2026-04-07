@@ -845,9 +845,12 @@ pub(super) fn execute_config(state: &mut AppState, cwd: &Path, input: Value) -> 
     if has_value {
         let value = parsed.value.unwrap_or(Value::Null);
         set_config_value(state, &parsed.setting, value)?;
-        save_workspace_config(&paths, &state.config)?;
+        if super::store::config_setting_persists_to_workspace_file(&parsed.setting) {
+            save_workspace_config(&paths, &state.config)?;
+        }
     }
     let current = get_config_value(state, &parsed.setting)?;
+    let persisted = super::store::config_setting_persists_to_workspace_file(&parsed.setting);
     Ok(serde_json::to_string_pretty(&json!({
         "success": true,
         "operation": operation,
@@ -855,7 +858,12 @@ pub(super) fn execute_config(state: &mut AppState, cwd: &Path, input: Value) -> 
         "value": current,
         "previousValue": previous,
         "newValue": if operation == "set" { current.clone() } else { Value::Null },
-        "path": paths.workspace_config_file().display().to_string()
+        "persisted": persisted,
+        "path": if persisted {
+            Value::String(paths.workspace_config_file().display().to_string())
+        } else {
+            Value::Null
+        }
     }))?)
 }
 

@@ -1,14 +1,13 @@
 use super::*;
 use crate::RenderedMessage;
-use puffer_config::{ensure_workspace_dirs, ConfigPaths, MascotConfig, PufferConfig, UiConfig};
+use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
 use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry};
 use puffer_resources::{LoadedItem, LoadedResources};
-use puffer_session_store::{SessionMetadata, SessionStore};
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use puffer_session_store::SessionStore;
 use tempfile::tempdir;
 
 mod artifacts;
+mod basics;
 mod login_auth;
 mod mcp;
 mod model_scope;
@@ -18,151 +17,6 @@ mod sandbox;
 mod status;
 mod tasks;
 mod usage_buddy;
-
-#[test]
-fn command_registry_contains_review_usage_and_resume_alias() {
-    let commands = supported_commands();
-    assert!(find_command(&commands, "review").is_some());
-    assert!(find_command(&commands, "usage").is_some());
-    assert!(find_command(&commands, "continue").is_some());
-}
-
-#[test]
-fn app_state_defaults_expose_command_state() {
-    let state = AppState::new(
-        PufferConfig {
-            app_name: "Puffer".to_string(),
-            default_model: None,
-            default_provider: Some("anthropic".to_string()),
-            openai_base_url: None,
-            openai_headers: BTreeMap::new(),
-            openai_query_params: BTreeMap::new(),
-            theme: "puffer".to_string(),
-            mascot: MascotConfig {
-                id: "clawd".to_string(),
-                display_name: "Clawd".to_string(),
-                enabled: true,
-            },
-            ui: UiConfig {
-                no_alt_screen: false,
-                tmux_golden_mode: false,
-                status_line: None,
-            },
-        },
-        PathBuf::from("."),
-        SessionMetadata {
-            id: uuid::Uuid::nil(),
-            display_name: None,
-            cwd: PathBuf::from("."),
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            parent_session_id: None,
-            slug: None,
-            tags: Vec::new(),
-            note: None,
-        },
-    );
-    assert_eq!(state.prompt_color, "default");
-    assert_eq!(state.effort_level, "medium");
-    assert_eq!(state.sandbox_mode, "workspace-write");
-    assert!(state.statusline_enabled);
-}
-
-#[test]
-fn local_commands_append_state_snapshots() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session.clone(),
-    );
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/theme harbor",
-    )
-    .unwrap();
-
-    let record = session_store.load_session(session.id).unwrap();
-    assert!(matches!(
-        record.events.iter().rev().nth(1),
-        Some(TranscriptEvent::StateSnapshot { theme, .. }) if theme == "harbor"
-    ));
-}
-
-#[test]
-fn resume_switches_to_matching_session_record() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let primary = session_store
-        .create_session(tempdir.path().join("primary"))
-        .unwrap();
-    let secondary = session_store
-        .create_session(tempdir.path().join("secondary"))
-        .unwrap();
-    session_store
-        .rename_session(secondary.id, "dockyard".to_string())
-        .unwrap();
-    session_store
-        .append_event(
-            secondary.id,
-            TranscriptEvent::StateSnapshot {
-                current_model: Some("anthropic/claude-sonnet-4-5".to_string()),
-                current_provider: Some("anthropic".to_string()),
-                theme: "lagoon".to_string(),
-                prompt_color: "teal".to_string(),
-                effort_level: "high".to_string(),
-                fast_mode: true,
-                plan_mode: false,
-                sandbox_mode: "workspace-write".to_string(),
-                remote_name: None,
-                remote_environment: None,
-                remote_session_id: None,
-                remote_session_url: None,
-                remote_session_status: None,
-                statusline_enabled: true,
-                working_dirs: vec![tempdir.path().join("secondary").display().to_string()],
-                claude_read_state: Vec::new(),
-            },
-        )
-        .unwrap();
-
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().join("primary"),
-        primary,
-    );
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/resume dockyard",
-    )
-    .unwrap();
-
-    assert_eq!(state.session.id, secondary.id);
-    assert_eq!(state.config.theme, "lagoon");
-    assert_eq!(
-        state.current_model.as_deref(),
-        Some("anthropic/claude-sonnet-4-5")
-    );
-}
 
 #[test]
 fn branch_forks_and_switches_current_session() {
@@ -279,6 +133,88 @@ fn config_command_writes_workspace_config() {
 
     let config_text = std::fs::read_to_string(paths.workspace_config_file()).unwrap();
     assert!(config_text.contains("theme = \"harbor\""));
+}
+
+#[test]
+fn config_command_lists_supported_keys() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/config list",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage { text, .. })
+            if text.contains("statusLineCommand") && text.contains("fastMode")
+    ));
+}
+
+#[test]
+fn config_command_supports_model_and_camel_case_aliases() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/config set statusLineCommand echo-status",
+    )
+    .unwrap();
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/config set model openai/gpt-5",
+    )
+    .unwrap();
+
+    assert_eq!(state.current_provider.as_deref(), Some("openai"));
+    assert_eq!(state.current_model.as_deref(), Some("openai/gpt-5"));
+    assert_eq!(
+        state
+            .config
+            .ui
+            .status_line
+            .as_ref()
+            .map(|status_line| status_line.command.as_str()),
+        Some("echo-status")
+    );
 }
 
 #[test]
@@ -544,10 +480,12 @@ fn agents_command_creates_workspace_file() {
     )
     .unwrap();
 
-    let agents_path = paths.workspace_config_dir.join("agents.yaml");
+    let agents_path = paths
+        .workspace_config_dir
+        .join("resources/agents/workspace.yaml");
     let agents = std::fs::read_to_string(agents_path).unwrap();
-    assert!(agents.contains("agents:"));
     assert!(agents.contains("id: default"));
+    assert!(agents.contains("prompt: \"You are a coding subagent for Puffer Code."));
 }
 
 #[test]
@@ -564,9 +502,10 @@ fn agents_command_can_list_and_use_agent_presets() {
         tempdir.path().to_path_buf(),
         session,
     );
+    std::fs::create_dir_all(paths.workspace_config_dir.join("resources/agents")).unwrap();
     std::fs::write(
-        paths.workspace_config_dir.join("agents.yaml"),
-        "agents:\n  - id: reviewer\n    role: review\n    model: openai/gpt-5\n",
+        paths.workspace_config_dir.join("resources/agents/reviewer.yaml"),
+        "id: reviewer\ndescription: Reviews code carefully.\nprompt: |\n  You are a reviewer.\ntools:\n  - Read\nmodel: openai/gpt-5\n",
     )
     .unwrap();
 
@@ -583,6 +522,47 @@ fn agents_command_can_list_and_use_agent_presets() {
 
     assert_eq!(state.current_model.as_deref(), Some("openai/gpt-5"));
     assert_eq!(state.current_provider.as_deref(), Some("openai"));
+}
+
+#[test]
+fn agents_command_lists_builtin_resource_agents() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    std::fs::create_dir_all(tempdir.path().join("resources/agents")).unwrap();
+    std::fs::write(
+        tempdir.path().join("resources/agents/explore.yaml"),
+        "id: explore\ndescription: Read-only exploration agent.\nprompt: |\n  Explore the repository.\ntools:\n  - Read\n",
+    )
+    .unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/agents list",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("explore [builtin]")
+    ));
 }
 
 #[test]
@@ -826,6 +806,7 @@ fn reload_plugins_reports_resource_counts() {
                 description: "Git helpers".to_string(),
                 commands: Vec::new(),
                 skills: Vec::new(),
+                agents: Vec::new(),
                 mcp_servers: Vec::new(),
                 lsp_servers: Vec::new(),
             },

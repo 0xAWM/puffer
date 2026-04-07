@@ -4,17 +4,12 @@ use crate::session_overlay::SessionOverlay;
 use crate::status_overlay::StatusOverlay;
 use crate::text_overlay::TextOverlay;
 use crate::usage::UsageOverlay;
-use anyhow::Result;
-use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_core::{
     CommandSpec, PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnExecution,
 };
 use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
-use serde::Deserialize;
 use std::collections::VecDeque;
-use std::fs;
-use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
 
 /// Stores editable TUI input state plus the active overlay and deferred prompt.
@@ -304,6 +299,21 @@ pub(crate) enum OverlayState {
         selection: usize,
         onboarding: bool,
     },
+    EffortPicker {
+        provider_id: String,
+        model_id: String,
+        entries: Vec<ModelPickerEntry>,
+        selection: usize,
+        onboarding: bool,
+    },
+    FastModePicker {
+        provider_id: String,
+        model_id: String,
+        effort: String,
+        entries: Vec<ModelPickerEntry>,
+        selection: usize,
+        onboarding: bool,
+    },
     LoginPicker {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
@@ -380,6 +390,8 @@ impl OverlayState {
             Self::SessionPicker { selection, .. }
             | Self::AgentPicker { selection, .. }
             | Self::ModelPicker { selection, .. }
+            | Self::EffortPicker { selection, .. }
+            | Self::FastModePicker { selection, .. }
             | Self::LoginPicker { selection, .. }
             | Self::ProviderPicker { selection, .. }
             | Self::AuthPicker { selection, .. }
@@ -411,6 +423,12 @@ impl OverlayState {
             }
             Self::AgentPicker { entries, selection }
             | Self::ModelPicker {
+                entries, selection, ..
+            }
+            | Self::EffortPicker {
+                entries, selection, ..
+            }
+            | Self::FastModePicker {
                 entries, selection, ..
             }
             | Self::LoginPicker { entries, selection }
@@ -498,6 +516,7 @@ impl OverlayState {
             Self::ModelPicker {
                 onboarding: true, ..
             } => None,
+            Self::EffortPicker { .. } | Self::FastModePicker { .. } => None,
             Self::LoginPicker { entries, selection } => entries
                 .get(*selection)
                 .map(|entry| format!("/login {}", entry.selector)),
@@ -541,6 +560,8 @@ impl OverlayState {
                 entries, selection, ..
             } => entries.get(*selection).map(|entry| entry.selector.as_str()),
             Self::ModelPicker { provider_id, .. }
+            | Self::EffortPicker { provider_id, .. }
+            | Self::FastModePicker { provider_id, .. }
             | Self::AuthPicker { provider_id, .. }
             | Self::ApiKeyPrompt { provider_id, .. }
             | Self::OnboardingAuth { provider_id, .. }
@@ -567,6 +588,12 @@ impl OverlayState {
     pub(crate) fn selected_model(&self) -> Option<&str> {
         match self {
             Self::ModelPicker {
+                entries, selection, ..
+            }
+            | Self::EffortPicker {
+                entries, selection, ..
+            }
+            | Self::FastModePicker {
                 entries, selection, ..
             }
             | Self::OnboardingModel {
@@ -610,6 +637,12 @@ impl OverlayState {
             }
             Self::AgentPicker { entries, selection }
             | Self::ModelPicker {
+                entries, selection, ..
+            }
+            | Self::EffortPicker {
+                entries, selection, ..
+            }
+            | Self::FastModePicker {
                 entries, selection, ..
             }
             | Self::LoginPicker { entries, selection }
@@ -676,6 +709,12 @@ impl OverlayState {
                 onboarding: true,
                 ..
             } | Self::ModelPicker {
+                onboarding: true,
+                ..
+            } | Self::EffortPicker {
+                onboarding: true,
+                ..
+            } | Self::FastModePicker {
                 onboarding: true,
                 ..
             } | Self::ApiKeyPrompt {
@@ -835,48 +874,6 @@ impl OverlayState {
             _ => None,
         }
     }
-}
-
-/// Loads agent picker entries from the workspace `agents.yaml` file.
-pub(crate) fn load_agent_picker_entries(
-    cwd: &Path,
-    current_model: Option<&str>,
-) -> Result<Vec<ModelPickerEntry>> {
-    let paths = ConfigPaths::discover(cwd);
-    ensure_workspace_dirs(&paths)?;
-    let agents_path = paths.workspace_config_dir.join("agents.yaml");
-    if !agents_path.exists() {
-        fs::write(&agents_path, default_agents_contents(current_model))?;
-    }
-    let raw = fs::read_to_string(&agents_path)?;
-    let parsed: AgentFile = serde_yaml::from_str(&raw)?;
-    Ok(parsed
-        .agents
-        .into_iter()
-        .map(|agent| ModelPickerEntry {
-            selector: agent.id,
-            description: format!("role={} model={}", agent.role, agent.model),
-        })
-        .collect())
-}
-
-fn default_agents_contents(model: Option<&str>) -> String {
-    format!(
-        "agents:\n  - id: default\n    role: coding\n    model: {}\n",
-        model.unwrap_or("anthropic/claude-sonnet-4-5")
-    )
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AgentFile {
-    agents: Vec<AgentPickerRecord>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AgentPickerRecord {
-    id: String,
-    role: String,
-    model: String,
 }
 
 fn previous_boundary(input: &str, cursor: usize) -> usize {

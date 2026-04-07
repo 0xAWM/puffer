@@ -10,6 +10,8 @@ pub(super) fn overlay_selection(overlay: &OverlayState) -> Option<usize> {
         OverlayState::SessionPicker { selection, .. }
         | OverlayState::AgentPicker { selection, .. }
         | OverlayState::ModelPicker { selection, .. }
+        | OverlayState::EffortPicker { selection, .. }
+        | OverlayState::FastModePicker { selection, .. }
         | OverlayState::LoginPicker { selection, .. }
         | OverlayState::ProviderPicker { selection, .. }
         | OverlayState::AuthPicker { selection, .. }
@@ -72,6 +74,16 @@ fn onboarding_note(overlay: &OverlayState) -> Option<&str> {
         OverlayState::ThemePicker { .. } => Some("You can run /theme later."),
         OverlayState::AuthPicker { provider_id, .. } => Some(provider_id.as_str()),
         OverlayState::ModelPicker {
+            provider_id,
+            onboarding: true,
+            ..
+        } => Some(provider_id.as_str()),
+        OverlayState::EffortPicker {
+            provider_id,
+            onboarding: true,
+            ..
+        } => Some(provider_id.as_str()),
+        OverlayState::FastModePicker {
             provider_id,
             onboarding: true,
             ..

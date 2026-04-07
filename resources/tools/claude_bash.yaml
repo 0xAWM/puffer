@@ -40,6 +40,9 @@ description: |-
   - Commands run in a sandbox by default. Use
     `dangerouslyDisableSandbox: true` only when you explicitly need to bypass
     sandbox restrictions.
+  - Commands that look destructively broad (for example `rm -rf /`) or that
+    pipe downloaded content directly into a shell may still require approval
+    even when Bash is otherwise available.
   - The result of a foreground Bash command should generally be trusted.
   - Do not use Bash for file search, file reads, or file edits when the
     dedicated tools are a better fit.

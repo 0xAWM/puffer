@@ -1,0 +1,25 @@
+id: Sleep
+name: Sleep
+description: |-
+  Wait for a specified duration without holding a shell process.
+
+  Use this when you need to pause briefly, poll for external progress, or avoid
+  wasting a Bash process on `sleep`.
+
+  Keep sleeps short unless the user explicitly asks for a longer wait.
+handler: runtime:sleep
+approval_policy: never
+sandbox_policy: read-only
+input_schema:
+  type: object
+  properties:
+    duration_ms:
+      type: integer
+      minimum: 1
+      description: Duration to wait in milliseconds.
+    reason:
+      type: string
+      description: Optional note describing why the wait is needed.
+  required:
+    - duration_ms
+  additionalProperties: false

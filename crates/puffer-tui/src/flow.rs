@@ -3,9 +3,9 @@ use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
     dispatch_command, execute_user_turn, execute_user_turn_streaming_with_permissions,
     reload_runtime_resources, render_config_summary, render_hooks_summary, render_mcp_actions,
-    render_permissions_panel, render_plugin_actions, run_resource_hooks, supported_commands,
-    AppState, MessageRole, PermissionPromptAction, PermissionPromptRequest, ToolInvocation,
-    TurnStreamEvent,
+    render_permissions_panel, render_plugin_actions, render_task_actions, run_resource_hooks,
+    supported_commands, AppState, MessageRole, PermissionPromptAction, PermissionPromptRequest,
+    ToolInvocation, TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -18,6 +18,8 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
 use crate::approval_overlay::ApprovalOverlay;
+#[path = "flow_pickers.rs"]
+mod flow_pickers;
 use crate::onboarding;
 use crate::session_overlay::SessionOverlay;
 use crate::state::{
@@ -100,14 +102,26 @@ pub(crate) fn try_open_overlay(
         return Ok(true);
     }
     if name == "rewind" && args.is_empty() {
-        let entries = rewind_picker_entries(state);
+        let entries = flow_pickers::rewind_picker_entries(state);
         if open_command_picker(tui, "Rewind", entries) {
             return Ok(true);
         }
     }
     if name == "memory" && args.is_empty() {
-        let entries = memory_picker_entries(state);
+        let entries = flow_pickers::memory_picker_entries(state);
         if open_command_picker(tui, "Memory", entries) {
+            return Ok(true);
+        }
+    }
+    if name == "tasks" && args.is_empty() {
+        let entries = render_task_actions(&mut state.clone())?
+            .into_iter()
+            .map(|entry| crate::ModelPickerEntry {
+                selector: entry.command,
+                description: entry.description,
+            })
+            .collect::<Vec<_>>();
+        if open_command_picker(tui, "Tasks", entries) {
             return Ok(true);
         }
     }
@@ -897,57 +911,6 @@ pub(crate) fn allow_prompt_before_onboarding(prompt: &str) -> bool {
         prompt.trim(),
         "/help" | "/theme" | "/doctor" | "/status" | "/usage"
     )
-}
-
-fn rewind_picker_entries(state: &AppState) -> Vec<crate::ModelPickerEntry> {
-    let mut entries = vec![crate::ModelPickerEntry {
-        selector: "/rewind".to_string(),
-        description: "Remove the latest rendered transcript item".to_string(),
-    }];
-    entries.extend(
-        state
-            .transcript
-            .iter()
-            .filter(|message| message.role == MessageRole::User)
-            .enumerate()
-            .map(|(index, message)| crate::ModelPickerEntry {
-                selector: format!("/rewind {}", index + 1),
-                description: truncate_rewind_label(&message.text),
-            }),
-    );
-    entries
-}
-
-fn truncate_rewind_label(text: &str) -> String {
-    let line = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(str::trim)
-        .unwrap_or("<empty>");
-    if line.chars().count() <= 60 {
-        line.to_string()
-    } else {
-        format!("{}...", line.chars().take(57).collect::<String>())
-    }
-}
-
-fn memory_picker_entries(state: &AppState) -> Vec<crate::ModelPickerEntry> {
-    let paths = ConfigPaths::discover(&state.cwd);
-    [
-        ("project", state.cwd.join("CLAUDE.md")),
-        ("workspace", paths.workspace_config_dir.join("memory.md")),
-        ("user", paths.user_config_dir.join("memory.md")),
-    ]
-    .into_iter()
-    .map(|(scope, path)| crate::ModelPickerEntry {
-        selector: format!("/memory open {scope}"),
-        description: format!(
-            "{} ({})",
-            path.display(),
-            if path.exists() { "present" } else { "new" }
-        ),
-    })
-    .collect()
 }
 
 fn command_requires_terminal_restore(submitted: &str) -> bool {

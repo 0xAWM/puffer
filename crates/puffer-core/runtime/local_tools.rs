@@ -1,3 +1,5 @@
+mod sleep;
+
 use anyhow::{anyhow, bail, Context, Result};
 use glob::Pattern;
 use puffer_resources::{plugin_mcp_servers, LoadedResources};
@@ -76,6 +78,7 @@ pub(super) fn is_runtime_local_tool(definition: &ToolDefinition) -> bool {
             | "runtime:tool_search"
             | "runtime:glob"
             | "runtime:notebook_edit"
+            | "runtime:sleep"
             | "runtime:list_mcp_resources"
             | "runtime:read_mcp_resource"
     )
@@ -93,6 +96,7 @@ pub(super) fn execute_runtime_local_tool(
         "runtime:tool_search" => execute_tool_search(registry, input),
         "runtime:glob" => execute_glob_tool(cwd, input),
         "runtime:notebook_edit" => execute_notebook_edit(cwd, input),
+        "runtime:sleep" => sleep::execute_sleep(input),
         "runtime:list_mcp_resources" => execute_list_mcp_resources(resources, cwd, input),
         "runtime:read_mcp_resource" => execute_read_mcp_resource(resources, cwd, input),
         other => Err(anyhow!("unsupported runtime-local tool handler {other}")),

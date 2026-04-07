@@ -11,6 +11,15 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Describes one interactive `/tasks` action exposed in the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskActionEntry {
+    /// The slash command executed when the action is selected.
+    pub command: String,
+    /// The row description shown in the interactive picker.
+    pub description: String,
+}
+
 /// Handles `/tasks` by inspecting and managing persisted workflow task state.
 pub(crate) fn handle_tasks_command(
     state: &mut AppState,
@@ -24,6 +33,9 @@ pub(crate) fn handle_tasks_command(
             emit_system(state, session_store, text)
         }
         "path" => emit_system(state, session_store, render_task_paths(state)?),
+        "agents" => emit_system(state, session_store, render_agent_list(state)?),
+        "teams" => emit_system(state, session_store, render_team_list(state)?),
+        "worktrees" => emit_system(state, session_store, render_worktree_list(state)?),
         "todos" => emit_system(state, session_store, render_todo_list(state)?),
         _ if trimmed.starts_with("show ") || trimmed.starts_with("get ") => {
             let task_id = task_argument(trimmed)?;
@@ -57,9 +69,101 @@ pub(crate) fn handle_tasks_command(
         _ => emit_system(
             state,
             session_store,
-            "Usage: /tasks [show|list|path|todos|get <task-id>|show <task-id>|output <task-id>|stop <task-id>]".to_string(),
+            "Usage: /tasks [show|list|path|agents|teams|worktrees|todos|get <task-id>|show <task-id>|output <task-id>|stop <task-id>]".to_string(),
         ),
     }
+}
+
+/// Builds the interactive `/tasks` action list used by the TUI picker.
+pub(crate) fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskActionEntry>> {
+    let tasks = load_workflow_tasks(state)?;
+    let agents = load_json_store::<WorkflowAgentStoreView>(&workflow_paths(state)?.agents)?;
+    let mut actions = vec![
+        TaskActionEntry {
+            command: "/tasks".to_string(),
+            description: "Show task dashboard".to_string(),
+        },
+        TaskActionEntry {
+            command: "/tasks todos".to_string(),
+            description: "Show current todo list".to_string(),
+        },
+        TaskActionEntry {
+            command: "/tasks agents".to_string(),
+            description: "Show background agents".to_string(),
+        },
+        TaskActionEntry {
+            command: "/tasks teams".to_string(),
+            description: "Show workflow teams".to_string(),
+        },
+        TaskActionEntry {
+            command: "/tasks worktrees".to_string(),
+            description: "Show active worktrees".to_string(),
+        },
+        TaskActionEntry {
+            command: "/tasks path".to_string(),
+            description: "Show workflow storage paths".to_string(),
+        },
+    ];
+
+    for task in &tasks {
+        actions.push(TaskActionEntry {
+            command: format!("/tasks show {}", task.task_id),
+            description: format!(
+                "{} [{}:{}] {}",
+                task.task_id,
+                task_kind(task),
+                task.status,
+                shorten(&task.subject, 80)
+            ),
+        });
+        if matches!(task.status.as_str(), "running" | "in_progress" | "pending") {
+            actions.push(TaskActionEntry {
+                command: format!("/tasks stop {}", task.task_id),
+                description: format!("Stop {} ({})", task.task_id, shorten(&task.subject, 72)),
+            });
+        }
+        if task.output_file.is_some()
+            || task
+                .output
+                .as_ref()
+                .is_some_and(|output| !output.trim().is_empty())
+        {
+            actions.push(TaskActionEntry {
+                command: format!("/tasks output {}", task.task_id),
+                description: format!("Read output for {}", task.task_id),
+            });
+        }
+    }
+
+    for agent in &agents.agents {
+        actions.push(TaskActionEntry {
+            command: format!("/tasks show {}", agent.agent_id),
+            description: format!(
+                "{} [agent:{}] {}",
+                agent.agent_id,
+                agent.status,
+                shorten(
+                    agent.name.as_deref().unwrap_or(agent.description.as_str()),
+                    72
+                )
+            ),
+        });
+        if !agent_status_is_terminal(&agent.status) {
+            actions.push(TaskActionEntry {
+                command: format!("/tasks stop {}", agent.agent_id),
+                description: format!(
+                    "Stop agent {}",
+                    agent.name.as_deref().unwrap_or(agent.agent_id.as_str())
+                ),
+            });
+        }
+        actions.push(TaskActionEntry {
+            command: format!("/tasks output {}", agent.agent_id),
+            description: format!("Read output for agent {}", agent.agent_id),
+        });
+    }
+
+    Ok(actions)
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +218,18 @@ struct WorkflowAgentStoreView {
     agents: Vec<WorkflowAgentView>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct WorkflowTeamStoreView {
+    #[serde(default)]
+    teams: Vec<WorkflowTeamView>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WorkflowWorktreeStoreView {
+    #[serde(default)]
+    worktrees: Vec<WorkflowWorktreeView>,
+}
+
 #[derive(Debug, Deserialize)]
 struct WorkflowAgentView {
     agent_id: String,
@@ -137,12 +253,36 @@ struct WorkflowAgentView {
     output_file: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct WorkflowTeamView {
+    team_name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    agent_type: Option<String>,
+    #[serde(default)]
+    members: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowWorktreeView {
+    name: String,
+    path: String,
+    base_cwd: String,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    original_head_commit: Option<String>,
+}
+
 #[derive(Debug)]
 struct WorkflowPaths {
     root: PathBuf,
     tasks: PathBuf,
     todos: PathBuf,
     agents: PathBuf,
+    teams: PathBuf,
+    worktrees: PathBuf,
     shell_outputs: PathBuf,
     agent_outputs: PathBuf,
 }
@@ -151,6 +291,8 @@ fn render_tasks_dashboard(state: &mut AppState) -> Result<String> {
     let paths = workflow_paths(state)?;
     let tasks = load_workflow_tasks(state)?;
     let agents = load_json_store::<WorkflowAgentStoreView>(&paths.agents)?;
+    let teams = load_json_store::<WorkflowTeamStoreView>(&paths.teams)?;
+    let worktrees = load_json_store::<WorkflowWorktreeStoreView>(&paths.worktrees)?;
     let todos = load_json_store::<WorkflowTodoStoreView>(&paths.todos)?;
     let mut text = String::new();
     let structured_tasks = tasks
@@ -175,6 +317,8 @@ fn render_tasks_dashboard(state: &mut AppState) -> Result<String> {
     append_task_section(&mut text, "Task list", &structured_tasks);
     append_task_section(&mut text, "Background tasks", &background_tasks);
     append_agent_section(&mut text, &agents.agents);
+    append_team_section(&mut text, &teams.teams);
+    append_worktree_section(&mut text, &worktrees.worktrees);
     append_todo_section(&mut text, &todos.todos);
     append_runtime_section(&mut text, state);
     Ok(text.trim_end().to_string())
@@ -183,14 +327,38 @@ fn render_tasks_dashboard(state: &mut AppState) -> Result<String> {
 fn render_task_paths(state: &AppState) -> Result<String> {
     let paths = workflow_paths(state)?;
     Ok(format!(
-        "Task paths\nworkflow_root={}\ntasks_json={}\ntodos_json={}\nagents_json={}\nshell_outputs={}\nagent_outputs={}",
+        "Task paths\nworkflow_root={}\ntasks_json={}\ntodos_json={}\nagents_json={}\nteams_json={}\nworktrees_json={}\nshell_outputs={}\nagent_outputs={}",
         paths.root.display(),
         paths.tasks.display(),
         paths.todos.display(),
         paths.agents.display(),
+        paths.teams.display(),
+        paths.worktrees.display(),
         paths.shell_outputs.display(),
         paths.agent_outputs.display()
     ))
+}
+
+fn render_agent_list(state: &AppState) -> Result<String> {
+    let agents = load_json_store::<WorkflowAgentStoreView>(&workflow_paths(state)?.agents)?;
+    let mut text = String::new();
+    append_agent_section(&mut text, &agents.agents);
+    Ok(text.trim_end().to_string())
+}
+
+fn render_team_list(state: &AppState) -> Result<String> {
+    let teams = load_json_store::<WorkflowTeamStoreView>(&workflow_paths(state)?.teams)?;
+    let mut text = String::new();
+    append_team_section(&mut text, &teams.teams);
+    Ok(text.trim_end().to_string())
+}
+
+fn render_worktree_list(state: &AppState) -> Result<String> {
+    let worktrees =
+        load_json_store::<WorkflowWorktreeStoreView>(&workflow_paths(state)?.worktrees)?;
+    let mut text = String::new();
+    append_worktree_section(&mut text, &worktrees.worktrees);
+    Ok(text.trim_end().to_string())
 }
 
 fn render_todo_list(state: &AppState) -> Result<String> {
@@ -329,6 +497,8 @@ fn workflow_paths(state: &AppState) -> Result<WorkflowPaths> {
         tasks: root.join("tasks.json"),
         todos: root.join("todos.json"),
         agents: root.join("agents.json"),
+        teams: root.join("teams.json"),
+        worktrees: root.join("worktrees.json"),
         shell_outputs: root.join("shell_outputs"),
         agent_outputs: root.join("agent_outputs"),
         root,
@@ -393,6 +563,50 @@ fn append_agent_section(text: &mut String, agents: &[WorkflowAgentView]) {
         }
         if let Some(team_name) = agent.team_name.as_deref() {
             let _ = writeln!(text, "  team={team_name}");
+        }
+    }
+}
+
+fn append_team_section(text: &mut String, teams: &[WorkflowTeamView]) {
+    let _ = writeln!(text, "\nTeams:");
+    if teams.is_empty() {
+        let _ = writeln!(text, "- <none>");
+        return;
+    }
+    for team in teams {
+        let _ = writeln!(
+            text,
+            "- {} members={} agent_type={}",
+            team.team_name,
+            team.members.len(),
+            team.agent_type.as_deref().unwrap_or("<none>")
+        );
+        if let Some(description) = team.description.as_deref() {
+            let _ = writeln!(text, "  detail={}", shorten(description, 120));
+        }
+        if !team.members.is_empty() {
+            let _ = writeln!(text, "  members={}", team.members.join(", "));
+        }
+    }
+}
+
+fn append_worktree_section(text: &mut String, worktrees: &[WorkflowWorktreeView]) {
+    let _ = writeln!(text, "\nWorktrees:");
+    if worktrees.is_empty() {
+        let _ = writeln!(text, "- <none>");
+        return;
+    }
+    for worktree in worktrees {
+        let _ = writeln!(
+            text,
+            "- {} branch={} path={}",
+            worktree.name,
+            worktree.branch.as_deref().unwrap_or("<none>"),
+            worktree.path
+        );
+        let _ = writeln!(text, "  base_cwd={}", worktree.base_cwd);
+        if let Some(commit) = worktree.original_head_commit.as_deref() {
+            let _ = writeln!(text, "  original_head_commit={commit}");
         }
     }
 }
@@ -504,6 +718,10 @@ where
 
 fn task_kind(task: &WorkflowTaskView) -> &str {
     task.task_type.as_deref().unwrap_or("task")
+}
+
+fn agent_status_is_terminal(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "stopped" | "deleted")
 }
 
 fn render_list(values: &[String]) -> String {

@@ -24,6 +24,7 @@ const DEFERRED_TOOL_NAMES: &[&str] = &[
     "ReadMcpResourceTool",
     "RemoteTrigger",
     "SendMessage",
+    "Sleep",
     "TaskCreate",
     "TaskGet",
     "TaskList",

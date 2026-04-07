@@ -1,10 +1,8 @@
-use crate::state::{
-    load_agent_picker_entries, AuthPickerAction, AuthPickerEntry, ModelPickerEntry, OverlayState,
-};
+use crate::state::{AuthPickerAction, AuthPickerEntry, ModelPickerEntry, OverlayState};
 use crate::usage::UsageOverlay;
 use anyhow::Result;
 use puffer_config::ConfigPaths;
-use puffer_core::AppState;
+use puffer_core::{load_agent_catalog, AppState};
 use puffer_provider_registry::{
     detect_import_candidates, AuthMode, AuthStore, ExternalImportCandidate, ExternalImportFamily,
     ExternalImportSource, ProviderDescriptor, ProviderRegistry,
@@ -87,7 +85,32 @@ pub(crate) fn overlay_from_command(
             model_picker(providers, provider_id, false)
         }),
         "agents" if args.is_empty() => {
-            let entries = load_agent_picker_entries(&state.cwd, state.current_model.as_deref())?;
+            let entries = load_agent_catalog(&state.cwd, state.current_model.as_deref())?
+                .into_iter()
+                .map(|agent| ModelPickerEntry {
+                    selector: agent.selector,
+                    description: format!(
+                        "[{}] model={}{}{} {}",
+                        match agent.source_kind {
+                            puffer_resources::SourceKind::Builtin => "builtin",
+                            puffer_resources::SourceKind::User => "user",
+                            puffer_resources::SourceKind::Workspace => "workspace",
+                        },
+                        agent.model.unwrap_or_else(|| "<inherit>".to_string()),
+                        agent
+                            .effort
+                            .as_deref()
+                            .map(|effort| format!(" effort={effort}"))
+                            .unwrap_or_default(),
+                        agent
+                            .permission_mode
+                            .as_deref()
+                            .map(|mode| format!(" mode={mode}"))
+                            .unwrap_or_default(),
+                        agent.description
+                    ),
+                })
+                .collect::<Vec<_>>();
             if entries.is_empty() {
                 None
             } else {
@@ -145,6 +168,25 @@ pub(crate) fn back_overlay(
         OverlayState::ModelPicker { onboarding, .. } if *onboarding => {
             provider_picker(providers, true)
         }
+        OverlayState::EffortPicker {
+            provider_id,
+            model_id,
+            onboarding,
+            ..
+        } => model_picker_with_selection(providers, provider_id, *onboarding, Some(model_id)),
+        OverlayState::FastModePicker {
+            provider_id,
+            model_id,
+            effort,
+            onboarding,
+            ..
+        } => Some(effort_picker(
+            providers,
+            provider_id,
+            model_id,
+            effort,
+            *onboarding,
+        )),
         OverlayState::SessionPicker { .. }
         | OverlayState::AgentPicker { .. }
         | OverlayState::ModelPicker { .. }
@@ -340,6 +382,15 @@ fn model_picker(
     provider_id: &str,
     onboarding: bool,
 ) -> Option<OverlayState> {
+    model_picker_with_selection(providers, provider_id, onboarding, None)
+}
+
+pub(crate) fn model_picker_with_selection(
+    providers: &ProviderRegistry,
+    provider_id: &str,
+    onboarding: bool,
+    selected_model: Option<&str>,
+) -> Option<OverlayState> {
     let provider = providers.provider(provider_id)?;
     let entries = provider
         .models
@@ -349,15 +400,150 @@ fn model_picker(
             description: model.display_name.clone(),
         })
         .collect::<Vec<_>>();
+    let selection = selected_model
+        .and_then(|selected| entries.iter().position(|entry| entry.selector == selected))
+        .unwrap_or(0);
     if entries.is_empty() {
         None
     } else {
         Some(OverlayState::ModelPicker {
             provider_id: provider.id.clone(),
             entries,
-            selection: 0,
+            selection,
             onboarding,
         })
+    }
+}
+
+pub(crate) fn effort_picker(
+    providers: &ProviderRegistry,
+    provider_id: &str,
+    model_id: &str,
+    selected_effort: &str,
+    onboarding: bool,
+) -> OverlayState {
+    let entries = match provider_picker_family(providers, provider_id) {
+        ProviderPickerFamily::Anthropic => vec![
+            picker_entry("low", "Quick, straightforward implementation"),
+            picker_entry("medium", "Balanced implementation and testing"),
+            picker_entry("high", "Comprehensive implementation"),
+            picker_entry("max", "Deepest reasoning when supported"),
+        ],
+        ProviderPickerFamily::OpenAi => vec![
+            picker_entry("minimal", "Smallest reasoning budget"),
+            picker_entry("low", "Fast response with lighter reasoning"),
+            picker_entry("medium", "Balanced reasoning depth"),
+            picker_entry("high", "Strong reasoning depth"),
+            picker_entry("xhigh", "Extra high reasoning depth"),
+        ],
+        ProviderPickerFamily::Other => vec![
+            picker_entry("low", "Quick, straightforward implementation"),
+            picker_entry("medium", "Balanced reasoning depth"),
+            picker_entry("high", "Deeper reasoning"),
+        ],
+    };
+    let selection = entries
+        .iter()
+        .position(|entry| entry.selector == selected_effort)
+        .unwrap_or_else(|| {
+            entries
+                .iter()
+                .position(|entry| entry.selector == "high")
+                .unwrap_or(0)
+        });
+    OverlayState::EffortPicker {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+        entries,
+        selection,
+        onboarding,
+    }
+}
+
+pub(crate) fn fast_mode_picker(
+    providers: &ProviderRegistry,
+    provider_id: &str,
+    model_id: &str,
+    effort: &str,
+    onboarding: bool,
+) -> OverlayState {
+    let (entries, selection) = match provider_picker_family(providers, provider_id) {
+        ProviderPickerFamily::Anthropic => (
+            vec![
+                picker_entry(
+                    "off",
+                    "Keep standard Claude inference (default for Anthropic)",
+                ),
+                picker_entry(
+                    "on",
+                    "Enable Claude fast mode when the selected model supports it",
+                ),
+            ],
+            0,
+        ),
+        ProviderPickerFamily::OpenAi => (
+            vec![
+                picker_entry(
+                    "on",
+                    "Enable Codex fast mode for fastest inference at higher plan usage",
+                ),
+                picker_entry("off", "Use normal Codex service tier"),
+            ],
+            0,
+        ),
+        ProviderPickerFamily::Other => (
+            vec![
+                picker_entry("off", "Keep standard inference"),
+                picker_entry("on", "Enable fast mode"),
+            ],
+            0,
+        ),
+    };
+    OverlayState::FastModePicker {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+        effort: effort.to_string(),
+        entries,
+        selection,
+        onboarding,
+    }
+}
+
+fn picker_entry(selector: &str, description: &str) -> ModelPickerEntry {
+    ModelPickerEntry {
+        selector: selector.to_string(),
+        description: description.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderPickerFamily {
+    Anthropic,
+    OpenAi,
+    Other,
+}
+
+fn provider_picker_family(providers: &ProviderRegistry, provider_id: &str) -> ProviderPickerFamily {
+    let Some(provider) = providers.provider(provider_id) else {
+        return if provider_id.eq_ignore_ascii_case("anthropic") {
+            ProviderPickerFamily::Anthropic
+        } else if provider_id.to_ascii_lowercase().contains("openai") {
+            ProviderPickerFamily::OpenAi
+        } else {
+            ProviderPickerFamily::Other
+        };
+    };
+    if provider.id.eq_ignore_ascii_case("anthropic")
+        || provider.default_api.starts_with("anthropic")
+    {
+        ProviderPickerFamily::Anthropic
+    } else if provider.id.to_ascii_lowercase().contains("openai")
+        || provider.default_api.starts_with("openai")
+        || provider.default_api.contains("codex")
+    {
+        ProviderPickerFamily::OpenAi
+    } else {
+        ProviderPickerFamily::Other
     }
 }
 

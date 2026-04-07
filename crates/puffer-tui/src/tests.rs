@@ -20,6 +20,8 @@ use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
 use uuid::Uuid;
 
+mod help;
+mod model_selection;
 mod panels;
 mod status;
 
@@ -133,6 +135,12 @@ fn try_open_overlay_builds_resume_picker() {
 #[test]
 fn try_open_overlay_builds_agent_picker() {
     let tempdir = tempdir().unwrap();
+    std::fs::create_dir_all(tempdir.path().join("resources/agents")).unwrap();
+    std::fs::write(
+        tempdir.path().join("resources/agents/reviewer.yaml"),
+        "id: reviewer\ndescription: Reviews code carefully.\nprompt: |\n  You are a reviewer.\ntools:\n  - Read\nmodel: openai/gpt-5\n",
+    )
+    .unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
@@ -154,10 +162,11 @@ fn try_open_overlay_builds_agent_picker() {
     )
     .unwrap();
     assert!(opened);
-    assert!(matches!(
-        tui.overlay,
-        Some(OverlayState::AgentPicker { .. })
-    ));
+    let entries = match &tui.overlay {
+        Some(OverlayState::AgentPicker { entries, .. }) => entries,
+        _ => panic!("agent picker"),
+    };
+    assert!(entries.iter().any(|entry| entry.selector == "reviewer"));
 }
 
 #[test]
@@ -795,6 +804,7 @@ fn sample_resources() -> LoadedResources {
                     description: "Review a diff".to_string(),
                 }],
                 skills: vec!["reviewer".to_string()],
+                agents: Vec::new(),
                 mcp_servers: vec![McpServerSpec {
                     id: "git-mcp".to_string(),
                     display_name: "Git MCP".to_string(),

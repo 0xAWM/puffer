@@ -50,11 +50,19 @@ input_schema:
       description: Optional agent id to run. Defaults to general-purpose.
     model:
       type: string
-      enum:
-        - haiku
-        - opus
-        - sonnet
-      description: Optional model override for the subagent.
+      description: Optional model override for the subagent. Accepts provider/model selectors as well as provider-native aliases when supported.
+    effort:
+      oneOf:
+        - type: string
+        - type: integer
+      description: Optional effort override for the subagent.
+    permission_mode:
+      type: string
+      description: Optional permission mode override for the spawned agent.
+    max_turns:
+      type: integer
+      minimum: 1
+      description: Optional maximum number of turns the spawned agent should use.
     run_in_background:
       type: boolean
       description: When true, request background execution.
@@ -81,6 +89,9 @@ input_schema:
         - dontAsk
         - plan
       description: Optional permission mode override for the spawned agent. Use only when a specific teammate flow requires it.
+    initial_prompt:
+      type: string
+      description: Optional prompt text to prepend ahead of the delegated task prompt.
   required:
     - description
     - prompt

@@ -56,13 +56,17 @@ pub(crate) fn render_config_summary(state: &AppState) -> Result<String> {
     ensure_workspace_dirs(&paths)?;
     let config_path = paths.workspace_config_file();
     Ok(format!(
-        "Config summary:\npath={}\napp_name={}\ndefault_provider={}\ndefault_model={}\nopenai_base_url={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}\nstatus_line_command={}\nstatus_line_padding={}",
+        "Config summary:\npath={}\napp_name={}\ndefault_provider={}\ndefault_model={}\nopenai_base_url={}\ntheme={}\neditor_mode={}\nfast_mode={}\neffort_level={}\nprompt_color={}\nno_alt_screen={}\ntmux_golden_mode={}\nstatus_line_command={}\nstatus_line_padding={}",
         config_path.display(),
         state.config.app_name,
         state.config.default_provider.as_deref().unwrap_or("<unset>"),
         state.config.default_model.as_deref().unwrap_or("<unset>"),
         state.config.openai_base_url.as_deref().unwrap_or("<unset>"),
         state.config.theme,
+        if state.vim_mode { "vim" } else { "default" },
+        state.fast_mode,
+        state.effort_level,
+        state.prompt_color,
         state.config.ui.no_alt_screen,
         state.config.ui.tmux_golden_mode,
         state
@@ -215,6 +219,39 @@ pub(crate) fn handle_config_command(
         return emit_system(state, session_store, render_config_summary(state)?);
     }
 
+    if matches!(trimmed, "help" | "list") {
+        return emit_system(
+            state,
+            session_store,
+            "Supported config keys:\n\
+theme\n\
+model\n\
+editorMode\n\
+fastMode\n\
+effortLevel\n\
+promptColor\n\
+default_provider\n\
+defaultProvider\n\
+default_model\n\
+defaultModel\n\
+openai_base_url\n\
+openaiBaseUrl\n\
+openai_headers\n\
+openaiHeaders\n\
+openai_query_params\n\
+openaiQueryParams\n\
+no_alt_screen\n\
+noAltScreen\n\
+tmux_golden_mode\n\
+tmuxGoldenMode\n\
+status_line_command\n\
+statusLineCommand\n\
+status_line_padding\n\
+statusLinePadding"
+                .to_string(),
+        );
+    }
+
     if trimmed == "path" {
         return emit_system(
             state,
@@ -238,7 +275,7 @@ pub(crate) fn handle_config_command(
         return emit_system(
             state,
             session_store,
-            "Usage: /config [show|path|set <theme|default_provider|default_model|openai_base_url|no_alt_screen|tmux_golden_mode|status_line_command|status_line_padding> <value>]".to_string(),
+            "Usage: /config [show|list|help|path|set <key> <value>]".to_string(),
         );
     };
     let Some((key, value)) = rest.split_once(' ') else {
@@ -249,8 +286,28 @@ pub(crate) fn handle_config_command(
         );
     };
     let value = value.trim();
-    match key {
+    match normalize_config_key(key) {
         "theme" => state.config.theme = value.to_string(),
+        "model" => {
+            state.current_model = match value {
+                "none" | "default" | "<unset>" => None,
+                _ => Some(value.to_string()),
+            };
+            state.config.default_model = state.current_model.clone();
+            state.current_provider = state
+                .current_model
+                .as_deref()
+                .and_then(|model| {
+                    model
+                        .split_once('/')
+                        .map(|(provider, _)| provider.to_string())
+                })
+                .or_else(|| state.current_provider.clone());
+        }
+        "editorMode" => state.vim_mode = matches!(value, "vim"),
+        "fastMode" => state.fast_mode = parse_bool(value)?,
+        "effortLevel" => state.effort_level = value.to_string(),
+        "promptColor" => state.prompt_color = value.to_string(),
         "default_provider" => state.config.default_provider = Some(value.to_string()),
         "default_model" => state.config.default_model = Some(value.to_string()),
         "openai_base_url" => {
@@ -303,6 +360,21 @@ pub(crate) fn handle_config_command(
         session_store,
         format!("Updated {key} in {}.", config_path.display()),
     )
+}
+
+fn normalize_config_key(key: &str) -> &str {
+    match key.trim() {
+        "defaultProvider" => "default_provider",
+        "defaultModel" => "default_model",
+        "openaiBaseUrl" => "openai_base_url",
+        "openaiHeaders" => "openai_headers",
+        "openaiQueryParams" => "openai_query_params",
+        "noAltScreen" => "no_alt_screen",
+        "tmuxGoldenMode" => "tmux_golden_mode",
+        "statusLineCommand" => "status_line_command",
+        "statusLinePadding" => "status_line_padding",
+        other => other,
+    }
 }
 
 /// Persists the currently selected provider and model to the user config file.

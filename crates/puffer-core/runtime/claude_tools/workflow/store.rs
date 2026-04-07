@@ -389,7 +389,7 @@ pub(super) fn resolve_recipients(cwd: &Path, target: &str) -> Result<Vec<String>
 }
 
 pub(super) fn get_config_value(state: &AppState, setting: &str) -> Result<Value> {
-    match setting {
+    match normalize_setting_key(setting) {
         "theme" => Ok(json!(state.config.theme)),
         "model" => Ok(json!(state.current_model)),
         "editorMode" => Ok(json!(if state.vim_mode { "vim" } else { "default" })),
@@ -400,30 +400,50 @@ pub(super) fn get_config_value(state: &AppState, setting: &str) -> Result<Value>
         "openai_query_params" => Ok(json!(state.config.openai_query_params)),
         "no_alt_screen" => Ok(json!(state.config.ui.no_alt_screen)),
         "tmux_golden_mode" => Ok(json!(state.config.ui.tmux_golden_mode)),
+        "status_line_command" => Ok(json!(state
+            .config
+            .ui
+            .status_line
+            .as_ref()
+            .map(|status_line| status_line.command.as_str()))),
+        "status_line_padding" => Ok(json!(state
+            .config
+            .ui
+            .status_line
+            .as_ref()
+            .map(|status_line| status_line.padding))),
+        "fastMode" => Ok(json!(state.fast_mode)),
+        "effortLevel" => Ok(json!(state.effort_level)),
+        "promptColor" => Ok(json!(state.prompt_color)),
+        "statuslineEnabled" => Ok(json!(state.statusline_enabled)),
         other => bail!("Unsupported config setting `{other}`"),
     }
 }
 
 pub(super) fn set_config_value(state: &mut AppState, setting: &str, value: Value) -> Result<()> {
-    match setting {
+    match normalize_setting_key(setting) {
         "theme" => {
             state.config.theme = value
                 .as_str()
                 .ok_or_else(|| anyhow!("theme must be a string"))?
                 .to_string()
         }
-        "model" => {
-            let model = value
-                .as_str()
-                .ok_or_else(|| anyhow!("model must be a string"))?
-                .to_string();
-            state.current_model = Some(model.clone());
-            state.current_provider = model
-                .split_once('/')
-                .map(|(provider, _)| provider.to_string())
-                .or_else(|| state.current_provider.clone());
-            state.config.default_model = Some(model);
-        }
+        "model" => match value {
+            Value::Null => {
+                state.current_model = None;
+                state.current_provider = state.config.default_provider.clone();
+                state.config.default_model = None;
+            }
+            Value::String(model) => {
+                state.current_model = Some(model.clone());
+                state.current_provider = model
+                    .split_once('/')
+                    .map(|(provider, _)| provider.to_string())
+                    .or_else(|| state.current_provider.clone());
+                state.config.default_model = Some(model);
+            }
+            _ => bail!("model must be a string or null"),
+        },
         "editorMode" => {
             let mode = value
                 .as_str()
@@ -473,9 +493,100 @@ pub(super) fn set_config_value(state: &mut AppState, setting: &str, value: Value
                 .as_bool()
                 .ok_or_else(|| anyhow!("tmux_golden_mode must be a boolean"))?
         }
+        "status_line_command" => {
+            state.config.ui.status_line = match value {
+                Value::Null => None,
+                Value::String(command) => Some(puffer_config::StatusLineConfig {
+                    command,
+                    padding: state
+                        .config
+                        .ui
+                        .status_line
+                        .as_ref()
+                        .map(|status_line| status_line.padding)
+                        .unwrap_or(0),
+                }),
+                _ => bail!("status_line_command must be a string or null"),
+            };
+        }
+        "status_line_padding" => {
+            let padding = match value {
+                Value::Null => 0,
+                Value::Number(number) => number
+                    .as_u64()
+                    .ok_or_else(|| anyhow!("status_line_padding must be an unsigned integer"))?
+                    as u16,
+                _ => bail!("status_line_padding must be an unsigned integer or null"),
+            };
+            let status_line =
+                state
+                    .config
+                    .ui
+                    .status_line
+                    .get_or_insert(puffer_config::StatusLineConfig {
+                        command: String::new(),
+                        padding: 0,
+                    });
+            status_line.padding = padding;
+        }
+        "fastMode" => {
+            state.fast_mode = value
+                .as_bool()
+                .ok_or_else(|| anyhow!("fastMode must be a boolean"))?
+        }
+        "effortLevel" => {
+            state.effort_level = value
+                .as_str()
+                .ok_or_else(|| anyhow!("effortLevel must be a string"))?
+                .to_string()
+        }
+        "promptColor" => {
+            state.prompt_color = value
+                .as_str()
+                .ok_or_else(|| anyhow!("promptColor must be a string"))?
+                .to_string()
+        }
+        "statuslineEnabled" => {
+            state.statusline_enabled = value
+                .as_bool()
+                .ok_or_else(|| anyhow!("statuslineEnabled must be a boolean"))?
+        }
         other => bail!("Unsupported config setting `{other}`"),
     }
     Ok(())
+}
+
+pub(super) fn config_setting_persists_to_workspace_file(setting: &str) -> bool {
+    matches!(
+        normalize_setting_key(setting),
+        "theme"
+            | "model"
+            | "editorMode"
+            | "default_provider"
+            | "default_model"
+            | "openai_base_url"
+            | "openai_headers"
+            | "openai_query_params"
+            | "no_alt_screen"
+            | "tmux_golden_mode"
+            | "status_line_command"
+            | "status_line_padding"
+    )
+}
+
+fn normalize_setting_key(setting: &str) -> &str {
+    match setting.trim() {
+        "defaultProvider" => "default_provider",
+        "defaultModel" => "default_model",
+        "openaiBaseUrl" => "openai_base_url",
+        "openaiHeaders" => "openai_headers",
+        "openaiQueryParams" => "openai_query_params",
+        "noAltScreen" => "no_alt_screen",
+        "tmuxGoldenMode" => "tmux_golden_mode",
+        "statusLineCommand" => "status_line_command",
+        "statusLinePadding" => "status_line_padding",
+        other => other,
+    }
 }
 fn value_to_string_map(value: Value, setting: &str) -> Result<BTreeMap<String, String>> {
     match value {

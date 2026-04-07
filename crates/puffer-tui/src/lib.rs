@@ -23,7 +23,9 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, size as terminal_size, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
-use puffer_core::{shutdown_runtime_services, supported_commands, AppState, CommandSpec};
+use puffer_core::{
+    shutdown_runtime_services, supported_commands, AppState, CommandSpec, MessageRole,
+};
 use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_session_store::SessionStore;
@@ -262,6 +264,12 @@ fn handle_key(
                     tui,
                     no_alt_screen,
                 )?;
+            } else if help_pane_active_without_overlay(state, tui) {
+                session_store.append_transcript_pop_last(state.session.id, 1)?;
+                state.apply_transcript_rewrite(&puffer_session_store::TranscriptRewrite::PopLast {
+                    count: 1,
+                });
+                tui.clear(commands);
             } else {
                 tui.clear(commands);
             }
@@ -392,6 +400,43 @@ fn handle_key(
         _ => {}
     }
     Ok(false)
+}
+
+fn help_pane_active_without_overlay(state: &AppState, tui: &TuiState) -> bool {
+    tui.overlay.is_none()
+        && state.transcript.last().is_some_and(|message| {
+            message.role == MessageRole::System && message.text.starts_with("Supported commands:")
+        })
+}
+
+fn apply_model_selection_preferences(
+    state: &mut AppState,
+    auth_store: &AuthStore,
+    auth_path: &Path,
+    session_store: &SessionStore,
+    provider_id: &str,
+    model_id: &str,
+    effort: &str,
+    fast_mode: bool,
+) -> Result<()> {
+    let _ = auth_store;
+    let _ = auth_path;
+    state.current_provider = Some(provider_id.to_string());
+    state.current_model = Some(format!("{provider_id}/{model_id}"));
+    state.config.default_provider = Some(provider_id.to_string());
+    state.config.default_model = Some(format!("{provider_id}/{model_id}"));
+    state.effort_level = effort.to_string();
+    state.fast_mode = fast_mode;
+    persist_user_config(state)?;
+    session_store.append_event(state.session.id, state.snapshot_event())?;
+    emit_system_message(
+        state,
+        session_store,
+        format!(
+            "Active model set to {provider_id}/{model_id}.\nEffort level set to {effort}.\nFast mode is now {}.",
+            if fast_mode { "on" } else { "off" }
+        ),
+    )
 }
 
 fn handle_overlay_key(
@@ -703,25 +748,64 @@ fn handle_overlay_key(
                             }
                         }
                     }
-                    OverlayState::ModelPicker {
-                        onboarding: true, ..
-                    } => {
+                    OverlayState::ModelPicker { onboarding, .. } => {
                         let Some(model_id) = overlay_snapshot.selected_model().map(str::to_string)
                         else {
                             set_overlay_state(tui, None);
                             return Ok(false);
                         };
-                        state.current_provider = Some(provider_id.clone());
-                        state.current_model = Some(format!("{provider_id}/{model_id}"));
-                        state.config.default_provider = Some(provider_id.clone());
-                        state.config.default_model = Some(format!("{provider_id}/{model_id}"));
-                        persist_user_config(state)?;
-                        emit_system_message(
-                            state,
-                            session_store,
-                            format!("Active model set to {provider_id}/{model_id}."),
-                        )?;
+                        set_overlay_state(
+                            tui,
+                            Some(onboarding::effort_picker(
+                                providers,
+                                &provider_id,
+                                &model_id,
+                                "high",
+                                *onboarding,
+                            )),
+                        );
+                    }
+                    OverlayState::EffortPicker {
+                        provider_id,
+                        model_id,
+                        onboarding,
+                        ..
+                    } => {
+                        let Some(effort) = overlay_snapshot.selected_model().map(str::to_string)
+                        else {
+                            set_overlay_state(tui, None);
+                            return Ok(false);
+                        };
+                        set_overlay_state(
+                            tui,
+                            Some(onboarding::fast_mode_picker(
+                                providers,
+                                provider_id,
+                                model_id,
+                                &effort,
+                                *onboarding,
+                            )),
+                        );
+                    }
+                    OverlayState::FastModePicker {
+                        provider_id,
+                        model_id,
+                        effort,
+                        ..
+                    } => {
+                        let fast_mode =
+                            matches!(overlay_snapshot.selected_model(), Some("on" | "true" | "1"));
                         set_overlay_state(tui, None);
+                        apply_model_selection_preferences(
+                            state,
+                            auth_store,
+                            auth_path,
+                            session_store,
+                            &provider_id,
+                            &model_id,
+                            &effort,
+                            fast_mode,
+                        )?;
                     }
                     _ => {
                         if let Some(command) = overlay_snapshot.selected_command() {

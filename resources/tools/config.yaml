@@ -14,13 +14,28 @@ description: |-
   - `theme`
   - `model`
   - `editorMode`
+  - `fastMode`
+  - `effortLevel`
+  - `promptColor`
+  - `statuslineEnabled`
   - `default_provider`
+  - `defaultProvider`
   - `default_model`
+  - `defaultModel`
   - `openai_base_url`
+  - `openaiBaseUrl`
   - `openai_headers`
+  - `openaiHeaders`
   - `openai_query_params`
+  - `openaiQueryParams`
   - `no_alt_screen`
+  - `noAltScreen`
   - `tmux_golden_mode`
+  - `tmuxGoldenMode`
+  - `status_line_command`
+  - `statusLineCommand`
+  - `status_line_padding`
+  - `statusLinePadding`
 
   Set `value` to `null` to clear optional settings such as `default_model`,
   `default_provider`, `openai_base_url`, `openai_headers`, or
@@ -29,8 +44,10 @@ description: |-
   Examples:
   - Get theme: `{ "setting": "theme" }`
   - Set theme: `{ "setting": "theme", "value": "dark" }`
-  - Change model: `{ "setting": "model", "value": "opus" }`
+  - Change model: `{ "setting": "model", "value": "openai/gpt-5" }`
   - Enable vim mode: `{ "setting": "editorMode", "value": "vim" }`
+  - Turn on fast mode for this session: `{ "setting": "fastMode", "value": true }`
+  - Update the status line command: `{ "setting": "statusLineCommand", "value": "echo hi" }`
 handler: runtime:workflow:config
 approval_policy: auto
 sandbox_policy: workspace-write

@@ -98,3 +98,79 @@ fn tasks_command_reports_workflow_tasks_and_todos() {
             && text.contains("Wire /tasks to workflow state")
     ));
 }
+
+#[test]
+fn tasks_command_reports_background_agents_and_teams() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    let cwd = state.cwd.clone();
+    crate::runtime::claude_tools::workflow::agent::execute_agent(
+        &mut state,
+        &cwd,
+        serde_json::json!({
+            "description": "Review pending changes",
+            "prompt": "Inspect the branch",
+            "name": "reviewer",
+            "subagent_type": "general-purpose",
+            "run_in_background": true
+        }),
+    )
+    .unwrap();
+    crate::runtime::claude_tools::workflow::team_create::execute_team_create(
+        &mut state,
+        &cwd,
+        serde_json::json!({
+            "team_name": "alpha",
+            "description": "Review team",
+            "agent_type": "general-purpose"
+        }),
+    )
+    .unwrap();
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/tasks agents",
+    )
+    .unwrap();
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("Background agents:") && text.contains("reviewer")
+    ));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/tasks teams",
+    )
+    .unwrap();
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("Teams:") && text.contains("alpha")
+    ));
+}

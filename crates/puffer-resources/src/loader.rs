@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 pub fn load_resources(paths: &ConfigPaths) -> Result<LoadedResources> {
     let mut loaded = LoadedResources::default();
     for (root, kind) in resource_roots(paths) {
+        let plugins = load_yaml_dir::<PluginSpec>(&root.join("plugins"), kind)?;
         merge_by_id(
             &mut loaded.providers,
             load_yaml_dir::<ProviderPack>(&root.join("providers"), kind)?,
@@ -68,9 +69,16 @@ pub fn load_resources(paths: &ConfigPaths) -> Result<LoadedResources> {
         );
         merge_by_id(
             &mut loaded.plugins,
-            load_yaml_dir::<PluginSpec>(&root.join("plugins"), kind)?,
+            plugins.clone(),
             |item| item.value.id.clone(),
             "plugin",
+            &mut loaded.diagnostics,
+        );
+        merge_by_id(
+            &mut loaded.agents,
+            plugin_agent_specs(&plugins),
+            |item| item.value.id.clone(),
+            "agent",
             &mut loaded.diagnostics,
         );
         merge_by_id(
@@ -167,6 +175,18 @@ pub fn plugin_lsp_servers(resources: &LoadedResources) -> Vec<(&PluginSpec, &Lsp
                 .lsp_servers
                 .iter()
                 .map(move |server| (&plugin.value, server))
+        })
+        .collect()
+}
+
+fn plugin_agent_specs(plugins: &[LoadedItem<PluginSpec>]) -> Vec<LoadedItem<AgentSpec>> {
+    plugins
+        .iter()
+        .flat_map(|plugin| {
+            plugin.value.agents.iter().cloned().map(|agent| LoadedItem {
+                value: agent,
+                source_info: plugin.source_info.clone(),
+            })
         })
         .collect()
 }
@@ -487,6 +507,31 @@ mod tests {
         assert_eq!(loaded.agents[0].value.id, "default");
         assert_eq!(loaded.skills[0].value.name, "reviewer");
         assert_eq!(loaded.plugins[0].value.id, "example");
+    }
+
+    #[test]
+    fn plugin_agents_are_loaded_into_agent_inventory() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let resources_dir = root.join("resources");
+        fs::create_dir_all(resources_dir.join("plugins")).unwrap();
+        fs::write(
+            resources_dir.join("plugins/example.yaml"),
+            "id: example\ndisplay_name: Example\nagents:\n  - id: reviewer\n    description: Review changes\n    prompt: You are a reviewer.\n    tools:\n      - Read\n",
+        )
+        .unwrap();
+
+        let paths = ConfigPaths::discover(&root);
+        let loaded = load_resources(&paths).unwrap();
+        assert_eq!(loaded.plugins.len(), 1);
+        assert!(loaded
+            .agents
+            .iter()
+            .any(|agent| agent.value.id == "reviewer"));
+        assert!(loaded
+            .agents
+            .iter()
+            .any(|agent| agent.source_info.path.ends_with("plugins/example.yaml")));
     }
 
     #[test]

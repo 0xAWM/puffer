@@ -1,5 +1,5 @@
 use super::*;
-use puffer_config::PufferConfig;
+use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
 use puffer_provider_registry::{AuthMode, AuthStore, ProviderDescriptor, ProviderRegistry};
 use puffer_resources::{AgentSpec, LoadedItem, LoadedResources, SourceInfo, SourceKind};
 use puffer_session_store::SessionMetadata;
@@ -45,6 +45,7 @@ fn loaded_agent(
             prompt: prompt.to_string(),
             tools: tools.iter().map(|tool| tool.to_string()).collect(),
             model: None,
+            ..AgentSpec::default()
         },
         source_info: SourceInfo {
             path: format!("{id}.yaml").into(),
@@ -267,6 +268,85 @@ fn execute_agent_tool_sync_reports_worktree_isolation_metadata() {
 }
 
 #[test]
+fn execute_agent_tool_loads_workspace_agent_resources_from_disk() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ConfigPaths::discover(temp.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    std::fs::create_dir_all(paths.workspace_config_dir.join("resources/agents")).unwrap();
+    std::fs::write(
+        paths.workspace_config_dir.join("resources/agents/reviewer.yaml"),
+        "id: reviewer\ndescription: Reviews code carefully.\nprompt: |\n  You are a reviewer.\ntools:\n  - Read\nmodel: local-anthropic/claude-sonnet-4-5\n",
+    )
+    .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let body = json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "disk agent ok"
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+
+    let mut provider = provider();
+    provider.id = "local-anthropic".to_string();
+    provider.base_url = format!("http://{address}");
+    provider.auth_modes.clear();
+    provider.models[0].provider = "local-anthropic".to_string();
+
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider);
+    let session = SessionMetadata {
+        id: Uuid::new_v4(),
+        display_name: None,
+        cwd: temp.path().to_path_buf(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        parent_session_id: None,
+        slug: None,
+        tags: Vec::new(),
+        note: None,
+    };
+    let mut state = AppState::new(PufferConfig::default(), temp.path().to_path_buf(), session);
+    state.current_provider = Some("local-anthropic".to_string());
+    state.current_model = Some("local-anthropic/claude-sonnet-4-5".to_string());
+
+    let output = super::agents::execute_agent_tool(
+        &state,
+        &LoadedResources::default(),
+        &providers,
+        &mut AuthStore::default(),
+        temp.path(),
+        json!({
+            "description": "Workspace agent request",
+            "prompt": "Review the worktree",
+            "subagent_type": "reviewer"
+        }),
+    )
+    .unwrap();
+    let payload: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(payload["status"], "completed");
+    assert_eq!(payload["agentType"], "reviewer");
+    assert_eq!(payload["result"], "disk agent ok");
+    server.join().unwrap();
+}
+
+#[test]
 fn execute_agent_tool_background_preserves_worktree_path() {
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
@@ -344,4 +424,154 @@ fn execute_agent_tool_background_preserves_worktree_path() {
     let worktree_path = payload["worktreePath"].as_str().unwrap();
     assert!(Path::new(worktree_path).exists());
     server.join().unwrap();
+}
+
+#[test]
+fn execute_agent_tool_combines_initial_prompt_skills_and_case_insensitive_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_request = captured.clone();
+    let server = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0_u8; 16384];
+            let read = stream.read(&mut buffer).unwrap_or_default();
+            *captured_request.lock().unwrap() =
+                String::from_utf8_lossy(&buffer[..read]).to_string();
+            let body = json!({
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "agent ok"
+                            }
+                        ]
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+
+    let mut provider = provider();
+    provider.id = "openai".to_string();
+    provider.base_url = format!("http://{address}");
+    provider.default_api = "openai-responses".to_string();
+    provider.auth_modes.clear();
+    provider.models[0].id = "gpt-5".to_string();
+    provider.models[0].display_name = "GPT-5".to_string();
+    provider.models[0].provider = "openai".to_string();
+    provider.models[0].api = "openai-responses".to_string();
+
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider);
+    let session = SessionMetadata {
+        id: Uuid::new_v4(),
+        display_name: None,
+        cwd: temp.path().to_path_buf(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        parent_session_id: None,
+        slug: None,
+        tags: Vec::new(),
+        note: None,
+    };
+    let mut state = AppState::new(PufferConfig::default(), temp.path().to_path_buf(), session);
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+
+    let mut agent = loaded_agent("reviewer", "Reviews code", "You are a reviewer.", &["Read"]);
+    agent.value.skills = vec!["reviewer".to_string()];
+    agent.value.initial_prompt = Some("Start with the review plan.".to_string());
+    agent.value.effort = Some("high".to_string());
+    let resources = LoadedResources {
+        agents: vec![agent],
+        skills: vec![LoadedItem {
+            value: puffer_resources::SkillSpec {
+                name: "reviewer".to_string(),
+                description: "Review skill".to_string(),
+                content: "Check correctness first.".to_string(),
+                disable_model_invocation: false,
+            },
+            source_info: SourceInfo {
+                path: "reviewer.md".into(),
+                kind: SourceKind::Builtin,
+            },
+        }],
+        ..LoadedResources::default()
+    };
+
+    let output = super::agents::execute_agent_tool(
+        &state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        temp.path(),
+        json!({
+            "description": "Review request",
+            "prompt": "Inspect the change",
+            "subagent_type": "reviewer",
+            "model": "OPENAI/GPT-5"
+        }),
+    )
+    .unwrap();
+    let payload: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(payload["status"], "completed");
+    assert_eq!(
+        payload["prompt"],
+        "Start with the review plan.\n\nInspect the change"
+    );
+    assert_eq!(payload["effort"], "high");
+    assert_eq!(payload["model"], "openai/gpt-5");
+
+    let raw_request = captured.lock().unwrap().clone();
+    assert!(raw_request.contains("<skill name"));
+    assert!(raw_request.contains("Check correctness first."));
+    server.join().unwrap();
+}
+
+#[test]
+fn execute_agent_tool_rejects_missing_required_mcp_servers() {
+    let temp = tempfile::tempdir().unwrap();
+    let session = SessionMetadata {
+        id: Uuid::new_v4(),
+        display_name: None,
+        cwd: temp.path().to_path_buf(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        parent_session_id: None,
+        slug: None,
+        tags: Vec::new(),
+        note: None,
+    };
+    let state = AppState::new(PufferConfig::default(), temp.path().to_path_buf(), session);
+    let mut agent = loaded_agent("reviewer", "Reviews code", "You are a reviewer.", &["Read"]);
+    agent.value.required_mcp_servers = vec!["docs".to_string()];
+    let error = super::agents::execute_agent_tool(
+        &state,
+        &LoadedResources {
+            agents: vec![agent],
+            ..LoadedResources::default()
+        },
+        &ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        temp.path(),
+        json!({
+            "description": "Review request",
+            "prompt": "Inspect the change",
+            "subagent_type": "reviewer"
+        }),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("required MCP servers"));
 }

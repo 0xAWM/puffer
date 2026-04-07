@@ -1,10 +1,14 @@
 mod helpers;
+mod overlay_content;
 mod overlay_list;
 mod panes;
 mod summary;
 mod tool_messages;
 mod top_panel;
 use self::helpers::{help_pane_active, separator_line};
+#[cfg(test)]
+use self::overlay_content::render_model_entry;
+use self::overlay_content::{masked_secret, overlay_rows, overlay_title, OverlayRow};
 use self::overlay_list::{onboarding_fixed_line_count, overlay_selection, visible_overlay_rows};
 use self::panes::{render_empty_state, render_help_pane};
 #[cfg(test)]
@@ -18,11 +22,10 @@ use crate::approval_overlay::render_permission_overlay;
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
 use crate::session_overlay::render_session_overlay;
-use crate::state::AuthPickerEntry;
 use crate::status_overlay::render_status_overlay;
 use crate::text_overlay::render_text_overlay;
 use crate::usage::render_usage_overlay;
-use crate::{ModelPickerEntry, OverlayState};
+use crate::OverlayState;
 use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage};
 use puffer_provider_registry::AuthStore;
 use puffer_resources::LoadedResources;
@@ -527,10 +530,6 @@ fn overlay_hint_line(input: &str, onboarding_active: bool) -> String {
     }
 }
 
-fn short_id(value: &str) -> String {
-    value.chars().take(8).collect()
-}
-
 fn render_command_popup(
     frame: &mut Frame<'_>,
     transcript_area: Rect,
@@ -674,138 +673,6 @@ fn render_login_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &Overlay
     frame.render_widget(List::new(rows), sections[1]);
 }
 
-fn overlay_title(overlay: &OverlayState) -> &'static str {
-    match overlay {
-        OverlayState::SessionPicker { .. } => "Resume Session",
-        OverlayState::AgentPicker { .. } => "Select Agent",
-        OverlayState::ModelPicker { .. } => "Select Model",
-        OverlayState::ProviderPicker { .. } => "Select Provider",
-        OverlayState::AuthPicker { .. } => "Select Login Method",
-        OverlayState::ApiKeyPrompt { .. } => "Enter API Key",
-        OverlayState::LoginPicker { .. } => "Select Provider",
-        OverlayState::LogoutPicker { .. } => "Logout Provider",
-        OverlayState::ThemePicker { .. } => "Select Theme",
-        OverlayState::CommandPicker { .. } => "Select Command",
-        OverlayState::PermissionPrompt { .. } => "Permission Needed",
-        OverlayState::Session(..) => "Session",
-        OverlayState::Status(..) => "Status",
-        OverlayState::Text(..) => "Panel",
-        OverlayState::OnboardingTheme { .. } => "Select Theme",
-        OverlayState::OnboardingProvider { .. } => "Select Provider",
-        OverlayState::OnboardingAuth { .. } => "Select Login Method",
-        OverlayState::OnboardingModel { .. } => "Select Model",
-        OverlayState::OnboardingApiKey { .. } => "Enter API Key",
-        OverlayState::Usage(..) => "Usage",
-    }
-}
-
-fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
-    match overlay {
-        OverlayState::SessionPicker {
-            sessions,
-            selection,
-        } => sessions
-            .iter()
-            .enumerate()
-            .map(|(index, session)| OverlayRow {
-                selected: index == *selection,
-                text: format!(
-                    "{}  {}",
-                    short_id(&session.id.to_string()),
-                    session.display_name.as_deref().unwrap_or("<unnamed>")
-                ),
-            })
-            .collect(),
-        OverlayState::AgentPicker { entries, selection }
-        | OverlayState::ModelPicker {
-            entries, selection, ..
-        }
-        | OverlayState::ProviderPicker {
-            entries, selection, ..
-        }
-        | OverlayState::LoginPicker { entries, selection }
-        | OverlayState::LogoutPicker { entries, selection }
-        | OverlayState::ThemePicker { entries, selection }
-        | OverlayState::CommandPicker {
-            entries, selection, ..
-        }
-        | OverlayState::OnboardingTheme { entries, selection }
-        | OverlayState::OnboardingProvider { entries, selection }
-        | OverlayState::OnboardingAuth {
-            entries, selection, ..
-        }
-        | OverlayState::OnboardingModel {
-            entries, selection, ..
-        } => entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| OverlayRow {
-                selected: index == *selection,
-                text: render_model_entry(entry),
-            })
-            .collect(),
-        OverlayState::AuthPicker {
-            entries, selection, ..
-        } => entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| OverlayRow {
-                selected: index == *selection,
-                text: render_auth_entry(entry),
-            })
-            .collect(),
-        OverlayState::ApiKeyPrompt { value, .. } => vec![
-            OverlayRow {
-                selected: false,
-                text: "Paste an API key and press Enter.".to_string(),
-            },
-            OverlayRow {
-                selected: true,
-                text: format!("key  {}", masked_secret(value)),
-            },
-        ],
-        OverlayState::OnboardingApiKey { input, .. } => vec![
-            OverlayRow {
-                selected: false,
-                text: "Paste an API key and press Enter.".to_string(),
-            },
-            OverlayRow {
-                selected: true,
-                text: format!("key  {}", masked_secret(input)),
-            },
-        ],
-        OverlayState::PermissionPrompt { .. }
-        | OverlayState::Session(..)
-        | OverlayState::Status(..)
-        | OverlayState::Text(..) => Vec::new(),
-        OverlayState::Usage(..) => Vec::new(),
-    }
-}
-
-fn render_model_entry(entry: &ModelPickerEntry) -> String {
-    if entry.description.trim().is_empty() {
-        return entry.selector.clone();
-    }
-    if entry
-        .selector
-        .eq_ignore_ascii_case(entry.description.trim())
-    {
-        return entry.description.clone();
-    }
-    format!("{}  {}", entry.selector, entry.description)
-}
-
-fn render_auth_entry(entry: &AuthPickerEntry) -> String {
-    format!("{}  {}", entry.label, entry.description)
-}
-
-fn masked_secret(value: &str) -> String {
-    if value.is_empty() {
-        return "<empty>".to_string();
-    }
-    "*".repeat(value.chars().count().min(32))
-}
-
 fn accent_border_style() -> Style {
     Style::default().fg(Color::Cyan)
 }
@@ -821,12 +688,6 @@ pub(super) fn prompt_border_style(state: &AppState) -> Style {
         _ => Color::Cyan,
     };
     Style::default().fg(color)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct OverlayRow {
-    text: String,
-    selected: bool,
 }
 
 fn is_onboarding_overlay(overlay: &OverlayState) -> bool {
@@ -908,6 +769,28 @@ fn onboarding_body_lines(overlay: &OverlayState, max_rows: usize) -> Vec<Line<'s
         } => (
             "Select model.",
             "Only models from the selected provider are shown here.",
+            Some(provider_id.as_str()),
+            overlay_rows(overlay),
+            "Enter to confirm · Esc to go back",
+        ),
+        OverlayState::EffortPicker {
+            provider_id,
+            onboarding: true,
+            ..
+        } => (
+            "Select effort.",
+            "Choose the provider-specific reasoning level.",
+            Some(provider_id.as_str()),
+            overlay_rows(overlay),
+            "Enter to continue · Esc to go back",
+        ),
+        OverlayState::FastModePicker {
+            provider_id,
+            onboarding: true,
+            ..
+        } => (
+            "Select fast mode.",
+            "Choose whether to enable the provider-specific fast mode.",
             Some(provider_id.as_str()),
             overlay_rows(overlay),
             "Enter to confirm · Esc to go back",

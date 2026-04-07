@@ -46,6 +46,11 @@ pub(crate) fn handle_plugin_command(
         "" | "show" | "manage" => {
             emit_system(state, session_store, render_plugin_summary(state, resources)?)
         }
+        "errors" => emit_system(
+            state,
+            session_store,
+            render_plugin_errors(state, resources)?,
+        ),
         "path" => emit_system(
             state,
             session_store,
@@ -56,6 +61,11 @@ pub(crate) fn handle_plugin_command(
             ),
         ),
         "list" => emit_system(state, session_store, render_plugin_listing(&inventory)),
+        "validate" => emit_system(
+            state,
+            session_store,
+            render_plugin_validation(&inventory, None),
+        ),
         "reload" => {
             state.reload_resources_requested = true;
             emit_system(
@@ -68,6 +78,14 @@ pub(crate) fn handle_plugin_command(
         _ if trimmed.starts_with("show ") => {
             let plugin_id = trimmed.trim_start_matches("show ").trim();
             describe_plugin(state, session_store, &inventory, plugin_id)
+        }
+        _ if trimmed.starts_with("validate ") => {
+            let plugin_id = trimmed.trim_start_matches("validate ").trim();
+            emit_system(
+                state,
+                session_store,
+                render_plugin_validation(&inventory, Some(plugin_id)),
+            )
         }
         _ if trimmed.starts_with("open ") || trimmed.starts_with("edit ") => {
             let plugin_id = trimmed
@@ -90,7 +108,7 @@ pub(crate) fn handle_plugin_command(
         _ => emit_system(
             state,
             session_store,
-            "Usage: /plugin [show|manage|list|path|open [id]|edit [id]|enable <id>|disable <id>|reload]".to_string(),
+            "Usage: /plugin [show|manage|list|errors|validate [id]|path|open [id]|edit [id]|enable <id>|disable <id>|reload]".to_string(),
         ),
     }
 }
@@ -127,7 +145,7 @@ pub(crate) fn render_plugin_summary(
     }
     let inventory = plugin_inventory(&paths, resources)?;
     Ok(format!(
-        "Plugins directory: {}\nworkspace_plugin_manifest={}\nloaded_plugins={}\n{}\nUse `/plugin enable <id>`, `/plugin disable <id>`, `/plugin open <id>`, or `/reload-plugins`.\n\n{}",
+        "Plugins directory: {}\nworkspace_plugin_manifest={}\nloaded_plugins={}\n{}\nUse `/plugin enable <id>`, `/plugin disable <id>`, `/plugin open <id>`, `/plugin validate [id]`, `/plugin errors`, or `/reload-plugins`.\n\n{}",
         plugins_dir.display(),
         plugin_path.display(),
         inventory.iter().filter(|plugin| !is_disabled_placeholder(&plugin.value)).count(),
@@ -157,6 +175,14 @@ pub(crate) fn render_plugin_actions(
         PluginActionEntry {
             command: "/reload-plugins".to_string(),
             description: "Reload plugin changes from disk for this session".to_string(),
+        },
+        PluginActionEntry {
+            command: "/plugin errors".to_string(),
+            description: "Show plugin-specific resource diagnostics".to_string(),
+        },
+        PluginActionEntry {
+            command: "/plugin validate".to_string(),
+            description: "Validate loaded plugin manifests".to_string(),
         },
     ];
     for plugin in &inventory {
@@ -189,8 +215,82 @@ pub(crate) fn render_plugin_actions(
             command: format!("/plugin open {}", plugin.value.id),
             description: format!("Open manifest {}", plugin.source_info.path.display()),
         });
+        actions.push(PluginActionEntry {
+            command: format!("/plugin validate {}", plugin.value.id),
+            description: format!("Validate plugin {}", plugin.value.id),
+        });
     }
     Ok(actions)
+}
+
+fn render_plugin_errors(state: &AppState, resources: &LoadedResources) -> Result<String> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    let plugins_dir = paths.workspace_config_dir.join("resources/plugins");
+    let diagnostics = resources
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.contains(" plugin `")
+                || diagnostic.contains("/plugins/")
+                || diagnostic.contains("\\plugins\\")
+        })
+        .collect::<Vec<_>>();
+    if diagnostics.is_empty() {
+        return Ok(format!(
+            "Plugin diagnostics\nsource_dir={}\nerrors=0\nNo plugin-specific resource diagnostics are currently recorded.",
+            plugins_dir.display()
+        ));
+    }
+    let mut text = format!(
+        "Plugin diagnostics\nsource_dir={}\nerrors={}",
+        plugins_dir.display(),
+        diagnostics.len()
+    );
+    for diagnostic in diagnostics {
+        let _ = writeln!(&mut text, "\n- {diagnostic}");
+    }
+    Ok(text)
+}
+
+fn render_plugin_validation(
+    inventory: &[LoadedItem<PluginSpec>],
+    plugin_id: Option<&str>,
+) -> String {
+    let selected = if let Some(plugin_id) = plugin_id {
+        let Some(plugin) = inventory.iter().find(|plugin| plugin.value.id == plugin_id) else {
+            return format!("Unknown plugin `{plugin_id}`.");
+        };
+        vec![plugin]
+    } else {
+        inventory.iter().collect::<Vec<_>>()
+    };
+    let mut text = String::from("Plugin validation\n");
+    for plugin in selected {
+        let issues = validate_plugin(plugin);
+        let status = if issues.is_empty() { "ok" } else { "issues" };
+        let _ = writeln!(
+            &mut text,
+            "- {} [{}] path={}",
+            plugin.value.id,
+            status,
+            plugin.source_info.path.display()
+        );
+        if issues.is_empty() {
+            let _ = writeln!(
+                &mut text,
+                "  commands={} skills={} mcp_servers={} lsp_servers={}",
+                plugin.value.commands.len(),
+                plugin.value.skills.len(),
+                plugin.value.mcp_servers.len(),
+                plugin.value.lsp_servers.len()
+            );
+        } else {
+            for issue in issues {
+                let _ = writeln!(&mut text, "  issue: {issue}");
+            }
+        }
+    }
+    text.trim_end().to_string()
 }
 
 fn plugin_inventory(
@@ -263,6 +363,16 @@ fn describe_plugin(
     if !plugin.value.skills.is_empty() {
         let _ = writeln!(&mut text, "Skills: {}", plugin.value.skills.join(", "));
     }
+    if !plugin.value.agents.is_empty() {
+        let ids = plugin
+            .value
+            .agents
+            .iter()
+            .map(|agent| agent.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(&mut text, "Agents: {ids}");
+    }
     if !plugin.value.mcp_servers.is_empty() {
         let ids = plugin
             .value
@@ -309,6 +419,87 @@ fn render_plugin_listing(inventory: &[LoadedItem<PluginSpec>]) -> String {
         );
     }
     text
+}
+
+fn validate_plugin(plugin: &LoadedItem<PluginSpec>) -> Vec<String> {
+    let mut issues = Vec::new();
+    if plugin.value.id.trim().is_empty() {
+        issues.push("plugin id must not be empty".to_string());
+    }
+    if plugin.value.display_name.trim().is_empty() {
+        issues.push("display_name must not be empty".to_string());
+    }
+    collect_duplicates(
+        plugin
+            .value
+            .commands
+            .iter()
+            .map(|command| command.name.as_str()),
+        "command",
+        &mut issues,
+    );
+    collect_duplicates(
+        plugin.value.skills.iter().map(|skill| skill.as_str()),
+        "skill",
+        &mut issues,
+    );
+    collect_duplicates(
+        plugin.value.agents.iter().map(|agent| agent.id.as_str()),
+        "agent",
+        &mut issues,
+    );
+    collect_duplicates(
+        plugin
+            .value
+            .mcp_servers
+            .iter()
+            .map(|server| server.id.as_str()),
+        "mcp server",
+        &mut issues,
+    );
+    collect_duplicates(
+        plugin
+            .value
+            .lsp_servers
+            .iter()
+            .map(|server| server.id.as_str()),
+        "lsp server",
+        &mut issues,
+    );
+    if is_disabled_placeholder(&plugin.value)
+        && (!plugin.value.commands.is_empty()
+            || !plugin.value.skills.is_empty()
+            || !plugin.value.agents.is_empty()
+            || !plugin.value.mcp_servers.is_empty()
+            || !plugin.value.lsp_servers.is_empty())
+    {
+        issues.push(
+            "disabled placeholder should not retain commands, skills, agents, MCP servers, or LSP servers"
+                .to_string(),
+        );
+    }
+    issues
+}
+
+fn collect_duplicates<'a, I>(values: I, label: &str, issues: &mut Vec<String>)
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut seen = std::collections::BTreeSet::new();
+    let mut duplicates = std::collections::BTreeSet::new();
+    for value in values {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            duplicates.insert("<empty>".to_string());
+            continue;
+        }
+        if !seen.insert(normalized.to_string()) {
+            duplicates.insert(normalized.to_string());
+        }
+    }
+    for duplicate in duplicates {
+        issues.push(format!("duplicate {label} `{duplicate}`"));
+    }
 }
 
 fn open_named_plugin_file(
@@ -493,9 +684,10 @@ fn plugin_description(plugin: &PluginSpec) -> String {
 
 fn format_plugin_counts(plugin: &PluginSpec) -> String {
     format!(
-        "commands={} skills={} mcp_servers={} lsp_servers={}",
+        "commands={} skills={} agents={} mcp_servers={} lsp_servers={}",
         plugin.commands.len(),
         plugin.skills.len(),
+        plugin.agents.len(),
         plugin.mcp_servers.len(),
         plugin.lsp_servers.len()
     )
@@ -517,6 +709,7 @@ fn disabled_placeholder_for(plugin: &PluginSpec) -> PluginSpec {
         ),
         commands: Vec::new(),
         skills: Vec::new(),
+        agents: Vec::new(),
         mcp_servers: Vec::new(),
         lsp_servers: Vec::new(),
     }

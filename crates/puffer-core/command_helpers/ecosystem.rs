@@ -81,92 +81,6 @@ pub(crate) fn list_ides(
     emit_system(state, session_store, text)
 }
 
-/// Shows or materializes the workspace agents file and agent presets.
-pub(crate) fn handle_agents_command(
-    state: &mut AppState,
-    session_store: &SessionStore,
-    args: &str,
-) -> Result<()> {
-    let paths = ConfigPaths::discover(&state.cwd);
-    ensure_workspace_dirs(&paths)?;
-    let agents_path = paths.workspace_config_dir.join("agents.yaml");
-    if !agents_path.exists() {
-        fs::write(
-            &agents_path,
-            default_agents_contents(state.current_model.as_deref()),
-        )?;
-    }
-    let trimmed = args.trim();
-    if trimmed == "path" {
-        return emit_system(
-            state,
-            session_store,
-            format!("Agents file: {}", agents_path.display()),
-        );
-    }
-    let contents = fs::read_to_string(&agents_path)?;
-    let parsed = parse_agents_file(&contents)?;
-    match trimmed {
-        "" | "show" => emit_system(
-            state,
-            session_store,
-            format!("Agents file: {}\n{}", agents_path.display(), contents),
-        ),
-        "list" => {
-            let mut text = String::from("Agents:\n");
-            for agent in parsed.agents {
-                let _ = writeln!(
-                    &mut text,
-                    "- {} role={} model={}",
-                    agent.id, agent.role, agent.model
-                );
-            }
-            emit_system(state, session_store, text)
-        }
-        _ if trimmed.starts_with("show ") => {
-            let agent_id = trimmed.trim_start_matches("show ").trim();
-            if let Some(agent) = parsed.agents.iter().find(|agent| agent.id == agent_id) {
-                emit_system(
-                    state,
-                    session_store,
-                    format!(
-                        "Agent {}\nrole={}\nmodel={}",
-                        agent.id, agent.role, agent.model
-                    ),
-                )
-            } else {
-                emit_system(state, session_store, format!("Unknown agent {agent_id}."))
-            }
-        }
-        _ if trimmed.starts_with("use ") => {
-            let agent_id = trimmed.trim_start_matches("use ").trim();
-            if let Some(agent) = parsed.agents.iter().find(|agent| agent.id == agent_id) {
-                state.current_model = Some(agent.model.clone());
-                state.current_provider = agent
-                    .model
-                    .split_once('/')
-                    .map(|(provider, _)| provider.to_string())
-                    .or_else(|| state.current_provider.clone());
-                emit_system(
-                    state,
-                    session_store,
-                    format!(
-                        "Selected agent {}.\nrole={}\nmodel={}",
-                        agent.id, agent.role, agent.model
-                    ),
-                )
-            } else {
-                emit_system(state, session_store, format!("Unknown agent {agent_id}."))
-            }
-        }
-        _ => emit_system(
-            state,
-            session_store,
-            "Usage: /agents [path|list|show <id>|use <id>]".to_string(),
-        ),
-    }
-}
-
 /// Shows or materializes the workspace MCP directory.
 pub(crate) fn handle_mcp_command(
     state: &mut AppState,
@@ -385,13 +299,6 @@ fn reload_resources_from_paths(paths: &ConfigPaths) -> Result<LoadedResources> {
     Ok(resources)
 }
 
-fn default_agents_contents(model: Option<&str>) -> String {
-    format!(
-        "agents:\n  - id: default\n    role: coding\n    model: {}\n",
-        model.unwrap_or("anthropic/claude-sonnet-4-5")
-    )
-}
-
 fn default_mcp_contents() -> &'static str {
     "id: workspace\n\
 display_name: Workspace MCP\n\
@@ -505,22 +412,6 @@ pub(crate) fn render_mcp_actions(
         });
     }
     Ok(actions)
-}
-
-fn parse_agents_file(raw: &str) -> Result<AgentsFile> {
-    Ok(serde_yaml::from_str(raw)?)
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AgentsFile {
-    agents: Vec<AgentEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AgentEntry {
-    id: String,
-    role: String,
-    model: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -803,6 +694,7 @@ mod tests {
                 description: String::new(),
                 commands: Vec::new(),
                 skills: Vec::new(),
+                agents: Vec::new(),
                 mcp_servers: vec![McpServerSpec {
                     id: "logs".to_string(),
                     display_name: "Logs".to_string(),

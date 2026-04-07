@@ -5,6 +5,7 @@ use crate::resource_fs::{
 };
 use anyhow::{Context, Result};
 use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
+use puffer_core::load_agent_catalog;
 use puffer_provider_registry::{AuthMode, AuthStore, ProviderRegistry};
 use puffer_resources::{LoadedResources, McpServerSpec, PluginSpec, SourceKind};
 use serde::{Deserialize, Serialize};
@@ -22,30 +23,29 @@ pub(crate) fn run_agents_command(
     setting_sources: Option<&str>,
 ) -> Result<()> {
     ensure_workspace_dirs(paths)?;
-    let agents_path = paths.workspace_config_dir.join("agents.yaml");
-    if !agents_path.exists() {
-        fs::write(
-            &agents_path,
-            default_agents_contents(config.default_model.as_deref()),
-        )?;
-    }
-    let parsed: AgentsFile = serde_yaml::from_str(&fs::read_to_string(&agents_path)?)?;
+    let agents = load_agent_catalog(&paths.workspace_root, config.default_model.as_deref())?;
+    let agents_path = paths
+        .workspace_config_dir
+        .join("resources/agents/workspace.yaml");
     let mut text = String::new();
     if let Some(setting_sources) = setting_sources {
         let _ = writeln!(
             &mut text,
-            "setting_sources={setting_sources} (Puffer currently reads workspace agents only)"
+            "setting_sources={setting_sources} (Puffer loads builtin, user, and workspace agent resources; project/local map to workspace)"
         );
     }
-    if parsed.agents.is_empty() {
+    if agents.is_empty() {
         let _ = writeln!(&mut text, "No configured agents.");
     } else {
         let _ = writeln!(&mut text, "Configured agents:");
-        for agent in parsed.agents {
+        for agent in agents {
             let _ = writeln!(
                 &mut text,
-                "- {} role={} model={}",
-                agent.id, agent.role, agent.model
+                "- {} [{}] model={} {}",
+                agent.selector,
+                source_kind_label(agent.source_kind),
+                agent.model.as_deref().unwrap_or("<inherit>"),
+                agent.description
             );
         }
     }
@@ -637,6 +637,7 @@ fn disable_plugin(
         ),
         commands: Vec::new(),
         skills: Vec::new(),
+        agents: Vec::new(),
         mcp_servers: Vec::new(),
         lsp_servers: Vec::new(),
     };
@@ -864,13 +865,6 @@ fn stdio_target(command_or_url: &str, args: &[String]) -> String {
         .join(" ")
 }
 
-fn default_agents_contents(model: Option<&str>) -> String {
-    format!(
-        "agents:\n  - id: default\n    role: coding\n    model: {}\n",
-        model.unwrap_or("anthropic/claude-sonnet-4-5")
-    )
-}
-
 fn source_kind_label(kind: SourceKind) -> &'static str {
     match kind {
         SourceKind::Builtin => "builtin",
@@ -902,21 +896,10 @@ fn disabled_placeholder_for(plugin: &PluginSpec) -> PluginSpec {
         ),
         commands: Vec::new(),
         skills: Vec::new(),
+        agents: Vec::new(),
         mcp_servers: Vec::new(),
         lsp_servers: Vec::new(),
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct AgentsFile {
-    agents: Vec<AgentEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AgentEntry {
-    id: String,
-    role: String,
-    model: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

@@ -1,13 +1,16 @@
+mod agents;
 pub(crate) mod artifacts;
 mod auth;
 mod common;
 mod config;
 mod ecosystem;
+mod model;
 mod plugins;
 pub(crate) mod prompt;
 mod session;
 mod tasks;
 
+pub(crate) use agents::handle_agents_command;
 pub(crate) use artifacts::{handle_copy_command, handle_export_command};
 pub(crate) use auth::render_login_guidance;
 pub(crate) use common::{
@@ -21,9 +24,10 @@ pub(crate) use config::{
 };
 pub use ecosystem::McpActionEntry;
 pub(crate) use ecosystem::{
-    handle_agents_command, handle_ide_command, handle_mcp_command, reload_resources_from_disk,
-    render_mcp_actions, render_mcp_summary,
+    handle_ide_command, handle_mcp_command, reload_resources_from_disk, render_mcp_actions,
+    render_mcp_summary,
 };
+pub(crate) use model::handle_model_command;
 pub use plugins::PluginActionEntry;
 pub(crate) use plugins::{
     handle_plugin_command, reload_plugins_summary, render_plugin_actions, render_plugin_summary,
@@ -34,4 +38,5 @@ pub(crate) use session::{
     handle_remote_env_command, handle_session_command, render_memory_panel, render_session_overlay,
     render_session_panel,
 };
-pub(crate) use tasks::handle_tasks_command;
+pub use tasks::TaskActionEntry;
+pub(crate) use tasks::{handle_tasks_command, render_task_actions};
