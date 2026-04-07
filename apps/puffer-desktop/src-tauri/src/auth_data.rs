@@ -198,7 +198,7 @@ fn oauth_login_bundle(
 }
 
 fn exchange_oauth_credential(
-    provider_id: &str,
+    _provider_id: &str,
     provider_default_api: &str,
     bundle: &OauthStartBundle,
     callback: &str,
