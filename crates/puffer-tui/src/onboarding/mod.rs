@@ -201,6 +201,7 @@ pub(crate) fn back_overlay(
         | OverlayState::ThemePicker { .. }
         | OverlayState::CommandPicker { .. }
         | OverlayState::PermissionPrompt { .. }
+        | OverlayState::Btw(..)
         | OverlayState::Session(..)
         | OverlayState::Status(..)
         | OverlayState::Text(..)

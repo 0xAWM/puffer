@@ -19,6 +19,7 @@ use self::summary::{
 use self::tool_messages::render_tool_message;
 use self::top_panel::{render_fixed_top_panel, scrollable_top_panel_lines};
 use crate::approval_overlay::render_permission_overlay;
+use crate::btw_overlay::render_btw_overlay;
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
 use crate::session_overlay::render_session_overlay;
@@ -370,6 +371,7 @@ pub(crate) fn render(
     if let Some(overlay) = active_overlay.as_ref() {
         match overlay {
             OverlayState::Usage(usage) => render_usage_overlay(frame, frame.area(), usage),
+            OverlayState::Btw(btw) => render_btw_overlay(frame, frame.area(), btw),
             OverlayState::Session(session) => render_session_overlay(frame, frame.area(), session),
             OverlayState::Status(status) => render_status_overlay(frame, frame.area(), status),
             OverlayState::Text(text) => render_text_overlay(frame, frame.area(), text),

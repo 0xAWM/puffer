@@ -48,7 +48,9 @@ pub(crate) fn try_open_overlay(
     if name == "btw" && !args.is_empty() {
         set_overlay_state(
             tui,
-            Some(BtwOverlay::open(state, resources, providers, auth_store, args)),
+            Some(BtwOverlay::open(
+                state, resources, providers, auth_store, args,
+            )),
         );
         return Ok(true);
     }

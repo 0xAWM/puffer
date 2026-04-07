@@ -81,3 +81,33 @@ fn render_model_entry_deduplicates_case_only_labels() {
 
     assert_eq!(render_model_entry(&entry), "OpenAI");
 }
+
+#[test]
+fn render_command_picker_uses_custom_title() {
+    let backend = TestBackend::new(72, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let overlay = OverlayState::CommandPicker {
+        title: "Remove Tag?".to_string(),
+        entries: vec![ModelPickerEntry {
+            selector: "Yes, remove tag".to_string(),
+            description: "Current tag: #review".to_string(),
+            command: Some("/tag --confirm-remove review".to_string()),
+        }],
+        selection: 0,
+    };
+
+    terminal
+        .draw(|frame| {
+            render_overlay(frame, frame.area(), &overlay);
+        })
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("Remove Tag?"));
+}

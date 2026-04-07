@@ -24,6 +24,7 @@ mod help;
 mod model_selection;
 mod panels;
 mod status;
+mod tag;
 
 fn puffer_home_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

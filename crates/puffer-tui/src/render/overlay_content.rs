@@ -28,6 +28,7 @@ pub(super) fn overlay_title(overlay: &OverlayState) -> Cow<'_, str> {
         OverlayState::ThemePicker { .. } => Cow::Borrowed("Select Theme"),
         OverlayState::CommandPicker { title, .. } => Cow::Borrowed(title.as_str()),
         OverlayState::PermissionPrompt { .. } => Cow::Borrowed("Permission Needed"),
+        OverlayState::Btw(..) => Cow::Borrowed("BTW"),
         OverlayState::Session(..) => Cow::Borrowed("Session"),
         OverlayState::Status(..) => Cow::Borrowed("Status"),
         OverlayState::Text(..) => Cow::Borrowed("Panel"),
@@ -118,6 +119,7 @@ pub(super) fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
             },
         ],
         OverlayState::PermissionPrompt { .. }
+        | OverlayState::Btw(..)
         | OverlayState::Session(..)
         | OverlayState::Status(..)
         | OverlayState::Text(..)
