@@ -1,3 +1,4 @@
+use crate::tool_names::canonical_tool_name;
 use crate::AppState;
 use anyhow::{bail, Result};
 use puffer_config::ConfigPaths;
@@ -5,7 +6,7 @@ use puffer_resources::LoadedResources;
 use puffer_tools::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -108,12 +109,7 @@ impl RuntimePermissionContext {
                 reason: Some("tool metadata currently disables it".to_string()),
             };
         }
-        if let Some(policy) = self
-            .permissions
-            .tools
-            .get(&normalize_tool_id(&definition.id))
-            .map(String::as_str)
-        {
+        if let Some(policy) = tool_permission_override(&self.permissions, definition) {
             return self.policy_decision(definition, input, policy);
         }
 
@@ -275,7 +271,94 @@ impl RuntimePermissionContext {
 
 /// Normalizes a tool id so workspace settings can key tools consistently.
 pub(crate) fn normalize_tool_id(tool: &str) -> String {
-    tool.trim().replace('-', "_").to_ascii_lowercase()
+    let trimmed = tool.trim();
+    let mut normalized = String::new();
+    let mut previous_was_separator = false;
+    let mut previous_was_lower_or_digit = false;
+
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() && previous_was_lower_or_digit && !normalized.ends_with('_')
+            {
+                normalized.push('_');
+            }
+            normalized.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+            previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+            continue;
+        }
+
+        if !normalized.is_empty() && !previous_was_separator {
+            normalized.push('_');
+            previous_was_separator = true;
+        }
+        previous_was_lower_or_digit = false;
+    }
+
+    normalized.trim_matches('_').to_string()
+}
+
+fn tool_permission_override<'a>(
+    permissions: &'a PermissionsSettings,
+    definition: &ToolDefinition,
+) -> Option<&'a str> {
+    let keys = tool_permission_keys(definition).collect::<Vec<_>>();
+    keys.iter()
+        .find_map(|key| permissions.tools.get(key).map(String::as_str))
+        .or_else(|| {
+            permissions.tools.iter().find_map(|(tool, level)| {
+                let normalized = normalize_tool_id(tool);
+                keys.iter()
+                    .any(|key| *key == normalized)
+                    .then_some(level.as_str())
+            })
+        })
+}
+
+fn tool_permission_keys(definition: &ToolDefinition) -> impl Iterator<Item = String> + '_ {
+    let mut keys = BTreeSet::new();
+    for raw in
+        std::iter::once(definition.id.as_str()).chain(definition.aliases.iter().map(String::as_str))
+    {
+        collect_permission_keys(&mut keys, raw);
+    }
+    for legacy in legacy_permission_aliases(definition) {
+        collect_permission_keys(&mut keys, legacy);
+    }
+    keys.into_iter()
+}
+
+fn collect_permission_keys(keys: &mut BTreeSet<String>, raw: &str) {
+    let normalized = normalize_tool_id(raw);
+    if !normalized.is_empty() {
+        keys.insert(normalized);
+    }
+    let canonical = canonical_tool_name(raw);
+    if !canonical.is_empty() {
+        keys.insert(canonical);
+    }
+}
+
+fn legacy_permission_aliases(definition: &ToolDefinition) -> &'static [&'static str] {
+    match canonical_tool_name(&definition.id).as_str() {
+        "agent" => &["task"],
+        "edit" => &["replace_in_file"],
+        "glob" => &["list_dir"],
+        "grep" => &["search_text"],
+        "listmcpresourcestool" => &["list_mcp_resources"],
+        "read" => &["read_file"],
+        "readmcpresourcetool" => &["read_mcp_resource"],
+        "taskoutput" => &["agent_output_tool", "bash_output_tool"],
+        "taskstop" => &["kill_shell"],
+        "write" => &["write_file"],
+        _ => &[],
+    }
+}
+
+fn tool_matches_any_name(definition: &ToolDefinition, names: &[&str]) -> bool {
+    names
+        .iter()
+        .any(|name| definition.id == *name || definition.aliases.iter().any(|alias| alias == name))
 }
 
 /// Renders the default permissions file contents for the loaded tool surface.
@@ -404,11 +487,11 @@ fn tool_mutates_workspace(definition: &ToolDefinition) -> bool {
 }
 
 fn tool_skips_permission_enforcement(definition: &ToolDefinition) -> bool {
-    matches!(definition.id.as_str(), "SendUserMessage" | "Brief")
+    tool_matches_any_name(definition, &["SendUserMessage", "Brief"])
 }
 
 fn shell_requests_unsandboxed(definition: &ToolDefinition, input: &Value) -> bool {
-    matches!(definition.id.as_str(), "Bash" | "PowerShell")
+    tool_matches_any_name(definition, &["Bash", "PowerShell"])
         && input
             .get("dangerouslyDisableSandbox")
             .and_then(Value::as_bool)
@@ -444,7 +527,7 @@ fn shell_sandbox_reason(
 }
 
 fn shell_command_reason(definition: &ToolDefinition, input: &Value) -> Option<String> {
-    if !matches!(definition.id.as_str(), "Bash" | "PowerShell") {
+    if !tool_matches_any_name(definition, &["Bash", "PowerShell"]) {
         return None;
     }
     let command = input.get("command").and_then(Value::as_str)?.trim();
@@ -490,6 +573,7 @@ mod tests {
             name: id.to_string(),
             description: id.to_string(),
             handler: id.to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind: puffer_tools::ToolKind::Custom,
             input_schema: puffer_tools::ToolInputSchema::default(),
@@ -518,6 +602,7 @@ mod tests {
                         name: "Bash".to_string(),
                         description: "Bash".to_string(),
                         handler: "bash".to_string(),
+                        aliases: Vec::new(),
                         handler_args: Vec::new(),
                         approval_policy: Some("on-request".to_string()),
                         sandbox_policy: None,
@@ -538,6 +623,7 @@ mod tests {
                         name: "Read".to_string(),
                         description: "Read".to_string(),
                         handler: "read".to_string(),
+                        aliases: Vec::new(),
                         handler_args: Vec::new(),
                         approval_policy: Some("auto".to_string()),
                         sandbox_policy: None,
@@ -685,6 +771,7 @@ mod tests {
             name: "SendUserMessage".to_string(),
             description: String::new(),
             handler: "runtime:workflow:send_user_message".to_string(),
+            aliases: vec!["Brief".to_string()],
             handler_args: Vec::new(),
             kind: puffer_tools::ToolKind::Custom,
             input_schema: puffer_tools::ToolInputSchema::default(),
@@ -711,6 +798,57 @@ mod tests {
         assert_eq!(brief_decision.behavior, ToolPermissionBehavior::Allow);
         assert!(context.tool_visible_to_model(&send_user_message));
         assert!(context.tool_visible_to_model(&brief));
+    }
+
+    #[test]
+    fn legacy_provider_tool_keys_apply_to_claude_style_tool_ids() {
+        let context = RuntimePermissionContext {
+            permissions: PermissionsSettings {
+                tools: BTreeMap::from([
+                    ("read_file".to_string(), "deny".to_string()),
+                    ("replace_in_file".to_string(), "ask".to_string()),
+                    ("list_dir".to_string(), "allow".to_string()),
+                    ("search_text".to_string(), "deny".to_string()),
+                ]),
+            },
+            sandbox: SandboxSettings::from_mode("workspace-write"),
+            plan_mode: false,
+        };
+        let read = tool_definition("Read", "auto");
+        let edit = tool_definition("Edit", "auto");
+        let glob = tool_definition("Glob", "auto");
+        let grep = tool_definition("Grep", "auto");
+
+        assert_eq!(
+            context
+                .decision_for_tool_call(&read, &serde_json::json!({"file_path": "/tmp/x"}))
+                .behavior,
+            ToolPermissionBehavior::Deny
+        );
+        assert_eq!(
+            context
+                .decision_for_tool_call(
+                    &edit,
+                    &serde_json::json!({"file_path": "/tmp/x", "old_string": "a", "new_string": "b"})
+                )
+                .behavior,
+            ToolPermissionBehavior::Ask
+        );
+        assert_eq!(
+            context
+                .decision_for_tool_call(&glob, &serde_json::json!({"path": "/tmp"}))
+                .behavior,
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            context
+                .decision_for_tool_call(
+                    &grep,
+                    &serde_json::json!({"path": "/tmp", "query": "needle"})
+                )
+                .behavior,
+            ToolPermissionBehavior::Deny
+        );
     }
 
     #[test]

@@ -32,11 +32,89 @@ fn workspace_deny_rules_filter_tools_from_model_visibility() {
             None,
             false,
             Some(&permission_context),
+            None,
         )
         .unwrap();
 
     assert_eq!(openai_tools.len(), 1);
     assert_eq!(openai_tools[0].name, "Read");
+}
+
+#[test]
+fn request_tool_filter_limits_openai_tool_visibility_with_aliases() {
+    let resources = LoadedResources {
+        tools: vec![
+            loaded_tool("Agent", "Delegate", "runtime:agent"),
+            loaded_tool("Glob", "List files", "runtime:claude_glob"),
+            loaded_tool("Read", "Read file", "runtime:claude_read"),
+        ],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let filter = super::super::build_request_tool_filter(&["Task".to_string(), "LS".to_string()])
+        .unwrap()
+        .unwrap();
+
+    let tools = super::super::structured_output_support::openai_tool_definitions_for_request(
+        &registry,
+        None,
+        false,
+        None,
+        Some(&filter),
+    )
+    .unwrap();
+
+    let tool_names = tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, vec!["Agent", "Glob"]);
+}
+
+#[test]
+fn request_tool_filters_apply_consistently_to_openai_and_anthropic_tool_lists() {
+    let resources = LoadedResources {
+        tools: vec![
+            loaded_tool("Agent", "Delegate work", "runtime:agent"),
+            loaded_tool("Glob", "List files", "runtime:claude_glob"),
+            loaded_tool("Read", "Read file", "runtime:claude_read"),
+        ],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let filter = build_request_tool_filter(&["Task".to_string(), "LS".to_string()])
+        .unwrap()
+        .unwrap();
+
+    let openai_tools =
+        super::super::structured_output_support::openai_tool_definitions_for_request(
+            &registry,
+            None,
+            false,
+            None,
+            Some(&filter),
+        )
+        .unwrap();
+    let anthropic_tools =
+        super::super::structured_output_support::anthropic_tool_definitions_for_request(
+            &registry,
+            None,
+            None,
+            Some(&filter),
+        )
+        .unwrap();
+
+    let openai_names = openai_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    let anthropic_names = anthropic_tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+
+    assert_eq!(openai_names, vec!["Agent", "Glob"]);
+    assert_eq!(anthropic_names, vec!["Agent", "Glob"]);
 }
 
 #[test]

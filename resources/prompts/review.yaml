@@ -1,6 +1,5 @@
 id: review
-description: Review a pull request.
-mode: review
+description: Review a pull request
 variables:
   - name: ARGUMENTS
     description: Pull request number.

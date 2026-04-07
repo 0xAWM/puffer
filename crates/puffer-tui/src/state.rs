@@ -350,6 +350,7 @@ pub(crate) enum OverlayState {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
     },
+    Help,
     PermissionPrompt {
         overlay: ApprovalOverlay,
     },
@@ -412,7 +413,10 @@ impl OverlayState {
             Self::Session(overlay) => overlay.scroll_up(),
             Self::Status(overlay) => overlay.scroll_up(),
             Self::Text(overlay) => overlay.scroll_up(),
-            Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
+            Self::Help
+            | Self::ApiKeyPrompt { .. }
+            | Self::Usage(..)
+            | Self::OnboardingApiKey { .. } => {}
         }
     }
 
@@ -464,7 +468,10 @@ impl OverlayState {
             Self::Session(overlay) => overlay.scroll_down(),
             Self::Status(overlay) => overlay.scroll_down(),
             Self::Text(overlay) => overlay.scroll_down(),
-            Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
+            Self::Help
+            | Self::ApiKeyPrompt { .. }
+            | Self::Usage(..)
+            | Self::OnboardingApiKey { .. } => {}
         }
     }
 
@@ -546,6 +553,7 @@ impl OverlayState {
             Self::ProviderPicker { .. }
             | Self::AuthPicker { .. }
             | Self::ApiKeyPrompt { .. }
+            | Self::Help
             | Self::PermissionPrompt { .. }
             | Self::Btw(..)
             | Self::Session(..)
@@ -583,6 +591,7 @@ impl OverlayState {
             | Self::LogoutPicker { .. }
             | Self::ThemePicker { .. }
             | Self::CommandPicker { .. }
+            | Self::Help
             | Self::PermissionPrompt { .. }
             | Self::Btw(..)
             | Self::Session(..)
@@ -679,6 +688,7 @@ impl OverlayState {
                 }
             }
             Self::PermissionPrompt { .. }
+            | Self::Help
             | Self::Btw(..)
             | Self::Session(..)
             | Self::Status(..)

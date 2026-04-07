@@ -1,5 +1,7 @@
 id: Agent
 name: Agent
+aliases:
+  - Task
 description: |-
   Delegate work to a subagent.
 

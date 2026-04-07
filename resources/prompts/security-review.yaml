@@ -1,5 +1,16 @@
 id: security-review
 description: Complete a security review of the pending changes on the current branch.
+allowed_tools:
+  - Bash(git diff:*)
+  - Bash(git status:*)
+  - Bash(git log:*)
+  - Bash(git show:*)
+  - Bash(git remote show:*)
+  - Read
+  - Glob
+  - Grep
+  - LS
+  - Task
 variables:
   - name: GIT_STATUS
     description: Current git status output for the workspace.

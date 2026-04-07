@@ -4,8 +4,10 @@ mod command_helpers;
 mod command_summary;
 mod hooks;
 mod permissions;
+mod plans;
 mod runtime;
 mod state;
+mod tool_names;
 
 pub use agent_catalog::{load_agent_catalog, AgentCatalogEntry};
 pub use command::{dispatch_command, find_command, supported_commands, CommandKind, CommandSpec};
@@ -90,6 +92,11 @@ pub fn render_plugin_actions(
 /// Builds the interactive `/tasks` action list used by the TUI picker.
 pub fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskActionEntry>> {
     command_helpers::render_task_actions(state)
+}
+
+/// Renders read-only `/tasks` subcommands for inline TUI overlays.
+pub fn render_tasks_panel_text(state: &mut AppState, args: &str) -> Result<Option<String>> {
+    command_helpers::render_tasks_panel_text(state, args)
 }
 
 /// Renders the current `/memory` summary used by interactive overlays.

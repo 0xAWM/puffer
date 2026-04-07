@@ -24,6 +24,7 @@ mod local_tools;
 mod openai;
 mod openai_sse;
 mod permission_prompt;
+mod request_tool_filter;
 mod side_question;
 mod structured_output_support;
 mod system_prompt;
@@ -33,7 +34,6 @@ mod tool_executor;
 use self::openai::{
     build_codex_openai_request_body, execute_openai_tool_calls, openai_tool_definitions,
     parse_openai_sse_response_streaming, resolve_openai_execution_config,
-    transcript_to_openai_chat_messages, transcript_to_openai_input,
 };
 use self::openai::{
     execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response,
@@ -41,16 +41,25 @@ use self::openai::{
 pub use self::permission_prompt::{
     with_permission_prompt_handler, PermissionPromptAction, PermissionPromptRequest,
 };
+pub(crate) use self::request_tool_filter::{build_request_tool_filter, RequestToolFilter};
 pub use self::structured_output_support::StructuredOutputConfig;
 use self::structured_output_support::{
-    anthropic_tool_definitions, anthropic_tool_definitions_for_request,
-    validate_structured_output_schema,
+    anthropic_tool_definitions_for_request, validate_structured_output_schema,
 };
+
+#[cfg(test)]
+use self::structured_output_support::anthropic_tool_definitions;
 use self::system_prompt::render_runtime_system_prompt;
 use self::tool_executor::{execute_tool_call, ToolExecutionBackend};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OPENAI_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TurnRequestOptions<'a> {
+    structured_output: Option<&'a StructuredOutputConfig>,
+    tool_filter: Option<&'a RequestToolFilter>,
+}
 
 #[derive(Debug)]
 struct RawHttpResponse {
@@ -89,7 +98,36 @@ pub fn execute_user_prompt(
     auth_store: &mut AuthStore,
     input: &str,
 ) -> Result<TurnExecution> {
-    execute_user_prompt_with_options(state, resources, providers, auth_store, input, None)
+    execute_user_prompt_with_options(
+        state,
+        resources,
+        providers,
+        auth_store,
+        input,
+        TurnRequestOptions::default(),
+    )
+}
+
+/// Executes one user prompt with a request-scoped tool filter.
+pub(crate) fn execute_user_prompt_with_tool_filter(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    tool_filter: Option<&RequestToolFilter>,
+) -> Result<TurnExecution> {
+    execute_user_prompt_with_options(
+        state,
+        resources,
+        providers,
+        auth_store,
+        input,
+        TurnRequestOptions {
+            structured_output: None,
+            tool_filter,
+        },
+    )
 }
 
 /// Executes a Claude-style side question without mutating the main session transcript state.
@@ -124,7 +162,10 @@ pub fn execute_user_prompt_with_structured_output(
         providers,
         auth_store,
         input,
-        Some(structured_output),
+        TurnRequestOptions {
+            structured_output: Some(structured_output),
+            tool_filter: None,
+        },
     )
 }
 
@@ -134,39 +175,18 @@ fn execute_user_prompt_with_options(
     providers: &ProviderRegistry,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: TurnRequestOptions<'_>,
 ) -> Result<TurnExecution> {
     let (provider, model_id) = resolve_provider_and_model(state, providers)?;
     match resolve_model_api(state, providers, provider, &model_id).as_str() {
         "anthropic-messages" => execute_anthropic(
-            state,
-            resources,
-            providers,
-            provider,
-            model_id,
-            auth_store,
-            input,
-            structured_output,
+            state, resources, providers, provider, model_id, auth_store, input, options,
         ),
         "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => execute_openai(
-            state,
-            resources,
-            providers,
-            provider,
-            model_id,
-            auth_store,
-            input,
-            structured_output,
+            state, resources, providers, provider, model_id, auth_store, input, options,
         ),
         "openai-completions" => execute_openai_completions(
-            state,
-            resources,
-            providers,
-            provider,
-            model_id,
-            auth_store,
-            input,
-            structured_output,
+            state, resources, providers, provider, model_id, auth_store, input, options,
         ),
         other => bail!(
             "provider {} with api {other} is not executable yet",
@@ -193,7 +213,7 @@ where
         providers,
         auth_store,
         input,
-        None,
+        TurnRequestOptions::default(),
         &mut on_event,
     )
 }
@@ -220,7 +240,10 @@ where
             providers,
             auth_store,
             input,
-            structured_output,
+            TurnRequestOptions {
+                structured_output,
+                tool_filter: None,
+            },
             &mut on_event,
         )
     })
@@ -246,7 +269,10 @@ where
         providers,
         auth_store,
         input,
-        Some(structured_output),
+        TurnRequestOptions {
+            structured_output: Some(structured_output),
+            tool_filter: None,
+        },
         &mut on_event,
     )
 }
@@ -257,7 +283,7 @@ fn execute_user_prompt_streaming_with_options<F>(
     providers: &ProviderRegistry,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: TurnRequestOptions<'_>,
     on_event: &mut F,
 ) -> Result<TurnExecution>
 where
@@ -267,24 +293,12 @@ where
     match resolve_model_api(state, providers, provider, &model_id).as_str() {
         "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
             openai::execute_openai_streaming(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-                structured_output,
+                state, resources, providers, provider, model_id, auth_store, input, options,
                 on_event,
             )
         }
         _ => execute_user_prompt_with_options(
-            state,
-            resources,
-            providers,
-            auth_store,
-            input,
-            structured_output,
+            state, resources, providers, auth_store, input, options,
         ),
     }
 }
@@ -292,6 +306,10 @@ fn resolve_provider_and_model<'a>(
     state: &AppState,
     providers: &'a ProviderRegistry,
 ) -> Result<(&'a ProviderDescriptor, String)> {
+    if providers.providers().next().is_none() {
+        return Err(anyhow!("no providers are registered"));
+    }
+
     if let Some(selected) = &state.current_model {
         if let Some(model) = providers.resolve_model(selected) {
             let provider = providers
@@ -312,11 +330,10 @@ fn resolve_provider_and_model<'a>(
             .ok_or_else(|| anyhow!("provider {provider_id} has no configured models"))?;
         return Ok((provider, model_id));
     }
-
     let provider = providers
         .providers()
         .next()
-        .ok_or_else(|| anyhow!("no providers are registered"))?;
+        .expect("checked for an empty provider registry above");
     let model_id = provider
         .models
         .first()
@@ -356,8 +373,9 @@ fn execute_anthropic(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: TurnRequestOptions<'_>,
 ) -> Result<TurnExecution> {
+    let structured_output = options.structured_output;
     let auth = anthropic_auth_for_provider(auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
     let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
@@ -393,6 +411,7 @@ fn execute_anthropic(
         &registry,
         structured_output,
         Some(&permission_context),
+        options.tool_filter,
     )?;
     let system_prompt = render_runtime_system_prompt(
         state,
@@ -436,6 +455,7 @@ fn execute_anthropic(
             &request_config,
             &model_id,
             structured_output,
+            options.tool_filter,
         )? {
             invocations.extend(tool_results.invocations);
             messages.push(json!({
@@ -688,6 +708,7 @@ fn execute_anthropic_tool_calls(
     request_config: &AnthropicRequestConfig,
     model_id: &str,
     structured_output: Option<&StructuredOutputConfig>,
+    tool_filter: Option<&RequestToolFilter>,
 ) -> Result<Option<AnthropicToolResults>> {
     let Some(content) = response.get("content").and_then(Value::as_array) else {
         return Ok(None);
@@ -722,6 +743,7 @@ fn execute_anthropic_tool_calls(
                 request_config,
                 structured_output,
             },
+            tool_filter,
             tool_id,
             input.clone(),
         )?;

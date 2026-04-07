@@ -134,6 +134,15 @@ fn branch_clears_active_remote_session_connection() {
     state.remote_session_url =
         Some("puffer://remote/remote-1?name=dockyard&env=staging".to_string());
     state.remote_session_status = Some("connected".to_string());
+    state.push_message(MessageRole::User, "Inspect the remote environment");
+    session_store
+        .append_event(
+            state.session.id,
+            TranscriptEvent::UserMessage {
+                text: "Inspect the remote environment".to_string(),
+            },
+        )
+        .unwrap();
     let mut auth_store = AuthStore::default();
 
     dispatch_command(

@@ -6,6 +6,7 @@ use super::permission_prompt::{
 use super::structured_output_support::{
     requested_structured_output_definition_for_request, StructuredOutputConfig,
 };
+use super::RequestToolFilter;
 use crate::permissions::{load_runtime_permission_context, ToolPermissionBehavior};
 use crate::AppState;
 use anyhow::{anyhow, Result};
@@ -40,6 +41,7 @@ pub(super) fn execute_tool_call(
     model_id: &str,
     cwd: &Path,
     backend: ToolExecutionBackend<'_>,
+    tool_filter: Option<&RequestToolFilter>,
     tool_id: &str,
     input: Value,
 ) -> Result<ToolExecutionResult> {
@@ -57,6 +59,15 @@ pub(super) fn execute_tool_call(
             .filter(|definition| definition.id == tool_id)
             .ok_or_else(|| anyhow!("unknown tool {tool_id}"))?,
     };
+    if let Some(filter) = tool_filter {
+        if !filter.allows_call(&definition, cwd, &input)? {
+            return Ok(blocked_runtime_tool(
+                tool_id,
+                ToolPermissionBehavior::Deny,
+                Some("slash command tool scope denied this tool call".to_string()),
+            ));
+        }
+    }
     let permission_context = load_runtime_permission_context(cwd, resources, state)?;
     let permission_decision = permission_context.decision_for_tool_call(&definition, &input);
     match permission_decision.behavior {

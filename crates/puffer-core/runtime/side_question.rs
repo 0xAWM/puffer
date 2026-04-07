@@ -39,7 +39,7 @@ pub(super) fn execute_side_question(
         providers,
         auth_store,
         &prompt,
-        None,
+        super::TurnRequestOptions::default(),
     )
 }
 
@@ -70,6 +70,7 @@ mod tests {
                 name: "Bash".to_string(),
                 description: "shell".to_string(),
                 handler: "builtin:bash".to_string(),
+                aliases: Vec::new(),
                 handler_args: Vec::new(),
                 approval_policy: Some("on-request".to_string()),
                 sandbox_policy: Some("workspace-write".to_string()),

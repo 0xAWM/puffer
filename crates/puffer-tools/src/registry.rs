@@ -7,7 +7,7 @@ use crate::{
     ToolSchemaType,
 };
 use anyhow::{anyhow, Result};
-use puffer_resources::{LoadedResources, ToolSpec};
+use puffer_resources::{plugin_mcp_servers, LoadedResources, ToolSpec};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -28,6 +28,8 @@ impl RegisteredTool {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, RegisteredTool>,
+    aliases: BTreeMap<String, String>,
+    has_mcp_resource_servers: bool,
 }
 
 impl ToolRegistry {
@@ -42,19 +44,26 @@ impl ToolRegistry {
 
     /// Builds a tool registry from loaded declarative resources.
     pub fn from_resources(resources: &LoadedResources) -> Self {
-        Self::from_definitions(
+        let mut registry = Self::from_definitions(
             resources
                 .tools
                 .iter()
                 .filter_map(|item| definition_from_spec(&item.value)),
-        )
+        );
+        registry.has_mcp_resource_servers =
+            !resources.mcp_servers.is_empty() || !plugin_mcp_servers(resources).is_empty();
+        registry
     }
 
     /// Registers one declarative tool definition when it maps to a supported runtime.
     pub fn register(&mut self, definition: ToolDefinition) -> Result<()> {
         let runtime = runtime_from_definition(&definition)?;
+        let canonical_id = definition.id.clone();
+        for alias in &definition.aliases {
+            self.aliases.insert(alias.clone(), canonical_id.clone());
+        }
         self.tools.insert(
-            definition.id.clone(),
+            canonical_id,
             RegisteredTool {
                 spec: definition,
                 runtime,
@@ -73,6 +82,11 @@ impl ToolRegistry {
         self.tools.is_empty()
     }
 
+    /// Returns whether the loaded resources include MCP servers that can expose resources.
+    pub fn has_mcp_resource_servers(&self) -> bool {
+        self.has_mcp_resource_servers
+    }
+
     /// Returns all registered tools in stable id order.
     pub fn tools(&self) -> impl Iterator<Item = &RegisteredTool> {
         self.tools.values()
@@ -85,7 +99,11 @@ impl ToolRegistry {
 
     /// Looks up a registered tool by id.
     pub fn tool(&self, tool_id: &str) -> Option<&RegisteredTool> {
-        self.tools.get(tool_id)
+        self.tools.get(tool_id).or_else(|| {
+            self.aliases
+                .get(tool_id)
+                .and_then(|canonical_id| self.tools.get(canonical_id))
+        })
     }
 
     /// Looks up a model-facing tool definition by id.
@@ -137,6 +155,7 @@ fn definition_from_spec(spec: &ToolSpec) -> Option<ToolDefinition> {
             name: spec.name.clone(),
             description: spec.description.clone(),
             handler: spec.handler.clone(),
+            aliases: spec.aliases.clone(),
             handler_args: spec.handler_args.clone(),
             kind: ToolKind::Custom,
             input_schema: ToolInputSchema::default(),
@@ -150,6 +169,7 @@ fn definition_from_spec(spec: &ToolSpec) -> Option<ToolDefinition> {
     definition.name = spec.name.clone();
     definition.description = spec.description.clone();
     definition.handler = spec.handler.clone();
+    definition.aliases = spec.aliases.clone();
     definition.handler_args = spec.handler_args.clone();
     if let Some(input_schema) = &spec.input_schema {
         if let Ok(parsed) = parse_input_schema(input_schema) {
@@ -308,6 +328,7 @@ mod tests {
             name: "bash".to_string(),
             description: "Run shell".to_string(),
             handler: "bash".to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             approval_policy: Some("on-request".to_string()),
             sandbox_policy: Some("workspace-write".to_string()),
@@ -345,6 +366,7 @@ mod tests {
                     name: "Sleep".to_string(),
                     description: description.to_string(),
                     handler: "runtime:sleep".to_string(),
+                    aliases: Vec::new(),
                     handler_args: Vec::new(),
                     approval_policy: Some("never".to_string()),
                     sandbox_policy: Some("read-only".to_string()),
@@ -423,6 +445,7 @@ mod tests {
                 name: "custom".to_string(),
                 description: "Custom".to_string(),
                 handler: "custom_handler".to_string(),
+                aliases: Vec::new(),
                 handler_args: Vec::new(),
                 kind: ToolKind::Custom,
                 input_schema: ToolInputSchema::default(),
@@ -445,6 +468,7 @@ mod tests {
                     name: "echo_json".to_string(),
                     description: "Echo JSON".to_string(),
                     handler: "exec:python3".to_string(),
+                    aliases: Vec::new(),
                     handler_args: vec![
                         "-c".to_string(),
                         "import json,sys; data=json.load(sys.stdin); print(json.dumps({'received': data}))"
@@ -699,5 +723,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result.output.stdout, "hi");
+    }
+
+    #[test]
+    fn registry_resolves_tool_aliases_to_the_canonical_definition() {
+        let resources = LoadedResources {
+            tools: vec![LoadedItem {
+                value: ToolSpec {
+                    id: "SendUserMessage".to_string(),
+                    name: "SendUserMessage".to_string(),
+                    description: "Send a message to the user".to_string(),
+                    handler: "runtime:workflow:send_user_message".to_string(),
+                    aliases: vec!["Brief".to_string()],
+                    handler_args: Vec::new(),
+                    approval_policy: Some("auto".to_string()),
+                    sandbox_policy: Some("read-only".to_string()),
+                    shared_lib: None,
+                    enabled_if: None,
+                    input_schema: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "message": { "type": "string" },
+                            "status": { "type": "string" }
+                        },
+                        "required": ["message", "status"],
+                        "additionalProperties": false
+                    })),
+                    metadata: Default::default(),
+                    display: Default::default(),
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("send_user_message.yaml"),
+                    kind: SourceKind::Builtin,
+                },
+            }],
+            ..LoadedResources::default()
+        };
+        let registry = ToolRegistry::from_resources(&resources);
+        let definition = registry
+            .definition("Brief")
+            .expect("Brief alias should resolve");
+
+        assert_eq!(definition.id, "SendUserMessage");
+        assert_eq!(definition.aliases, vec!["Brief".to_string()]);
     }
 }

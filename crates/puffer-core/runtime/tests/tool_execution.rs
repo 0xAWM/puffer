@@ -53,6 +53,7 @@ fn execute_openai_tool_calls_serializes_outputs() {
         &request_config,
         "gpt-5",
         None,
+        None,
     )
     .unwrap();
     assert_eq!(result.outputs[0].kind, "function_call_output");
@@ -101,11 +102,56 @@ fn execute_openai_tool_calls_return_permission_denials_as_tool_results() {
         &request_config,
         "gpt-5",
         None,
+        None,
     )
     .unwrap();
 
     assert!(!result.invocations[0].success);
     assert!(result.outputs[0].output.contains("Permission denied"));
+}
+
+#[test]
+fn execute_openai_tool_calls_block_tools_outside_request_scope() {
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("Bash", "Run shell", "runtime:claude_bash")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(openai_provider("http://127.0.0.1".to_string()));
+    let tool_calls = vec![OpenAIResponseToolCall {
+        item_id: Some("fc_1".to_string()),
+        status: Some("completed".to_string()),
+        call_id: "call_1".to_string(),
+        name: "Bash".to_string(),
+        arguments: json!({ "command": "printf hi" }),
+    }];
+    let filter = build_request_tool_filter(&["Read".to_string()])
+        .unwrap()
+        .unwrap();
+    let request_config = test_openai_request_config();
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+
+    let result = execute_openai_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &tool_calls,
+        &registry,
+        &cwd,
+        &request_config,
+        "gpt-5",
+        None,
+        Some(&filter),
+    )
+    .unwrap();
+
+    assert!(!result.invocations[0].success);
+    assert!(result.outputs[0]
+        .output
+        .contains("slash command tool scope denied this tool call"));
 }
 
 #[test]
@@ -144,6 +190,7 @@ fn execute_openai_tool_calls_support_runtime_sleep() {
         &cwd,
         &request_config,
         "gpt-5",
+        None,
         None,
     )
     .unwrap();
@@ -196,6 +243,7 @@ fn execute_anthropic_tool_calls_support_runtime_sleep() {
         &request_config,
         "claude-sonnet-4-5",
         None,
+        None,
     )
     .unwrap();
 
@@ -207,6 +255,56 @@ fn execute_anthropic_tool_calls_support_runtime_sleep() {
     assert!(result.invocations[0]
         .output
         .contains("\"reason\": \"wait briefly\""));
+}
+
+#[test]
+fn execute_anthropic_tool_calls_block_tools_outside_request_scope() {
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("Bash", "Run shell", "runtime:claude_bash")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider());
+    let request_config = test_anthropic_request_config();
+    let response = json!({
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "Bash",
+                "input": {
+                    "command": "printf hi"
+                }
+            }
+        ]
+    });
+    let filter = build_request_tool_filter(&["Read".to_string()])
+        .unwrap()
+        .unwrap();
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+
+    let result = execute_anthropic_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &response,
+        &registry,
+        &cwd,
+        &request_config,
+        "claude-sonnet-4-5",
+        None,
+        Some(&filter),
+    )
+    .unwrap()
+    .expect("anthropic blocked tool result");
+
+    assert!(!result.invocations[0].success);
+    assert!(result.invocations[0]
+        .output
+        .contains("slash command tool scope denied this tool call"));
 }
 
 #[test]
@@ -257,6 +355,7 @@ fn tool_hooks_run_for_completed_tool_calls() {
         &request_config,
         "claude-sonnet-4-5",
         None,
+        None,
     )
     .unwrap();
     assert_eq!(std::fs::read_to_string(hook_output).unwrap(), "bash");
@@ -293,11 +392,13 @@ fn task_output_reads_runtime_background_agent_output_file() {
     )
     .unwrap();
     let parsed: Value = serde_json::from_str(&output).unwrap();
-    assert_eq!(parsed["task_type"], "agent");
-    assert_eq!(parsed["status"], "completed");
-    assert_eq!(parsed["output"], "background ok");
+    assert_eq!(parsed["retrieval_status"], "success");
+    assert_eq!(parsed["task"]["task_type"], "agent");
+    assert_eq!(parsed["task"]["status"], "completed");
+    assert_eq!(parsed["task"]["output"], "background ok");
+    assert_eq!(parsed["task"]["result"], "background ok");
     assert_eq!(
-        parsed["outputFile"].as_str(),
+        parsed["task"]["outputFile"].as_str(),
         Some(output_file.display().to_string().as_str())
     );
 }
@@ -367,6 +468,7 @@ fn send_user_message_ignores_workspace_ask_permissions() {
             request_config: &request_config,
             structured_output: None,
         },
+        None,
         "SendUserMessage",
         json!({
             "message": "hi",
@@ -377,6 +479,100 @@ fn send_user_message_ignores_workspace_ask_permissions() {
 
     assert!(result.success);
     assert!(result.output.stdout.contains("\"message\": \"hi\""));
+}
+
+#[test]
+fn execute_openai_tool_calls_respect_request_tool_filter() {
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("bash", "Run shell", "bash")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(openai_provider("http://127.0.0.1".to_string()));
+    let tool_calls = vec![OpenAIResponseToolCall {
+        item_id: Some("fc_1".to_string()),
+        status: Some("completed".to_string()),
+        call_id: "call_1".to_string(),
+        name: "bash".to_string(),
+        arguments: json!({ "command": "printf hi" }),
+    }];
+    let request_config = test_openai_request_config();
+    let filter = super::super::build_request_tool_filter(&["Read".to_string()])
+        .unwrap()
+        .unwrap();
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+
+    let result = execute_openai_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &tool_calls,
+        &registry,
+        &cwd,
+        &request_config,
+        "gpt-5",
+        None,
+        Some(&filter),
+    )
+    .unwrap();
+
+    assert!(!result.invocations[0].success);
+    assert!(result.outputs[0]
+        .output
+        .contains("slash command tool scope denied this tool call"));
+}
+
+#[test]
+fn execute_anthropic_tool_calls_respect_request_tool_filter() {
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("bash", "Run shell", "bash")],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider());
+    let request_config = test_anthropic_request_config();
+    let response = json!({
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "bash",
+                "input": {
+                    "command": "printf hi"
+                }
+            }
+        ]
+    });
+    let filter = super::super::build_request_tool_filter(&["Read".to_string()])
+        .unwrap()
+        .unwrap();
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+
+    let result = execute_anthropic_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &response,
+        &registry,
+        &cwd,
+        &request_config,
+        "claude-sonnet-4-5",
+        None,
+        Some(&filter),
+    )
+    .unwrap()
+    .expect("anthropic tool results");
+
+    assert!(!result.invocations[0].success);
+    assert!(result.invocations[0]
+        .output
+        .contains("slash command tool scope denied this tool call"));
 }
 
 #[test]
@@ -619,7 +815,9 @@ fn task_update_sets_timestamps_for_progress() {
     )
     .unwrap();
     let created: Value = serde_json::from_str(&created).unwrap();
-    let task_id = created["task_id"].as_str().unwrap();
+    let task_id = created["task"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("unexpected task create output: {created}"));
 
     let updated = super::super::claude_tools::workflow::task_update::execute_task_update(
         &mut state,
@@ -631,9 +829,26 @@ fn task_update_sets_timestamps_for_progress() {
     )
     .unwrap();
     let updated: Value = serde_json::from_str(&updated).unwrap();
-    assert_eq!(updated["status"], "in_progress");
-    assert!(updated["started_at_ms"].is_number());
-    assert!(updated["updated_at_ms"].is_number());
+    assert_eq!(updated["success"], true);
+    assert_eq!(updated["taskId"], task_id);
+    assert_eq!(updated["updatedFields"], json!(["status"]));
+    assert_eq!(
+        updated["statusChange"],
+        json!({
+            "from": "pending",
+            "to": "in_progress"
+        })
+    );
+
+    let tasks_path = ConfigPaths::discover(&cwd)
+        .workspace_config_dir
+        .join("runtime/claude_workflow/tasks.json");
+    let persisted: Value = serde_json::from_str(&fs::read_to_string(tasks_path).unwrap()).unwrap();
+    let task = persisted["tasks"][0].clone();
+    assert_eq!(task["task_id"], task_id);
+    assert_eq!(task["status"], "in_progress");
+    assert!(task["started_at_ms"].is_number());
+    assert!(task["updated_at_ms"].is_number());
 }
 
 #[test]
@@ -708,7 +923,38 @@ fn task_output_waits_for_agent_completion() {
     .unwrap();
     let output: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(output["retrieval_status"], "success");
-    assert_eq!(output["task_type"], "agent");
-    assert_eq!(output["status"], "completed");
-    assert_eq!(output["output"], "done");
+    assert_eq!(output["task"]["task_type"], "agent");
+    assert_eq!(output["task"]["status"], "completed");
+    assert_eq!(output["task"]["output"], "done");
+    assert_eq!(output["task"]["result"], "done");
+}
+
+#[test]
+fn task_stop_rejects_non_background_tasks() {
+    let mut state = temp_state();
+    let cwd = state.cwd.clone();
+    let created = super::super::claude_tools::workflow::task_create::execute_task_create(
+        &mut state,
+        &cwd,
+        json!({
+            "subject": "Plan work",
+            "description": "Track progress"
+        }),
+    )
+    .unwrap();
+    let created: Value = serde_json::from_str(&created).unwrap();
+    let task_id = created["task"]["id"].as_str().unwrap();
+
+    let error = super::super::claude_tools::workflow::task_stop::execute_task_stop(
+        &mut state,
+        &cwd,
+        json!({
+            "task_id": task_id
+        }),
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("is not a running background task"));
 }

@@ -14,6 +14,7 @@ mod session_overlay;
 mod state;
 mod status_overlay;
 mod statusline;
+mod task_panels;
 mod text_overlay;
 mod usage;
 
@@ -107,16 +108,26 @@ pub fn run_app(
     );
     let commands = supported_commands();
     if let Some(prompt) = initial_prompt.filter(|prompt| allow_prompt_before_onboarding(prompt)) {
-        handle_submit(
+        if !try_open_overlay(
             state,
             resources,
             providers,
             auth_store,
-            auth_path,
             session_store,
-            prompt,
-            no_alt_screen,
-        )?;
+            &mut tui,
+            &prompt,
+        )? {
+            handle_submit(
+                state,
+                resources,
+                providers,
+                auth_store,
+                auth_path,
+                session_store,
+                prompt,
+                no_alt_screen,
+            )?;
+        }
     }
     if !bypass_onboarding {
         submit_queued_prompt_if_ready(
@@ -872,6 +883,33 @@ fn handle_overlay_key(
                     }
                 }
             } else if let Some(command) = overlay_snapshot.selected_command() {
+                if matches!(
+                    &overlay_snapshot,
+                    OverlayState::CommandPicker { title, .. }
+                        if title == "Background Tasks"
+                ) && command.starts_with("/tasks ")
+                    && try_open_overlay(
+                        state,
+                        resources,
+                        providers,
+                        auth_store,
+                        session_store,
+                        tui,
+                        &command,
+                    )?
+                {
+                    submit_queued_prompt_if_ready(
+                        state,
+                        resources,
+                        providers,
+                        auth_store,
+                        auth_path,
+                        session_store,
+                        tui,
+                        no_alt_screen,
+                    )?;
+                    return Ok(false);
+                }
                 set_overlay_state(tui, None);
                 handle_submit(
                     state,

@@ -11,6 +11,7 @@ fn command_registry_contains_review_usage_and_resume_alias() {
     assert!(find_command(&commands, "tag").is_some());
     assert!(find_command(&commands, "usage").is_some());
     assert!(find_command(&commands, "continue").is_some());
+    assert!(find_command(&commands, "?").is_some());
 }
 
 #[test]

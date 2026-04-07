@@ -370,6 +370,7 @@ pub(crate) fn render(
     }
     if let Some(overlay) = active_overlay.as_ref() {
         match overlay {
+            OverlayState::Help => {}
             OverlayState::Usage(usage) => render_usage_overlay(frame, frame.area(), usage),
             OverlayState::Btw(btw) => render_btw_overlay(frame, frame.area(), btw),
             OverlayState::Session(session) => render_session_overlay(frame, frame.area(), session),

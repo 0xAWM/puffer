@@ -1,10 +1,11 @@
 use crate::agent_catalog::load_agent_resources;
+use crate::tool_names::tool_spec_matches_selector;
 use crate::{AppState, MessageRole};
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::{
-    agent_by_id, plugin_mcp_servers, skill_by_name, AgentSpec, LoadedResources,
+    agent_by_id, plugin_mcp_servers, skill_by_name, AgentSpec, LoadedResources, ToolSpec,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -154,6 +155,33 @@ struct PreparedAgentExecution {
     max_turns: Option<u32>,
     worktree: Option<AgentWorktree>,
 }
+
+const IMPLICIT_AGENT_DISALLOWED_TOOLS: &[&str] = &[
+    "Agent",
+    "TaskOutput",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "AskUserQuestion",
+    "TaskStop",
+];
+
+const ASYNC_AGENT_ALLOWED_TOOLS: &[&str] = &[
+    "Bash",
+    "PowerShell",
+    "Read",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+    "TodoWrite",
+    "Skill",
+    "ToolSearch",
+    "EnterWorktree",
+    "ExitWorktree",
+];
 
 /// Executes the runtime-backed `Agent` tool by running a nested model turn.
 pub(super) fn execute_agent_tool(
@@ -646,21 +674,34 @@ fn filter_resources_for_agent(
     let mut filtered = resources.clone();
     let wildcard = tools.is_empty() || tools.iter().any(|tool| tool == "*");
     filtered.tools.retain(|tool| {
-        if tool.value.id.eq_ignore_ascii_case("Agent") {
+        if IMPLICIT_AGENT_DISALLOWED_TOOLS
+            .iter()
+            .any(|blocked| tool_matches_selector(&tool.value, blocked))
+        {
             return false;
         }
         if disallowed_tools
             .iter()
-            .any(|blocked| blocked.eq_ignore_ascii_case(&tool.value.id))
+            .any(|blocked| tool_matches_selector(&tool.value, blocked))
+        {
+            return false;
+        }
+        if !ASYNC_AGENT_ALLOWED_TOOLS
+            .iter()
+            .any(|allowed| tool_matches_selector(&tool.value, allowed))
         {
             return false;
         }
         wildcard
             || tools
                 .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(&tool.value.id))
+                .any(|allowed| tool_matches_selector(&tool.value, allowed))
     });
     filtered
+}
+
+fn tool_matches_selector(tool: &ToolSpec, selector: &str) -> bool {
+    tool_spec_matches_selector(tool, selector)
 }
 
 fn build_agent_system_prompt(resources: &LoadedResources, agent: &AgentSpec) -> Result<String> {
@@ -737,4 +778,90 @@ fn resolve_model_case_insensitive<'a>(
                 || model.id.eq_ignore_ascii_case(selector)
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::filter_resources_for_agent;
+    use puffer_resources::{LoadedItem, LoadedResources, SourceInfo, SourceKind, ToolSpec};
+    use std::path::PathBuf;
+
+    fn tool(id: &str, handler: &str) -> LoadedItem<ToolSpec> {
+        LoadedItem {
+            value: ToolSpec {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: id.to_string(),
+                handler: handler.to_string(),
+                aliases: Vec::new(),
+                handler_args: Vec::new(),
+                approval_policy: None,
+                sandbox_policy: None,
+                shared_lib: None,
+                enabled_if: None,
+                input_schema: None,
+                metadata: Default::default(),
+                display: Default::default(),
+            },
+            source_info: SourceInfo {
+                path: PathBuf::from(format!("{id}.yaml")),
+                kind: SourceKind::Builtin,
+            },
+        }
+    }
+
+    #[test]
+    fn wildcard_agents_only_receive_async_safe_tool_pool() {
+        let resources = LoadedResources {
+            tools: vec![
+                tool("Agent", "runtime:agent"),
+                tool("Bash", "runtime:claude_bash"),
+                tool("Read", "runtime:claude_read"),
+                tool("Edit", "runtime:claude_edit"),
+                tool("Config", "runtime:workflow:config"),
+                tool("TaskCreate", "runtime:workflow:task_create"),
+                tool("TaskStop", "runtime:workflow:task_stop"),
+            ],
+            ..LoadedResources::default()
+        };
+
+        let filtered = filter_resources_for_agent(&resources, &[], &[]);
+        let ids = filtered
+            .tools
+            .iter()
+            .map(|tool| tool.value.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["Bash", "Read", "Edit"]);
+    }
+
+    #[test]
+    fn agent_tool_filters_accept_legacy_lowercase_aliases() {
+        let resources = LoadedResources {
+            tools: vec![
+                tool("Read", "runtime:claude_read"),
+                tool("Glob", "runtime:claude_glob"),
+                tool("Grep", "runtime:claude_grep"),
+                tool("Write", "runtime:claude_write"),
+            ],
+            ..LoadedResources::default()
+        };
+
+        let filtered = filter_resources_for_agent(
+            &resources,
+            &[
+                "read_file".to_string(),
+                "list_dir".to_string(),
+                "search_text".to_string(),
+            ],
+            &[],
+        );
+        let ids = filtered
+            .tools
+            .iter()
+            .map(|tool| tool.value.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["Read", "Glob", "Grep"]);
+    }
 }

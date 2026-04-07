@@ -5,5 +5,5 @@ use std::path::Path;
 
 /// Executes the Claude-compatible `TaskGet` tool scaffold.
 pub fn execute_task_get(state: &mut AppState, cwd: &Path, input: Value) -> Result<String> {
-    super::support::execute_task_get(state, cwd, input)
+    super::task_tools::execute_task_get(state, cwd, input)
 }

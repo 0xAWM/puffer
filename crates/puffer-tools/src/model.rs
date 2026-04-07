@@ -159,6 +159,7 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub handler: String,
+    pub aliases: Vec<String>,
     pub handler_args: Vec<String>,
     pub kind: ToolKind,
     pub input_schema: ToolInputSchema,
@@ -429,6 +430,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "custom".to_string(),
             description: "Run a custom declarative tool.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema::default(),
@@ -443,6 +445,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "bash".to_string(),
             description: "Run a shell command in the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
@@ -497,6 +500,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "read_file".to_string(),
             description: "Read one file from the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
@@ -543,6 +547,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "write_file".to_string(),
             description: "Write one file in the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
@@ -581,6 +586,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "replace_in_file".to_string(),
             description: "Replace text inside one workspace file.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
@@ -635,6 +641,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "move_path".to_string(),
             description: "Move or rename one workspace file or directory.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
@@ -673,6 +680,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "remove_path".to_string(),
             description: "Remove one workspace file or directory.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
@@ -712,6 +720,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             name: "list_dir".to_string(),
             description: "List files and directories from the current workspace.".to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {
@@ -741,6 +750,7 @@ pub fn builtin_tool_definition(kind: ToolKind) -> ToolDefinition {
             description: "Search for text in workspace files with ripgrep-style semantics."
                 .to_string(),
             handler: kind.handler().to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             kind,
             input_schema: ToolInputSchema {

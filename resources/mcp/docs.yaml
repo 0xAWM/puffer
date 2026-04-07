@@ -1,4 +1,0 @@
-id: docs
-display_name: Docs Server
-transport: stdio
-target: docs-server

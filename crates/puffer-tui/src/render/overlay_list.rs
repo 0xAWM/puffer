@@ -24,6 +24,7 @@ pub(super) fn overlay_selection(overlay: &OverlayState) -> Option<usize> {
         | OverlayState::OnboardingModel { selection, .. } => Some(*selection),
         OverlayState::PermissionPrompt { overlay } => Some(overlay.selection()),
         OverlayState::ApiKeyPrompt { .. }
+        | OverlayState::Help
         | OverlayState::Btw(..)
         | OverlayState::Session(..)
         | OverlayState::Status(..)

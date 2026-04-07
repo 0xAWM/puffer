@@ -1,28 +1,31 @@
 id: SendMessage
 name: SendMessage
 description: |-
-  Send a message to another agent, teammate, team, or compatible peer endpoint.
+  # SendMessage
 
-  Plain text outside this tool is not visible to other agents. If you need to
-  communicate with them, you must call this tool.
+  Send a message to another agent.
 
-  Usage notes:
-  - `to` may be a teammate name, `*` for broadcast, a team name, or another
-    supported endpoint identifier.
-  - Broadcast is expensive. Use `*` only when everyone genuinely needs the message.
-  - `summary` should be a short preview when useful.
-  - `message` may be plain text or a structured control payload such as a
-    shutdown or plan-approval response.
-  - Messages are delivered automatically; you do not need to poll an inbox.
-  - Refer to teammates by name, not UUID.
-  - When relaying a teammate message to the user, summarize it instead of
-    quoting it verbatim.
-  - If you receive a legacy structured protocol request such as
-    `shutdown_request` or `plan_approval_request`, respond with the matching
-    `_response` payload and echo the `request_id`.
-  - Do not originate `shutdown_request` yourself unless explicitly asked.
-  - Do not send structured JSON status chatter; use normal text unless you are
-    responding to a shutdown or plan-approval request.
+  ```json
+  {"to": "researcher", "summary": "assign task 1", "message": "start on task #1"}
+  ```
+
+  | `to` | |
+  |---|---|
+  | `"researcher"` | Teammate by name |
+  | `"*"` | Broadcast to all teammates — expensive (linear in team size), use only when everyone genuinely needs it |
+
+  Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from teammates are delivered automatically; you don't check an inbox. Refer to teammates by name, never by UUID. When relaying, don't quote the original — it's already rendered to the user.
+
+  ## Protocol responses (legacy)
+
+  If you receive a JSON message with `type: "shutdown_request"` or `type: "plan_approval_request"`, respond with the matching `_response` type — echo the `request_id`, set `approve` true/false:
+
+  ```json
+  {"to": "team-lead", "message": {"type": "shutdown_response", "request_id": "...", "approve": true}}
+  {"to": "researcher", "message": {"type": "plan_approval_response", "request_id": "...", "approve": false, "feedback": "add error handling"}}
+  ```
+
+  Approving shutdown terminates your process. Rejecting plan sends the teammate back to revise. Don't originate `shutdown_request` unless asked. Don't send structured JSON status messages — use TaskUpdate.
 handler: runtime:workflow:send_message
 approval_policy: auto
 sandbox_policy: read-only

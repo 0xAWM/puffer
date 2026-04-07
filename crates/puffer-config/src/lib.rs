@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -129,6 +130,7 @@ pub fn load_config(paths: &ConfigPaths) -> Result<PufferConfig> {
     if paths.workspace_config_file().exists() {
         merge_config_file(&mut config, &paths.workspace_config_file())?;
     }
+    apply_claude_status_line_fallback(&mut config, paths);
     if let Some((provider, model)) = user_selection {
         config.default_provider = provider;
         config.default_model = model;
@@ -174,6 +176,46 @@ fn merge_config_file(config: &mut PufferConfig, path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn apply_claude_status_line_fallback(config: &mut PufferConfig, paths: &ConfigPaths) {
+    if config.ui.status_line.is_some() {
+        return;
+    }
+    if let Some(status_line) = load_claude_status_line(paths) {
+        config.ui.status_line = Some(status_line);
+    }
+}
+
+fn load_claude_status_line(paths: &ConfigPaths) -> Option<StatusLineConfig> {
+    let raw = fs::read_to_string(claude_user_settings_file(paths)).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let status_line = parsed.get("statusLine")?;
+    if status_line
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| *kind == "command")
+        .is_none()
+    {
+        return None;
+    }
+    let command = status_line.get("command").and_then(Value::as_str)?.trim();
+    if command.is_empty() {
+        return None;
+    }
+    Some(StatusLineConfig {
+        command: command.to_string(),
+        padding: 0,
+    })
+}
+
+fn claude_user_settings_file(paths: &ConfigPaths) -> PathBuf {
+    let home = paths
+        .user_config_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| paths.user_config_dir.clone());
+    home.join(".claude").join("settings.json")
+}
+
 fn write_config_file(path: &Path, config: &PufferConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -187,17 +229,52 @@ fn write_config_file(path: &Path, config: &PufferConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
+
+    fn puffer_home_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn lock_puffer_home() -> MutexGuard<'static, ()> {
+        puffer_home_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct ScopedPufferHome {
+        old_home: Option<OsString>,
+    }
+
+    impl ScopedPufferHome {
+        fn set(path: &Path) -> Self {
+            let old_home = std::env::var_os("PUFFER_HOME");
+            std::env::set_var("PUFFER_HOME", path);
+            Self { old_home }
+        }
+    }
+
+    impl Drop for ScopedPufferHome {
+        fn drop(&mut self) {
+            if let Some(value) = self.old_home.take() {
+                std::env::set_var("PUFFER_HOME", value);
+            } else {
+                std::env::remove_var("PUFFER_HOME");
+            }
+        }
+    }
 
     #[test]
     fn load_config_preserves_user_provider_selection_over_workspace_defaults() {
+        let _guard = lock_puffer_home();
         let tempdir = tempdir().expect("tempdir");
-        let old_home = std::env::var_os("PUFFER_HOME");
         let home = tempdir.path().join("home");
         let workspace = tempdir.path().join("workspace");
         fs::create_dir_all(&home).expect("home");
         fs::create_dir_all(&workspace).expect("workspace");
-        std::env::set_var("PUFFER_HOME", &home);
+        let _home = ScopedPufferHome::set(&home);
 
         let paths = ConfigPaths::discover(&workspace);
         ensure_workspace_dirs(&paths).expect("dirs");
@@ -240,23 +317,17 @@ mod tests {
             Some("2")
         );
         assert_eq!(loaded.theme, "harbor");
-
-        if let Some(value) = old_home {
-            std::env::set_var("PUFFER_HOME", value);
-        } else {
-            std::env::remove_var("PUFFER_HOME");
-        }
     }
 
     #[test]
     fn load_config_preserves_cleared_user_selection() {
+        let _guard = lock_puffer_home();
         let tempdir = tempdir().expect("tempdir");
-        let old_home = std::env::var_os("PUFFER_HOME");
         let home = tempdir.path().join("home");
         let workspace = tempdir.path().join("workspace");
         fs::create_dir_all(&home).expect("home");
         fs::create_dir_all(&workspace).expect("workspace");
-        std::env::set_var("PUFFER_HOME", &home);
+        let _home = ScopedPufferHome::set(&home);
 
         let paths = ConfigPaths::discover(&workspace);
         ensure_workspace_dirs(&paths).expect("dirs");
@@ -274,23 +345,17 @@ mod tests {
         let loaded = load_config(&paths).expect("load");
         assert_eq!(loaded.default_provider, None);
         assert_eq!(loaded.default_model, None);
-
-        if let Some(value) = old_home {
-            std::env::set_var("PUFFER_HOME", value);
-        } else {
-            std::env::remove_var("PUFFER_HOME");
-        }
     }
 
     #[test]
     fn load_config_allows_workspace_to_override_user_openai_base_url() {
+        let _guard = lock_puffer_home();
         let tempdir = tempdir().expect("tempdir");
-        let old_home = std::env::var_os("PUFFER_HOME");
         let home = tempdir.path().join("home");
         let workspace = tempdir.path().join("workspace");
         fs::create_dir_all(&home).expect("home");
         fs::create_dir_all(&workspace).expect("workspace");
-        std::env::set_var("PUFFER_HOME", &home);
+        let _home = ScopedPufferHome::set(&home);
 
         let paths = ConfigPaths::discover(&workspace);
         ensure_workspace_dirs(&paths).expect("dirs");
@@ -308,11 +373,95 @@ mod tests {
             loaded.openai_base_url.as_deref(),
             Some("https://workspace.example/v1")
         );
+    }
 
-        if let Some(value) = old_home {
-            std::env::set_var("PUFFER_HOME", value);
-        } else {
-            std::env::remove_var("PUFFER_HOME");
-        }
+    #[test]
+    fn load_config_reads_claude_statusline_when_puffer_config_is_unset() {
+        let _guard = lock_puffer_home();
+        let tempdir = tempdir().expect("tempdir");
+        let home = tempdir.path().join("home");
+        let workspace = tempdir.path().join("workspace");
+        fs::create_dir_all(home.join(".claude")).expect("claude dir");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let _home = ScopedPufferHome::set(&home);
+
+        fs::write(
+            home.join(".claude/settings.json"),
+            r#"{
+  "statusLine": {
+    "type": "command",
+    "command": "printf claude-status"
+  }
+}"#,
+        )
+        .expect("claude settings");
+
+        let paths = ConfigPaths::discover(&workspace);
+        let loaded = load_config(&paths).expect("load");
+
+        assert_eq!(
+            loaded
+                .ui
+                .status_line
+                .as_ref()
+                .map(|status_line| status_line.command.as_str()),
+            Some("printf claude-status")
+        );
+        assert_eq!(
+            loaded
+                .ui
+                .status_line
+                .as_ref()
+                .map(|status_line| status_line.padding),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn load_config_prefers_explicit_puffer_statusline_over_claude_settings() {
+        let _guard = lock_puffer_home();
+        let tempdir = tempdir().expect("tempdir");
+        let home = tempdir.path().join("home");
+        let workspace = tempdir.path().join("workspace");
+        fs::create_dir_all(home.join(".claude")).expect("claude dir");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let _home = ScopedPufferHome::set(&home);
+
+        fs::write(
+            home.join(".claude/settings.json"),
+            r#"{
+  "statusLine": {
+    "type": "command",
+    "command": "printf claude-status"
+  }
+}"#,
+        )
+        .expect("claude settings");
+
+        let paths = ConfigPaths::discover(&workspace);
+        let mut workspace_config = PufferConfig::default();
+        workspace_config.ui.status_line = Some(StatusLineConfig {
+            command: "printf puffer-status".to_string(),
+            padding: 2,
+        });
+        save_workspace_config(&paths, &workspace_config).expect("workspace config");
+
+        let loaded = load_config(&paths).expect("load");
+        assert_eq!(
+            loaded
+                .ui
+                .status_line
+                .as_ref()
+                .map(|status_line| status_line.command.as_str()),
+            Some("printf puffer-status")
+        );
+        assert_eq!(
+            loaded
+                .ui
+                .status_line
+                .as_ref()
+                .map(|status_line| status_line.padding),
+            Some(2)
+        );
     }
 }

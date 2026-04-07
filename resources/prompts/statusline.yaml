@@ -1,0 +1,11 @@
+id: statusline
+description: Set up Claude Code's status line UI
+allowed_tools:
+  - Agent
+  - Read(~/**)
+  - Edit(~/.claude/settings.json)
+variables:
+  - name: STATUSLINE_PROMPT_JSON
+    description: JSON-encoded setup prompt for the statusline helper agent.
+template: |
+  Create an Agent with subagent_type "statusline-setup" and the prompt $STATUSLINE_PROMPT_JSON

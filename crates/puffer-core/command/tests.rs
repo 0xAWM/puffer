@@ -12,164 +12,16 @@ mod basics;
 mod files;
 mod login_auth;
 mod mcp;
+mod misc;
 mod model_scope;
 mod plugin;
 mod remote_history;
 mod sandbox;
+mod session_local;
 mod status;
 mod tag;
 mod tasks;
 mod usage_buddy;
-
-#[test]
-fn branch_forks_and_switches_current_session() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let original_id = session.id;
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/branch drydock",
-    )
-    .unwrap();
-
-    assert_ne!(state.session.id, original_id);
-    assert_eq!(state.session.parent_session_id, Some(original_id));
-    assert_eq!(state.session.display_name.as_deref(), Some("drydock"));
-}
-
-#[test]
-fn memory_command_updates_session_metadata() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/memory note keep shipping",
-    )
-    .unwrap();
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/memory tag add parity",
-    )
-    .unwrap();
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/memory slug shipyard",
-    )
-    .unwrap();
-
-    let record = session_store.load_session(state.session.id).unwrap();
-    assert_eq!(state.session.note.as_deref(), Some("keep shipping"));
-    assert_eq!(state.session.slug.as_deref(), Some("shipyard"));
-    assert!(state.session.tags.iter().any(|tag| tag == "parity"));
-    assert_eq!(record.metadata.note.as_deref(), Some("keep shipping"));
-    assert_eq!(record.metadata.slug.as_deref(), Some("shipyard"));
-    assert!(record.metadata.tags.iter().any(|tag| tag == "parity"));
-}
-
-#[test]
-fn config_command_writes_workspace_config() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/config set theme harbor",
-    )
-    .unwrap();
-
-    let config_text = std::fs::read_to_string(paths.workspace_config_file()).unwrap();
-    assert!(config_text.contains("theme = \"harbor\""));
-}
-
-#[test]
-fn config_command_lists_supported_keys() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/config list",
-    )
-    .unwrap();
-
-    assert!(matches!(
-        state.transcript.last(),
-        Some(RenderedMessage { text, .. })
-            if text.contains("statusLineCommand") && text.contains("fastMode")
-    ));
-}
 
 #[test]
 fn config_command_supports_model_and_camel_case_aliases() {
@@ -272,6 +124,7 @@ fn permissions_command_creates_workspace_permissions_file() {
             name: "bash".to_string(),
             description: "Run shell".to_string(),
             handler: "bash".to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             approval_policy: Some("on-request".to_string()),
             sandbox_policy: Some("workspace-write".to_string()),
@@ -611,6 +464,58 @@ fn prompt_commands_append_user_message_and_surface_runtime_failures() {
 }
 
 #[test]
+fn plan_command_enters_plan_mode_and_submits_raw_arguments() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/plan stabilize slash-command parity",
+    )
+    .unwrap();
+
+    assert!(state.plan_mode);
+    assert!(
+        state.transcript.iter().any(|message| {
+            message.role == MessageRole::System && message.text == "Enabled plan mode"
+        }),
+        "{:?}",
+        state.transcript
+    );
+    assert!(matches!(
+        state.transcript.get(1),
+        Some(RenderedMessage {
+            role: MessageRole::User,
+            text,
+        }) if text == "stabilize slash-command parity"
+    ));
+    assert!(!state.transcript[1].text.contains("Requested focus:"));
+    assert!(
+        state.transcript.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.text.starts_with("Plan mode query failed:")
+        }),
+        "{:?}",
+        state.transcript
+    );
+}
+
+#[test]
 fn pr_comments_command_uses_reference_prompt_text_from_resources() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
@@ -795,127 +700,5 @@ fn session_command_lists_saved_sessions() {
             role: MessageRole::System,
             text,
         }) if text.contains("dockyard")
-    ));
-}
-
-#[test]
-fn cost_command_reports_runtime_summary() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-    state.push_message(MessageRole::User, "review this");
-    state.push_message(MessageRole::Assistant, "done");
-    state.push_message(MessageRole::System, "Tool bash [ok]\ninput: printf hi\nhi");
-    state.record_task("bash", "printf hi", true);
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/cost",
-    )
-    .unwrap();
-
-    assert!(matches!(
-        state.transcript.last(),
-        Some(RenderedMessage {
-            role: MessageRole::System,
-            text,
-        }) if text.contains("assistant_messages=1")
-            && text.contains("tool_invocations=1")
-            && text.contains("recorded_tasks=1")
-    ));
-}
-
-#[test]
-fn reload_plugins_reports_resource_counts() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-    let resources = LoadedResources {
-        plugins: vec![LoadedItem {
-            value: puffer_resources::PluginSpec {
-                id: "git".to_string(),
-                display_name: "Git".to_string(),
-                description: "Git helpers".to_string(),
-                commands: Vec::new(),
-                skills: Vec::new(),
-                agents: Vec::new(),
-                mcp_servers: Vec::new(),
-                lsp_servers: Vec::new(),
-            },
-            source_info: puffer_resources::SourceInfo {
-                path: PathBuf::from("plugins/git.yaml"),
-                kind: puffer_resources::SourceKind::Builtin,
-            },
-        }],
-        skills: vec![LoadedItem {
-            value: puffer_resources::SkillSpec {
-                name: "reviewer".to_string(),
-                description: "review".to_string(),
-                content: "review".to_string(),
-                disable_model_invocation: false,
-            },
-            source_info: puffer_resources::SourceInfo {
-                path: PathBuf::from("skills/reviewer.md"),
-                kind: puffer_resources::SourceKind::Builtin,
-            },
-        }],
-        mcp_servers: vec![LoadedItem {
-            value: puffer_resources::McpServerSpec {
-                id: "docs".to_string(),
-                display_name: "Docs".to_string(),
-                transport: "stdio".to_string(),
-                endpoint: String::new(),
-                target: "docs".to_string(),
-                description: "docs".to_string(),
-            },
-            source_info: puffer_resources::SourceInfo {
-                path: PathBuf::from("mcp/docs.yaml"),
-                kind: puffer_resources::SourceKind::Builtin,
-            },
-        }],
-        ..LoadedResources::default()
-    };
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &resources,
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/reload-plugins",
-    )
-    .unwrap();
-
-    assert!(state.reload_resources_requested);
-    assert!(matches!(
-        state.transcript.last(),
-        Some(RenderedMessage {
-            role: MessageRole::System,
-            text,
-        }) if text.contains("Reloading plugin changes from disk")
     ));
 }

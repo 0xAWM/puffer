@@ -200,6 +200,7 @@ pub(crate) fn back_overlay(
         | OverlayState::LogoutPicker { .. }
         | OverlayState::ThemePicker { .. }
         | OverlayState::CommandPicker { .. }
+        | OverlayState::Help
         | OverlayState::PermissionPrompt { .. }
         | OverlayState::Btw(..)
         | OverlayState::Session(..)

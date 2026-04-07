@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use puffer_core::{AppState, MessageRole};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::Write as _;
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -54,10 +54,11 @@ fn build_status_line_input(state: &AppState) -> String {
     serde_json::to_string_pretty(&json!({
         "session_id": state.session.id,
         "session_name": state.session.display_name,
+        "transcript_path": Value::Null,
         "cwd": state.cwd,
         "provider": state.current_provider,
         "model": {
-            "id": state.current_model,
+            "id": model_id(state.current_model.as_deref()),
             "display_name": model_display_name(state.current_model.as_deref()),
         },
         "workspace": {
@@ -65,6 +66,26 @@ fn build_status_line_input(state: &AppState) -> String {
             "project_dir": state.session.cwd,
             "added_dirs": state.working_dirs,
         },
+        "version": env!("CARGO_PKG_VERSION"),
+        "output_style": {
+            "name": "default",
+        },
+        "context_window": {
+            "total_input_tokens": Value::Null,
+            "total_output_tokens": Value::Null,
+            "context_window_size": Value::Null,
+            "current_usage": Value::Null,
+            "used_percentage": Value::Null,
+            "remaining_percentage": Value::Null,
+        },
+        "rate_limits": Value::Null,
+        "vim": if state.vim_mode {
+            json!({ "mode": "NORMAL" })
+        } else {
+            Value::Null
+        },
+        "agent": Value::Null,
+        "worktree": Value::Null,
         "app": {
             "version": env!("CARGO_PKG_VERSION"),
         },
@@ -92,11 +113,15 @@ fn build_status_line_input(state: &AppState) -> String {
     .unwrap_or_else(|_| "{}".to_string())
 }
 
-fn model_display_name(model_id: Option<&str>) -> String {
+fn model_id(model_id: Option<&str>) -> String {
     model_id
         .and_then(|model_id| model_id.rsplit('/').next())
         .unwrap_or("<unset>")
         .to_string()
+}
+
+fn model_display_name(model: Option<&str>) -> String {
+    model_id(model)
 }
 
 fn run_status_line_command(
@@ -154,10 +179,11 @@ fn wait_for_output(mut child: std::process::Child, timeout_ms: u64) -> Result<Ou
 
 #[cfg(test)]
 mod tests {
-    use super::refresh_status_line;
+    use super::{build_status_line_input, refresh_status_line};
     use puffer_config::{PufferConfig, StatusLineConfig};
     use puffer_core::AppState;
     use puffer_session_store::SessionMetadata;
+    use serde_json::Value;
     use std::path::PathBuf;
     use uuid::Uuid;
 
@@ -218,5 +244,35 @@ mod tests {
 
         assert!(state.status_line_text.is_none());
         assert!(state.status_line_signature().is_none());
+    }
+
+    #[test]
+    fn refresh_status_line_exposes_claude_compatible_fields() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut state = AppState::new(
+            PufferConfig::default(),
+            tempdir.path().to_path_buf(),
+            SessionMetadata {
+                id: Uuid::new_v4(),
+                display_name: None,
+                cwd: tempdir.path().to_path_buf(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                parent_session_id: None,
+                slug: None,
+                tags: Vec::new(),
+                note: None,
+            },
+        );
+        state.current_model = Some("openai/gpt-5".to_string());
+        state.vim_mode = true;
+
+        let input: Value = serde_json::from_str(&build_status_line_input(&state)).unwrap();
+
+        assert_eq!(input["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(input["output_style"]["name"], "default");
+        assert_eq!(input["model"]["id"], "gpt-5");
+        assert_eq!(input["vim"]["mode"], "NORMAL");
+        assert!(input["context_window"].is_object());
     }
 }

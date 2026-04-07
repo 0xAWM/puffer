@@ -7,6 +7,7 @@ use puffer_session_store::SessionStore;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,13 +75,40 @@ pub(crate) fn handle_tasks_command(
     }
 }
 
+/// Renders read-only `/tasks` subcommands for inline TUI overlays.
+pub(crate) fn render_tasks_panel_text(state: &mut AppState, args: &str) -> Result<Option<String>> {
+    let trimmed = args.trim();
+    let text = match trimmed {
+        "" => return Ok(None),
+        "show" | "list" => render_tasks_dashboard(state)?,
+        "path" => render_task_paths(state)?,
+        "agents" => render_agent_list(state)?,
+        "teams" => render_team_list(state)?,
+        "worktrees" => render_worktree_list(state)?,
+        "todos" => render_todo_list(state)?,
+        _ if trimmed.starts_with("show ") || trimmed.starts_with("get ") => {
+            let task_id = task_argument(trimmed)?;
+            render_task_details(state, &task_id)?
+        }
+        _ if trimmed.starts_with("output ") => {
+            let task_id = trimmed.trim_start_matches("output ").trim();
+            if task_id.is_empty() {
+                return Ok(None);
+            }
+            render_task_output(state, task_id)?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(text))
+}
+
 /// Builds the interactive `/tasks` action list used by the TUI picker.
 pub(crate) fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskActionEntry>> {
     let tasks = load_workflow_tasks(state)?;
     let agents = load_json_store::<WorkflowAgentStoreView>(&workflow_paths(state)?.agents)?;
     let mut actions = vec![
         TaskActionEntry {
-            command: "/tasks".to_string(),
+            command: "/tasks show".to_string(),
             description: "Show task dashboard".to_string(),
         },
         TaskActionEntry {
@@ -116,7 +144,7 @@ pub(crate) fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskAction
                 shorten(&task.subject, 80)
             ),
         });
-        if matches!(task.status.as_str(), "running" | "in_progress" | "pending") {
+        if supports_task_stop(task) && matches!(task.status.as_str(), "running" | "in_progress") {
             actions.push(TaskActionEntry {
                 command: format!("/tasks stop {}", task.task_id),
                 description: format!("Stop {} ({})", task.task_id, shorten(&task.subject, 72)),
@@ -168,35 +196,96 @@ pub(crate) fn render_task_actions(state: &mut AppState) -> Result<Vec<TaskAction
 
 #[derive(Debug, Deserialize)]
 struct WorkflowTaskView {
+    #[serde(alias = "id", alias = "taskId")]
     task_id: String,
+    #[serde(default)]
     subject: String,
+    #[serde(default)]
     description: String,
+    #[serde(default, alias = "activeForm")]
     active_form: String,
     status: String,
     #[serde(default)]
     owner: Option<String>,
     #[serde(default)]
     blocks: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "blockedBy")]
     blocked_by: Vec<String>,
     #[serde(default)]
     metadata: serde_json::Map<String, Value>,
     #[serde(default)]
     output: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "taskType")]
     task_type: Option<String>,
     #[serde(default)]
     command: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "processId")]
     process_id: Option<u32>,
-    #[serde(default)]
+    #[serde(default, alias = "outputFile")]
     output_file: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "startedAtMs")]
     started_at_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "updatedAtMs")]
     updated_at_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "exitCode")]
     exit_code: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowTaskOutputView {
+    #[serde(alias = "id", alias = "taskId")]
+    task_id: String,
+    #[serde(default, alias = "taskType")]
+    task_type: String,
+    status: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    output: String,
+    #[serde(default, alias = "exitCode")]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default, alias = "outputFile", alias = "output_file")]
+    output_file: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WorkflowTaskGetPayload {
+    Wrapped { task: Option<WorkflowTaskView> },
+    Bare(WorkflowTaskView),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WorkflowTaskListPayload {
+    Wrapped { tasks: Vec<WorkflowTaskView> },
+    Bare(Vec<WorkflowTaskView>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WorkflowTaskOutputPayload {
+    Wrapped {
+        retrieval_status: String,
+        task: WorkflowTaskOutputView,
+    },
+    Flat {
+        retrieval_status: String,
+        #[serde(flatten)]
+        task: WorkflowTaskOutputView,
+    },
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WorkflowTaskStoreView {
+    #[serde(default)]
+    tasks: Vec<WorkflowTaskView>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -397,36 +486,35 @@ fn render_task_output(state: &mut AppState, task_id: &str) -> Result<String> {
         Ok(raw) => raw,
         Err(_) => return Ok(format!("Unknown task `{task_id}`.")),
     };
-    let payload: Value = serde_json::from_str(&raw).context("invalid TaskOutput payload")?;
+    let payload: WorkflowTaskOutputPayload =
+        serde_json::from_str(&raw).context("invalid TaskOutput payload")?;
+    let (retrieval_status, task_payload) = match payload {
+        WorkflowTaskOutputPayload::Wrapped {
+            retrieval_status,
+            task,
+        }
+        | WorkflowTaskOutputPayload::Flat {
+            retrieval_status,
+            task,
+        } => (retrieval_status, task),
+    };
     let mut text = String::from("Task output\n");
     let _ = writeln!(
         &mut text,
         "task_id={}\ntask_type={}\nstatus={}\nretrieval_status={}\noutput_file={}",
-        payload
-            .get("task_id")
-            .and_then(Value::as_str)
-            .unwrap_or(task_id),
-        payload
-            .get("task_type")
-            .and_then(Value::as_str)
-            .unwrap_or("<unknown>"),
-        payload
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("<unknown>"),
-        payload
-            .get("retrieval_status")
-            .and_then(Value::as_str)
-            .unwrap_or("<unknown>"),
-        payload
-            .get("outputFile")
-            .and_then(Value::as_str)
-            .unwrap_or("<none>")
+        task_payload.task_id,
+        task_payload.task_type,
+        task_payload.status,
+        retrieval_status,
+        task_payload
+            .output_file
+            .unwrap_or_else(|| "<none>".to_string())
     );
-    let output = payload
-        .get("output")
-        .and_then(Value::as_str)
-        .unwrap_or("<empty>");
+    let output = if task_payload.output.trim().is_empty() {
+        "<empty>"
+    } else {
+        task_payload.output.as_str()
+    };
     let _ = writeln!(&mut text, "\n{output}");
     Ok(text.trim_end().to_string())
 }
@@ -441,7 +529,7 @@ fn stop_task(state: &mut AppState, task_id: &str) -> Result<String> {
         }),
     ) {
         Ok(raw) => raw,
-        Err(_) => return Ok(format!("Unknown task `{task_id}`.")),
+        Err(error) => return Ok(error.to_string()),
     };
     let payload: Value = serde_json::from_str(&raw).context("invalid TaskStop payload")?;
     Ok(format!(
@@ -476,13 +564,43 @@ fn load_task(state: &mut AppState, task_id: &str) -> Result<WorkflowTaskView> {
             "taskId": task_id
         }),
     )?;
-    serde_json::from_str(&raw).context("invalid TaskGet payload")
+    let task = match serde_json::from_str::<WorkflowTaskGetPayload>(&raw)
+        .context("invalid TaskGet payload")?
+    {
+        WorkflowTaskGetPayload::Wrapped { task: Some(task) }
+        | WorkflowTaskGetPayload::Bare(task) => task,
+        WorkflowTaskGetPayload::Wrapped { task: None } => {
+            anyhow::bail!("unknown task `{task_id}`")
+        }
+    };
+    let stored = load_json_store::<WorkflowTaskStoreView>(&workflow_paths(state)?.tasks)?
+        .tasks
+        .into_iter()
+        .find(|entry| entry.task_id == task.task_id);
+    Ok(merge_task_get(stored, task))
 }
 
 fn load_workflow_tasks(state: &mut AppState) -> Result<Vec<WorkflowTaskView>> {
+    let mut stored = load_json_store::<WorkflowTaskStoreView>(&workflow_paths(state)?.tasks)?
+        .tasks
+        .into_iter()
+        .map(|task| (task.task_id.clone(), task))
+        .collect::<BTreeMap<_, _>>();
     let cwd = state.cwd.clone();
-    let raw = task_list::execute_task_list(state, &cwd, json!({}))?;
-    serde_json::from_str(&raw).context("invalid TaskList payload")
+    let tasks = match task_list::execute_task_list(state, &cwd, json!({})) {
+        Ok(raw) => match serde_json::from_str::<WorkflowTaskListPayload>(&raw)
+            .context("invalid TaskList payload")?
+        {
+            WorkflowTaskListPayload::Wrapped { tasks } | WorkflowTaskListPayload::Bare(tasks) => {
+                tasks
+            }
+        },
+        Err(_) => return Ok(stored.into_values().collect()),
+    };
+    Ok(tasks
+        .into_iter()
+        .map(|task| merge_task_list(stored.remove(&task.task_id), task))
+        .collect())
 }
 
 fn workflow_paths(state: &AppState) -> Result<WorkflowPaths> {
@@ -716,8 +834,64 @@ where
     serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
 }
 
+fn merge_task_get(stored: Option<WorkflowTaskView>, task: WorkflowTaskView) -> WorkflowTaskView {
+    let mut merged = stored.unwrap_or_else(|| default_task_view(&task.task_id));
+    merged.task_id = task.task_id;
+    if !task.subject.is_empty() {
+        merged.subject = task.subject;
+    }
+    if !task.description.is_empty() {
+        merged.description = task.description;
+    }
+    merged.status = task.status;
+    merged.blocks = task.blocks;
+    merged.blocked_by = task.blocked_by;
+    merged.owner = task.owner.or(merged.owner);
+    merged
+}
+
+fn merge_task_list(stored: Option<WorkflowTaskView>, task: WorkflowTaskView) -> WorkflowTaskView {
+    let mut merged = stored.unwrap_or_else(|| default_task_view(&task.task_id));
+    merged.task_id = task.task_id;
+    if !task.subject.is_empty() {
+        merged.subject = task.subject;
+    }
+    merged.status = task.status;
+    merged.owner = task.owner;
+    merged.blocked_by = task.blocked_by;
+    merged
+}
+
+fn default_task_view(task_id: &str) -> WorkflowTaskView {
+    WorkflowTaskView {
+        task_id: task_id.to_string(),
+        subject: String::new(),
+        description: String::new(),
+        active_form: String::new(),
+        status: "pending".to_string(),
+        owner: None,
+        blocks: Vec::new(),
+        blocked_by: Vec::new(),
+        metadata: serde_json::Map::new(),
+        output: None,
+        task_type: Some("task".to_string()),
+        command: None,
+        process_id: None,
+        output_file: None,
+        started_at_ms: None,
+        updated_at_ms: None,
+        exit_code: None,
+    }
+}
+
 fn task_kind(task: &WorkflowTaskView) -> &str {
     task.task_type.as_deref().unwrap_or("task")
+}
+
+fn supports_task_stop(task: &WorkflowTaskView) -> bool {
+    task.process_id.is_some()
+        || task.command.is_some()
+        || matches!(task.task_type.as_deref(), Some(kind) if kind != "task")
 }
 
 fn agent_status_is_terminal(status: &str) -> bool {

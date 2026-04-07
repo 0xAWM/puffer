@@ -19,19 +19,16 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
 use uuid::Uuid;
-
 mod help;
 mod model_selection;
 mod overlays;
 mod panels;
 mod status;
 mod tag;
-
 fn puffer_home_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
-
 #[test]
 fn render_shows_command_popup_for_slash_input() {
     let backend = TestBackend::new(100, 30);
@@ -125,6 +122,53 @@ fn try_open_overlay_builds_skills_panel() {
     )
     .unwrap();
     assert!(opened);
+    assert!(matches!(tui.overlay, Some(OverlayState::Text(_))));
+}
+
+#[test]
+fn task_picker_enter_opens_dashboard_overlay() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let auth_path = paths.user_config_dir.join("auth.json");
+
+    let mut state = sample_state();
+    state.cwd = tempdir.path().to_path_buf();
+    state.session.cwd = tempdir.path().to_path_buf();
+    let mut resources = sample_resources();
+    let mut providers = sample_providers();
+    let mut auth_store = sample_auth_store();
+    let mut tui = TuiState::default();
+
+    assert!(try_open_overlay(
+        &state,
+        &resources,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/tasks",
+    )
+    .unwrap());
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::CommandPicker { .. })
+    ));
+
+    handle_overlay_key(
+        KeyEvent::from(KeyCode::Enter),
+        &mut state,
+        &mut resources,
+        &mut providers,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &mut tui,
+        true,
+    )
+    .unwrap();
+
     assert!(matches!(tui.overlay, Some(OverlayState::Text(_))));
 }
 
@@ -682,6 +726,7 @@ fn sample_resources() -> LoadedResources {
                     name: "bash".to_string(),
                     description: "Run shell commands".to_string(),
                     handler: "bash".to_string(),
+                    aliases: Vec::new(),
                     handler_args: Vec::new(),
                     approval_policy: Some("on-request".to_string()),
                     sandbox_policy: Some("workspace-write".to_string()),
@@ -699,6 +744,7 @@ fn sample_resources() -> LoadedResources {
                     name: "read_file".to_string(),
                     description: "Read a file".to_string(),
                     handler: "read_file".to_string(),
+                    aliases: Vec::new(),
                     handler_args: Vec::new(),
                     approval_policy: Some("never".to_string()),
                     sandbox_policy: Some("read-only".to_string()),
@@ -716,6 +762,7 @@ fn sample_resources() -> LoadedResources {
                     name: "write_file".to_string(),
                     description: "Write a file".to_string(),
                     handler: "write_file".to_string(),
+                    aliases: Vec::new(),
                     handler_args: Vec::new(),
                     approval_policy: Some("on-request".to_string()),
                     sandbox_policy: Some("workspace-write".to_string()),
@@ -734,6 +781,7 @@ fn sample_resources() -> LoadedResources {
                 description: "Review pending changes".to_string(),
                 template: "Review $ARGUMENTS".to_string(),
                 variables: Vec::new(),
+                allowed_tools: Vec::new(),
                 provider_override: None,
                 model_override: None,
                 mode: None,
@@ -903,7 +951,6 @@ fn sample_providers() -> ProviderRegistry {
     });
     providers
 }
-
 fn sample_auth_store() -> AuthStore {
     let mut auth_store = AuthStore::default();
     auth_store.set_oauth(
@@ -925,7 +972,6 @@ fn sample_auth_store() -> AuthStore {
     );
     auth_store
 }
-
 fn loaded_item<T>(path: &str, value: T) -> LoadedItem<T> {
     LoadedItem {
         value,

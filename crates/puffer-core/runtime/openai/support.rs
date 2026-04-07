@@ -1,9 +1,9 @@
+use super::super::{APP_VERSION, OPENAI_CHATGPT_BASE_URL};
 use super::StructuredOutputConfig;
 use crate::AppState;
 use puffer_provider_openai::{OpenAIResponsesTextConfig, OpenAIResponsesTool};
 use puffer_provider_registry::{OAuthCredential, ProviderDescriptor};
 use serde_json::{json, Value};
-use super::super::{APP_VERSION, OPENAI_CHATGPT_BASE_URL};
 
 pub(super) const OPENAI_STRUCTURED_OUTPUT_FAMILY: &str = "openai";
 
@@ -149,10 +149,7 @@ pub(super) fn is_codex_openai_provider(provider: &ProviderDescriptor) -> bool {
             .contains("/api/codex")
 }
 
-pub(super) fn openai_base_url_for_auth(
-    provider: &ProviderDescriptor,
-    oauth: bool,
-) -> String {
+pub(super) fn openai_base_url_for_auth(provider: &ProviderDescriptor, oauth: bool) -> String {
     if !oauth || provider.id != "openai" {
         return provider.base_url.clone();
     }

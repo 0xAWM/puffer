@@ -183,7 +183,7 @@ pub(crate) fn handle_permissions_command(
                     "Usage: /permissions remove <tool-id>".to_string(),
                 );
             }
-            settings.tools.remove(&normalize_tool_id(tool));
+            settings.tools.remove(&permission_file_tool_key(tool));
             write_permissions(&permissions_path, &settings)?;
             emit_system(
                 state,
@@ -532,7 +532,20 @@ pub(crate) fn render_hooks_summary(
 fn set_permission_level(settings: &mut PermissionsSettings, tool: &str, level: &str) {
     settings
         .tools
-        .insert(normalize_tool_id(tool), level.to_string());
+        .insert(permission_file_tool_key(tool), level.to_string());
+}
+
+fn permission_file_tool_key(tool: &str) -> String {
+    let normalized = normalize_tool_id(tool);
+    let canonical = crate::tool_names::canonical_tool_name(tool);
+    if canonical.is_empty() {
+        return normalized;
+    }
+    if normalized.replace('_', "") == canonical {
+        normalized
+    } else {
+        canonical
+    }
 }
 
 fn render_permissions_summary(path: &PathBuf, settings: &PermissionsSettings) -> String {
@@ -708,9 +721,6 @@ mod tests {
         write_permissions(&path, &settings).unwrap();
         let loaded: PermissionsSettings =
             toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            loaded.tools.get("read_file").map(String::as_str),
-            Some("allow")
-        );
+        assert_eq!(loaded.tools.get("read").map(String::as_str), Some("allow"));
     }
 }

@@ -42,12 +42,7 @@ fn execute_anthropic_tool_calls_runs_agent_runtime_tool() {
 
     let resources = LoadedResources {
         tools: vec![loaded_tool("Agent", "Delegate work", "runtime:agent")],
-        agents: vec![loaded_agent(
-            "Explore",
-            "Explore code",
-            "You are an explorer.",
-            &["read_file"],
-        )],
+        agents: vec![loaded_agent("Explore", "Explore code", "You are an explorer.", &[])],
         ..LoadedResources::default()
     };
     let registry = ToolRegistry::from_resources(&resources);
@@ -80,8 +75,11 @@ fn execute_anthropic_tool_calls_runs_agent_runtime_tool() {
         std::env::current_dir().unwrap().as_path(),
         &request_config,
         "claude-sonnet-4-5",
+        None,
+        None,
     )
     .unwrap();
+    let result = result.expect("anthropic agent tool results");
 
     assert_eq!(result.invocations.len(), 1);
     assert_eq!(result.invocations[0].tool_id, "Agent");
@@ -92,7 +90,12 @@ fn execute_anthropic_tool_calls_runs_agent_runtime_tool() {
 
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].contains("\"name\":\"read_file\""));
-    assert!(!requests[0].contains("\"name\":\"write_file\""));
+    assert!(requests[0].contains("\"name\":\"Read\""));
+    assert!(requests[0].contains("\"name\":\"Glob\""));
+    assert!(requests[0].contains("\"name\":\"Grep\""));
+    assert!(!requests[0].contains("\"name\":\"Edit\""));
+    assert!(!requests[0].contains("\"name\":\"Write\""));
+    assert!(!requests[0].contains("\"name\":\"TaskCreate\""));
+    assert!(!requests[0].contains("\"name\":\"AskUserQuestion\""));
     server.join().unwrap();
 }

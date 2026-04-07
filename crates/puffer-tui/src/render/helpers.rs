@@ -11,8 +11,10 @@ pub(super) fn help_pane_active(
     state: &AppState,
     active_overlay: &Option<crate::OverlayState>,
 ) -> bool {
-    active_overlay.is_none()
-        && state.transcript.last().is_some_and(|message| {
-            message.role == MessageRole::System && message.text.starts_with("Supported commands:")
-        })
+    matches!(active_overlay, Some(crate::OverlayState::Help))
+        || active_overlay.is_none()
+            && state.transcript.last().is_some_and(|message| {
+                message.role == MessageRole::System
+                    && message.text.starts_with("Supported commands:")
+            })
 }

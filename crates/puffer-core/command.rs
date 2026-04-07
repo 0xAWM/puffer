@@ -1,9 +1,9 @@
 use crate::command_helpers::{
     append_tool_invocations, describe_context, describe_files_in_context, describe_git_diff,
-    emit_system, execute_skill_command, handle_agents_command, handle_config_command,
-    handle_copy_command, handle_export_command, handle_hooks_command, handle_ide_command,
-    handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_model_command, handle_permissions_command, handle_plugin_command,
+    emit_system, execute_skill_command, handle_agents_command, handle_branch_command,
+    handle_config_command, handle_copy_command, handle_export_command, handle_hooks_command,
+    handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
+    handle_model_command, handle_permissions_command, handle_plan_command, handle_plugin_command,
     handle_remote_control_command, handle_remote_env_command, handle_resume_command,
     handle_sandbox_command, handle_session_command, handle_tag_command, handle_tasks_command,
     list_skills, record_command_checkpoint, reload_config_from_disk, render_login_guidance,
@@ -171,7 +171,7 @@ pub fn supported_commands() -> Vec<CommandSpec> {
         ),
         cmd(
             "help",
-            &[],
+            &["?"],
             "Show help and available commands",
             None,
             CommandKind::Local,
@@ -245,7 +245,7 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             &[],
             "Enable plan mode or view the current session plan",
             Some("[open|<description>]"),
-            CommandKind::Prompt,
+            CommandKind::Local,
         ),
         cmd(
             "plugin",
@@ -355,7 +355,7 @@ pub fn supported_commands() -> Vec<CommandSpec> {
         cmd(
             "statusline",
             &[],
-            "Set up the status line UI",
+            "Set up Claude Code's status line UI",
             None,
             CommandKind::Prompt,
         ),
@@ -522,7 +522,15 @@ fn execute_prompt_command(
         return Ok(());
     }
 
+    let uses_direct_prompt = matches!(
+        preparation,
+        Some(crate::command_helpers::prompt::PromptCommandPreparation::DirectPrompt(_))
+    );
     let prompt = prompt_by_id(resources, command.name);
+    let tool_filter = prompt
+        .map(|prompt| crate::runtime::build_request_tool_filter(&prompt.value.allowed_tools))
+        .transpose()?
+        .flatten();
     if let Some(prompt) = prompt {
         if let Some(model_override) = prompt
             .value
@@ -564,6 +572,9 @@ fn execute_prompt_command(
         Some(crate::command_helpers::prompt::PromptCommandPreparation::PromptOverride(prompt)) => {
             prompt
         }
+        Some(crate::command_helpers::prompt::PromptCommandPreparation::DirectPrompt(prompt)) => {
+            prompt
+        }
         Some(crate::command_helpers::prompt::PromptCommandPreparation::SideQuestion(_)) => {
             unreachable!("handled above")
         }
@@ -574,8 +585,10 @@ fn execute_prompt_command(
             unreachable!("handled above")
         }
     };
-    if let Some(mode) = prompt.and_then(|prompt| prompt.value.mode.as_deref()) {
-        rendered = format!("Command mode: {mode}\n\n{rendered}");
+    if !uses_direct_prompt {
+        if let Some(mode) = prompt.and_then(|prompt| prompt.value.mode.as_deref()) {
+            rendered = format!("Command mode: {mode}\n\n{rendered}");
+        }
     }
 
     if command.name == "compact" {
@@ -586,18 +599,7 @@ fn execute_prompt_command(
             auth_store,
             session_store,
             &rendered,
-        );
-    }
-
-    if command.name == "plan" && !args.trim().is_empty() && !matches!(args.trim(), "show" | "open")
-    {
-        return crate::command_helpers::prompt::execute_plan_prompt_command(
-            state,
-            resources,
-            providers,
-            auth_store,
-            session_store,
-            &rendered,
+            tool_filter.as_ref(),
         );
     }
 
@@ -609,7 +611,14 @@ fn execute_prompt_command(
         },
     )?;
 
-    match crate::runtime::execute_user_prompt(state, resources, providers, auth_store, &rendered) {
+    match crate::runtime::execute_user_prompt_with_tool_filter(
+        state,
+        resources,
+        providers,
+        auth_store,
+        &rendered,
+        tool_filter.as_ref(),
+    ) {
         Ok(turn) => {
             append_tool_invocations(state, session_store, &turn.tool_invocations)?;
             state.push_message(MessageRole::Assistant, turn.assistant_text.clone());
@@ -779,6 +788,7 @@ fn execute_local_command(
         "tasks" => handle_tasks_command(state, session_store, args),
         "config" => handle_config_command(state, session_store, args),
         "context" => describe_context(state, resources, session_store),
+        "plan" => handle_plan_command(state, resources, providers, auth_store, session_store, args),
         "agents" => handle_agents_command(state, session_store, args),
         "memory" => handle_memory_command(state, session_store, args),
         "keybindings" => handle_keybindings_command(state, session_store),
@@ -850,27 +860,7 @@ fn execute_local_command(
         "session" => handle_session_command(state, session_store, args),
         "tag" => handle_tag_command(state, session_store, args),
         "resume" => handle_resume_command(state, session_store, args),
-        "branch" => {
-            let fork = session_store.fork_session(state.session.id, state.cwd.clone())?;
-            if !args.is_empty() {
-                session_store.rename_session(fork.id, args.to_string())?;
-            }
-            let record = session_store.load_session(fork.id)?;
-            let config = state.config.clone();
-            *state = AppState::from_session_record(config, record);
-            if !args.is_empty() {
-                state.session.display_name = Some(args.to_string());
-            }
-            state.remote_name = None;
-            state.remote_session_id = None;
-            state.remote_session_url = None;
-            state.remote_session_status = None;
-            emit_system(
-                state,
-                session_store,
-                format!("Forked current session into {}.", state.session.id),
-            )
-        }
+        "branch" => handle_branch_command(state, session_store, args),
         "rewind" => rewind_transcript(state, session_store, args),
         "terminal-setup" => emit_system(state, session_store, terminal_setup_advice(state)),
         _ => emit_system(

@@ -1,4 +1,3 @@
-use crate::command_helpers::prompt::persist_plan_output;
 use crate::AppState;
 use anyhow::{anyhow, bail, Context, Result};
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
@@ -13,8 +12,6 @@ use std::thread;
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
-pub(super) const DEFAULT_PLAN_TEXT: &str =
-    "# Current Plan\n\n- Add concrete implementation steps here.\n";
 const WORKFLOW_DIR_NAME: &str = "runtime/claude_workflow";
 
 fn default_true() -> bool {
@@ -248,12 +245,6 @@ pub(super) struct TaskOutputInput {
     pub(super) block: Option<bool>,
     #[serde(default)]
     pub(super) timeout: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct ExitPlanModeInput {
-    #[serde(default, rename = "allowedPrompts")]
-    pub(super) allowed_prompts: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -701,18 +692,6 @@ pub(super) fn task_output_dir(cwd: &Path) -> Result<PathBuf> {
 /// Returns the log path used to persist one background workflow task's output.
 pub(super) fn task_output_path(cwd: &Path, task_id: &str) -> Result<PathBuf> {
     Ok(task_output_dir(cwd)?.join(format!("{task_id}.log")))
-}
-
-pub(super) fn ensure_plan_file(state: &AppState) -> Result<PathBuf> {
-    let paths = ConfigPaths::discover(&state.cwd);
-    ensure_workspace_dirs(&paths)?;
-    let plan_dir = paths.workspace_config_dir.join("plans");
-    fs::create_dir_all(&plan_dir)?;
-    let plan_path = plan_dir.join(format!("{}.md", state.session.id));
-    if !plan_path.exists() {
-        persist_plan_output(state, DEFAULT_PLAN_TEXT)?;
-    }
-    Ok(plan_path)
 }
 
 pub(super) fn git_toplevel(cwd: &Path) -> Option<PathBuf> {

@@ -51,6 +51,8 @@ pub struct ToolSpec {
     pub description: String,
     pub handler: String,
     #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
     pub handler_args: Vec<String>,
     #[serde(default)]
     pub approval_policy: Option<String>,
@@ -76,6 +78,8 @@ pub struct PromptTemplate {
     pub template: String,
     #[serde(default)]
     pub variables: Vec<PromptVariableSpec>,
+    #[serde(default, alias = "allowed-tools", alias = "allowedTools")]
+    pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub provider_override: Option<String>,
     #[serde(default)]

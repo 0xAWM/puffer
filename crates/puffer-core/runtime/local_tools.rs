@@ -6,8 +6,6 @@ use puffer_resources::{plugin_mcp_servers, LoadedResources};
 use puffer_tools::{ToolDefinition, ToolRegistry};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::cmp::Reverse;
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -15,20 +13,6 @@ use super::local_mcp_resources::{
     is_live_resource_server, list_live_mcp_resources, live_resource_server_names,
     read_live_mcp_resource,
 };
-
-#[derive(Debug, Deserialize)]
-struct SkillInput {
-    skill: String,
-    #[serde(default)]
-    args: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ToolSearchInput {
-    query: String,
-    #[serde(default)]
-    max_results: Option<u64>,
-}
 
 #[derive(Debug, Deserialize)]
 struct GlobInput {
@@ -104,120 +88,11 @@ pub(super) fn execute_runtime_local_tool(
 }
 
 fn execute_skill_tool(resources: &LoadedResources, input: Value) -> Result<String> {
-    let input: SkillInput = serde_json::from_value(input)?;
-    let skill = resources
-        .skills
-        .iter()
-        .find(|skill| skill.value.name == input.skill)
-        .or_else(|| {
-            resources
-                .skills
-                .iter()
-                .find(|skill| skill.value.name.eq_ignore_ascii_case(&input.skill))
-        })
-        .ok_or_else(|| anyhow!("unknown skill `{}`", input.skill))?;
-
-    if skill.value.disable_model_invocation {
-        bail!(
-            "skill `{}` disables model invocation and cannot be loaded through the Skill tool",
-            skill.value.name
-        );
-    }
-
-    let mut output = String::new();
-    let _ = writeln!(&mut output, "Skill {}", skill.value.name);
-    let _ = writeln!(&mut output, "{}", skill.value.description);
-    if let Some(args) = input
-        .args
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let _ = writeln!(&mut output, "args: {}", args.trim());
-    }
-    let _ = writeln!(
-        &mut output,
-        "\n<skill name=\"{}\">\n{}\n</skill>",
-        skill.value.name,
-        skill.value.content.trim()
-    );
-    Ok(output.trim().to_string())
+    super::claude_tools::skill::execute_claude_skill_tool(resources, input)
 }
 
 fn execute_tool_search(registry: &ToolRegistry, input: Value) -> Result<String> {
-    let input: ToolSearchInput = serde_json::from_value(input)?;
-    let max_results = input.max_results.unwrap_or(5).clamp(1, 20) as usize;
-    let query = input.query.trim();
-    if query.is_empty() {
-        bail!("ToolSearch query cannot be empty");
-    }
-
-    let definitions = if let Some(selection) = query.strip_prefix("select:") {
-        let wanted = selection
-            .split(',')
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .collect::<Vec<_>>();
-        registry
-            .definitions()
-            .filter(|definition| {
-                wanted
-                    .iter()
-                    .any(|name| definition.id.eq_ignore_ascii_case(name))
-            })
-            .take(max_results)
-            .collect::<Vec<_>>()
-    } else {
-        let terms = query
-            .to_ascii_lowercase()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let mut scored = registry
-            .definitions()
-            .filter(|definition| definition.id != "ToolSearch")
-            .map(|definition| {
-                let haystack = format!(
-                    "{} {} {}",
-                    definition.id, definition.name, definition.description
-                )
-                .to_ascii_lowercase();
-                let score = terms
-                    .iter()
-                    .map(|term| {
-                        if definition.id.eq_ignore_ascii_case(term) {
-                            10
-                        } else if haystack.contains(term) {
-                            1
-                        } else {
-                            0
-                        }
-                    })
-                    .sum::<u32>();
-                (score, definition)
-            })
-            .filter(|(score, _)| *score > 0)
-            .collect::<Vec<_>>();
-        scored.sort_by_key(|(score, definition)| {
-            (Reverse(*score), definition.id.to_ascii_lowercase())
-        });
-        scored
-            .into_iter()
-            .take(max_results)
-            .map(|(_, definition)| definition)
-            .collect::<Vec<_>>()
-    };
-
-    let mut output = String::from("<functions>\n");
-    for definition in definitions {
-        let payload = json!({
-            "name": definition.id,
-            "description": definition.description,
-            "parameters": definition.input_schema.as_json_schema(),
-        });
-        let _ = writeln!(&mut output, "<function>{payload}</function>");
-    }
-    output.push_str("</functions>");
-    Ok(output)
+    super::claude_tools::tool_search::execute_claude_tool_search_tool(registry, input)
 }
 
 fn execute_glob_tool(cwd: &Path, input: Value) -> Result<String> {
@@ -664,14 +539,14 @@ mod tests {
             tools: vec![
                 LoadedItem {
                     value: ToolSpec {
-                        id: "Read".to_string(),
-                        name: "Read".to_string(),
-                        description: "Read a file".to_string(),
-                        handler: "builtin:read_file".to_string(),
+                        id: "NotebookEdit".to_string(),
+                        name: "NotebookEdit".to_string(),
+                        description: "Edit notebook cells".to_string(),
+                        handler: "runtime:notebook_edit".to_string(),
                         ..ToolSpec::default()
                     },
                     source_info: SourceInfo {
-                        path: "tools/read.yaml".into(),
+                        path: "tools/notebook_edit.yaml".into(),
                         kind: SourceKind::Builtin,
                     },
                 },
@@ -715,15 +590,16 @@ mod tests {
             json!({"skill": "reviewer", "args": "focus on tests"}),
         )
         .unwrap();
+        assert!(output.contains("<command-name>reviewer</command-name>"));
         assert!(output.contains("<skill name=\"reviewer\">"));
         assert!(output.contains("focus on tests"));
     }
 
     #[test]
     fn tool_search_returns_function_blocks() {
-        let output = execute_tool_search(&sample_registry(), json!({"query": "read"})).unwrap();
+        let output = execute_tool_search(&sample_registry(), json!({"query": "notebook"})).unwrap();
         assert!(output.contains("<functions>"));
-        assert!(output.contains("\"name\":\"Read\""));
+        assert!(output.contains("\"name\":\"NotebookEdit\""));
     }
 
     #[test]

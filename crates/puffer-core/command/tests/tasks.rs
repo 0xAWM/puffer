@@ -174,3 +174,83 @@ fn tasks_command_reports_background_agents_and_teams() {
         }) if text.contains("Teams:") && text.contains("alpha")
     ));
 }
+
+#[test]
+fn task_actions_do_not_offer_stop_for_plain_workflow_tasks() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    let cwd = state.cwd.clone();
+    crate::runtime::claude_tools::workflow::task_create::execute_task_create(
+        &mut state,
+        &cwd,
+        serde_json::json!({
+            "subject": "Audit parity",
+            "description": "Inspect command differences"
+        }),
+    )
+    .unwrap();
+
+    let actions = crate::render_task_actions(&mut state).unwrap();
+    assert!(!actions
+        .iter()
+        .any(|entry| entry.command.starts_with("/tasks stop ")));
+}
+
+#[test]
+fn tasks_command_can_show_task_details_after_claude_style_tool_refactor() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    let cwd = state.cwd.clone();
+    crate::runtime::claude_tools::workflow::task_create::execute_task_create(
+        &mut state,
+        &cwd,
+        serde_json::json!({
+            "subject": "Audit slash command parity",
+            "description": "Check the task detail view"
+        }),
+    )
+    .unwrap();
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/tasks show task-1",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("Task task-1")
+            && text.contains("subject=Audit slash command parity")
+            && text.contains("description=Check the task detail view")
+    ));
+}

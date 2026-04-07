@@ -1,6 +1,7 @@
 mod agents;
 pub(crate) mod artifacts;
 mod auth;
+mod branch;
 mod common;
 mod config;
 mod ecosystem;
@@ -14,6 +15,7 @@ mod tasks;
 pub(crate) use agents::handle_agents_command;
 pub(crate) use artifacts::{handle_copy_command, handle_export_command};
 pub(crate) use auth::render_login_guidance;
+pub(crate) use branch::handle_branch_command;
 pub(crate) use common::{
     describe_context, describe_files_in_context, describe_git_diff, emit_system,
     execute_skill_command, list_skills, record_command_checkpoint, render_skills_panel,
@@ -34,6 +36,7 @@ pub use plugins::PluginActionEntry;
 pub(crate) use plugins::{
     handle_plugin_command, reload_plugins_summary, render_plugin_actions, render_plugin_summary,
 };
+pub(crate) use prompt::handle_plan_command;
 pub(crate) use resume::handle_resume_command;
 pub use session::SessionOverlayView;
 pub(crate) use session::{
@@ -42,4 +45,4 @@ pub(crate) use session::{
     render_session_overlay, render_session_panel,
 };
 pub use tasks::TaskActionEntry;
-pub(crate) use tasks::{handle_tasks_command, render_task_actions};
+pub(crate) use tasks::{handle_tasks_command, render_task_actions, render_tasks_panel_text};

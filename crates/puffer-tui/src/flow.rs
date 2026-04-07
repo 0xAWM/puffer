@@ -1,3 +1,5 @@
+use crate::approval_overlay::ApprovalOverlay;
+use crate::btw_overlay::BtwOverlay;
 use anyhow::Result;
 use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
@@ -13,12 +15,10 @@ use puffer_session_store::{SessionStore, TranscriptEvent};
 use puffer_tools::{ToolInput, ToolRegistry};
 use std::io;
 use std::path::Path;
-use std::process::Command;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
-
-use crate::approval_overlay::ApprovalOverlay;
-use crate::btw_overlay::BtwOverlay;
+#[path = "flow_auth.rs"]
+mod flow_auth;
 #[path = "flow_pickers.rs"]
 mod flow_pickers;
 use crate::onboarding;
@@ -26,9 +26,11 @@ use crate::session_overlay::SessionOverlay;
 use crate::state::{
     PendingPermissionRequest, PendingSubmit, PendingSubmitEvent, PendingSubmitResult,
 };
-use crate::status_overlay::StatusOverlay;
-use crate::text_overlay::TextOverlay;
+use crate::{
+    status_overlay::StatusOverlay, task_panels::task_text_overlay, text_overlay::TextOverlay,
+};
 use crate::{OverlayState, TuiState};
+pub(crate) use flow_auth::{handle_auth_command, run_embedded_auth_login};
 
 /// Opens a TUI overlay for slash commands that map to picker UI.
 pub(crate) fn try_open_overlay(
@@ -54,12 +56,22 @@ pub(crate) fn try_open_overlay(
         );
         return Ok(true);
     }
+    if matches!((name, args.is_empty()), ("help", true) | ("?", true)) {
+        set_overlay_state(tui, Some(OverlayState::Help));
+        return Ok(true);
+    }
     if name == "status" && args.is_empty() {
         set_overlay_state(
             tui,
             Some(StatusOverlay::open(state, resources, providers, auth_store)),
         );
         return Ok(true);
+    }
+    if name == "tasks" && !args.is_empty() {
+        if let Some(overlay) = task_text_overlay(state, args)? {
+            set_overlay_state(tui, Some(overlay));
+            return Ok(true);
+        }
     }
     let text_overlay = match (name, args.is_empty()) {
         ("config", true) => Some(TextOverlay::open("Config", render_config_summary(state)?)),
@@ -138,7 +150,7 @@ pub(crate) fn try_open_overlay(
                 command: None,
             })
             .collect::<Vec<_>>();
-        if flow_pickers::open_command_picker(tui, "Tasks", entries) {
+        if flow_pickers::open_command_picker(tui, "Background Tasks", entries) {
             return Ok(true);
         }
     }
@@ -604,16 +616,17 @@ pub(crate) fn submit_queued_prompt_if_ready(
         .deferred_prompt
         .as_deref()
         .map(str::trim)
-        .is_some_and(|prompt| prompt == "/help" || prompt == "/?")
+        .is_some_and(allow_prompt_before_onboarding)
     {
         if let Some(prompt) = tui.take_deferred_prompt() {
-            handle_submit(
+            handle_startup_bypass_prompt(
                 state,
                 resources,
                 providers,
                 auth_store,
                 auth_path,
                 session_store,
+                tui,
                 prompt,
                 no_alt_screen,
             )?;
@@ -670,119 +683,41 @@ pub(crate) fn emit_system_message(
     Ok(())
 }
 
-/// Handles embedded login/logout commands from the TUI.
-pub(crate) fn handle_auth_command(
+/// Routes startup-safe slash commands through overlay handling before falling back to submission.
+pub(crate) fn handle_startup_bypass_prompt(
     state: &mut AppState,
+    resources: &mut LoadedResources,
+    providers: &mut ProviderRegistry,
     auth_store: &mut AuthStore,
     auth_path: &Path,
     session_store: &SessionStore,
-    submitted: &str,
-    no_alt_screen: bool,
-) -> Result<bool> {
-    let without_slash = submitted.trim_start_matches('/');
-    let (name, args) = without_slash
-        .split_once(' ')
-        .map(|(name, args)| (name, args.trim()))
-        .unwrap_or((without_slash, ""));
-    if name == "login" {
-        if args.is_empty() {
-            return Ok(false);
-        }
-        let provider = if args.is_empty() {
-            state.current_provider.as_deref().unwrap_or("anthropic")
-        } else {
-            args
-        };
-        run_embedded_auth_login(provider, auth_store, auth_path, no_alt_screen)?;
-        let message = format!("Completed login flow for {provider}.");
-        state.push_message(MessageRole::System, message.clone());
-        session_store.append_event(
-            state.session.id,
-            TranscriptEvent::SystemMessage { text: message },
-        )?;
-        return Ok(true);
-    }
-
-    if name != "logout" {
-        return Ok(false);
-    }
-
-    let provider = if args.is_empty() {
-        state.current_provider.as_deref().unwrap_or("anthropic")
-    } else {
-        args
-    }
-    .to_string();
-    let removed = auth_store.remove(&provider);
-    let cleared_active_provider = active_selection_uses_provider(state, provider.as_str());
-    if cleared_active_provider {
-        state.current_provider = None;
-        state.current_model = None;
-        state.config.default_provider = None;
-        state.config.default_model = None;
-        persist_user_config(state)?;
-    }
-    let message = if removed.is_some() {
-        auth_store.save(auth_path)?;
-        if cleared_active_provider {
-            format!("Removed stored credentials for {provider} and cleared the active selection.")
-        } else {
-            format!("Removed stored credentials for {provider}.")
-        }
-    } else if cleared_active_provider {
-        format!("No stored credentials exist for {provider}; cleared the active selection.")
-    } else {
-        format!("No stored credentials exist for {provider}.")
-    };
-    state.push_message(MessageRole::System, message.clone());
-    session_store.append_event(
-        state.session.id,
-        TranscriptEvent::SystemMessage { text: message },
-    )?;
-    Ok(true)
-}
-
-/// Returns true when the active selection belongs to the provider being logged out.
-pub(crate) fn active_selection_uses_provider(state: &AppState, provider_id: &str) -> bool {
-    if state.current_provider.as_deref() == Some(provider_id) {
-        return true;
-    }
-    state
-        .current_model
-        .as_deref()
-        .and_then(|selector| selector.split_once('/'))
-        .map(|(provider, _)| provider == provider_id)
-        .unwrap_or(false)
-}
-
-pub(crate) fn run_embedded_auth_login(
-    provider: &str,
-    auth_store: &mut AuthStore,
-    auth_path: &Path,
+    tui: &mut TuiState,
+    submitted: String,
     no_alt_screen: bool,
 ) -> Result<()> {
-    if !no_alt_screen {
-        crossterm::terminal::disable_raw_mode()?;
-        crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+    if submitted.trim_start().starts_with('/')
+        && try_open_overlay(
+            state,
+            resources,
+            providers,
+            auth_store,
+            session_store,
+            tui,
+            &submitted,
+        )?
+    {
+        return Ok(());
     }
-
-    let status = Command::new(std::env::current_exe()?)
-        .arg("auth")
-        .arg("login")
-        .arg(provider)
-        .status()?;
-
-    if !no_alt_screen {
-        crossterm::terminal::enable_raw_mode()?;
-        crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
-    }
-
-    if !status.success() {
-        anyhow::bail!("login flow for {provider} exited with {}", status);
-    }
-
-    *auth_store = AuthStore::load(auth_path)?;
-    Ok(())
+    handle_submit(
+        state,
+        resources,
+        providers,
+        auth_store,
+        auth_path,
+        session_store,
+        submitted,
+        no_alt_screen,
+    )
 }
 
 /// Records tool invocations into transcript/task/session state.
@@ -907,7 +842,7 @@ pub(crate) fn parse_shell_shortcut(input: &str) -> Option<&str> {
 pub(crate) fn allow_prompt_before_onboarding(prompt: &str) -> bool {
     matches!(
         prompt.trim(),
-        "/help" | "/theme" | "/doctor" | "/status" | "/usage"
+        "/help" | "/?" | "/theme" | "/doctor" | "/status" | "/usage"
     )
 }
 

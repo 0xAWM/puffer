@@ -90,6 +90,7 @@ fn loaded_tool(id: &str, description: &str, handler: &str) -> LoadedItem<ToolSpe
             name: id.to_string(),
             description: description.to_string(),
             handler: handler.to_string(),
+            aliases: Vec::new(),
             handler_args: Vec::new(),
             approval_policy: None,
             sandbox_policy: None,
@@ -347,6 +348,7 @@ fn execute_anthropic_tool_calls_runs_registered_tools() {
         std::env::current_dir().unwrap().as_path(),
         &request_config,
         "claude-sonnet-4-5",
+        None,
         None,
     )
     .unwrap();

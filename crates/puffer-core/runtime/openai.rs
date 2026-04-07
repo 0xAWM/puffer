@@ -12,7 +12,6 @@ use self::support::{
     openai_registry_credential, openai_responses_path, prefer_native_structured_output,
     structured_output_endpoint_id, OPENAI_STRUCTURED_OUTPUT_FAMILY,
 };
-pub(super) use super::structured_output_support::openai_tool_definitions;
 use super::structured_output_support::{
     openai_chat_completion_tools_for_request, openai_chat_response_format,
     openai_responses_text_config, openai_tool_definitions_for_request, StructuredOutputConfig,
@@ -37,8 +36,13 @@ use serde_json::{json, Value};
 
 pub(super) use super::openai_sse::{
     is_event_stream, parse_openai_sse_reader, parse_openai_sse_response,
-    parse_openai_sse_response_streaming,
 };
+
+#[cfg(test)]
+pub(super) use super::openai_sse::parse_openai_sse_response_streaming;
+
+#[cfg(test)]
+pub(super) use super::structured_output_support::openai_tool_definitions;
 
 const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
@@ -63,8 +67,9 @@ pub(super) fn execute_openai(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: super::TurnRequestOptions<'_>,
 ) -> Result<super::TurnExecution> {
+    let structured_output = options.structured_output;
     let use_native = prefer_native_structured_output(state, provider, &model_id, structured_output);
     match execute_openai_once(
         state,
@@ -74,7 +79,7 @@ pub(super) fn execute_openai(
         model_id.clone(),
         auth_store,
         input,
-        structured_output,
+        options,
         use_native,
     ) {
         Ok(turn) => Ok(turn),
@@ -86,15 +91,7 @@ pub(super) fn execute_openai(
                 structured_output_endpoint_id(provider),
             );
             execute_openai_once(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-                structured_output,
-                false,
+                state, resources, providers, provider, model_id, auth_store, input, options, false,
             )
         }
         Err(error) => Err(error),
@@ -109,9 +106,10 @@ fn execute_openai_once(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: super::TurnRequestOptions<'_>,
     use_native: bool,
 ) -> Result<super::TurnExecution> {
+    let structured_output = options.structured_output;
     let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
     let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
@@ -121,6 +119,7 @@ fn execute_openai_once(
         structured_output,
         use_native,
         Some(&permission_context),
+        options.tool_filter,
     )?;
     let system_prompt = render_runtime_system_prompt(
         state,
@@ -176,6 +175,7 @@ fn execute_openai_once(
             &execution.request_config,
             &model_id,
             structured_output,
+            options.tool_filter,
         )?;
         invocations.extend(tool_results.invocations);
         next_input = extend_input_with_continuation(
@@ -195,12 +195,13 @@ pub(super) fn execute_openai_streaming<F>(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: super::TurnRequestOptions<'_>,
     on_event: &mut F,
 ) -> Result<super::TurnExecution>
 where
     F: FnMut(TurnStreamEvent),
 {
+    let structured_output = options.structured_output;
     let use_native = prefer_native_structured_output(state, provider, &model_id, structured_output);
     match execute_openai_streaming_once(
         state,
@@ -210,7 +211,7 @@ where
         model_id.clone(),
         auth_store,
         input,
-        structured_output,
+        options,
         use_native,
         on_event,
     ) {
@@ -223,15 +224,7 @@ where
                 structured_output_endpoint_id(provider),
             );
             execute_openai_streaming_once(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-                structured_output,
-                false,
+                state, resources, providers, provider, model_id, auth_store, input, options, false,
                 on_event,
             )
         }
@@ -247,25 +240,18 @@ fn execute_openai_streaming_once<F>(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: super::TurnRequestOptions<'_>,
     use_native: bool,
     on_event: &mut F,
 ) -> Result<super::TurnExecution>
 where
     F: FnMut(TurnStreamEvent),
 {
+    let structured_output = options.structured_output;
     let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
     if !execution.codex_style {
         return execute_openai_once(
-            state,
-            resources,
-            providers,
-            provider,
-            model_id,
-            auth_store,
-            input,
-            structured_output,
-            use_native,
+            state, resources, providers, provider, model_id, auth_store, input, options, use_native,
         );
     }
 
@@ -277,6 +263,7 @@ where
         structured_output,
         use_native,
         Some(&permission_context),
+        options.tool_filter,
     )?;
     let system_prompt = render_runtime_system_prompt(
         state,
@@ -336,6 +323,7 @@ where
             &execution.request_config,
             &model_id,
             structured_output,
+            options.tool_filter,
         )?;
         if !tool_results.invocations.is_empty() {
             on_event(TurnStreamEvent::ToolInvocations(
@@ -360,8 +348,9 @@ pub(super) fn execute_openai_completions(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: super::TurnRequestOptions<'_>,
 ) -> Result<super::TurnExecution> {
+    let structured_output = options.structured_output;
     let use_native = prefer_native_structured_output(state, provider, &model_id, structured_output);
     match execute_openai_completions_once(
         state,
@@ -371,7 +360,7 @@ pub(super) fn execute_openai_completions(
         model_id.clone(),
         auth_store,
         input,
-        structured_output,
+        options,
         use_native,
     ) {
         Ok(turn) => Ok(turn),
@@ -383,15 +372,7 @@ pub(super) fn execute_openai_completions(
                 structured_output_endpoint_id(provider),
             );
             execute_openai_completions_once(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-                structured_output,
-                false,
+                state, resources, providers, provider, model_id, auth_store, input, options, false,
             )
         }
         Err(error) => Err(error),
@@ -406,9 +387,10 @@ fn execute_openai_completions_once(
     model_id: String,
     auth_store: &mut AuthStore,
     input: &str,
-    structured_output: Option<&StructuredOutputConfig>,
+    options: super::TurnRequestOptions<'_>,
     use_native: bool,
 ) -> Result<super::TurnExecution> {
+    let structured_output = options.structured_output;
     let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
     let registry = ToolRegistry::from_resources(resources);
     let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
@@ -418,6 +400,7 @@ fn execute_openai_completions_once(
         structured_output,
         use_native,
         Some(&permission_context),
+        options.tool_filter,
     )?;
     let system_prompt = render_runtime_system_prompt(
         state,
@@ -482,6 +465,7 @@ fn execute_openai_completions_once(
             &execution.request_config,
             &model_id,
             structured_output,
+            options.tool_filter,
         )?;
         invocations.extend(tool_results.invocations);
         messages.push(OpenAIChatMessage {
@@ -546,6 +530,7 @@ pub(super) fn execute_openai_tool_calls(
     request_config: &OpenAIRequestConfig,
     model_id: &str,
     structured_output: Option<&StructuredOutputConfig>,
+    tool_filter: Option<&super::RequestToolFilter>,
 ) -> Result<OpenAIToolResults> {
     let mut outputs = Vec::new();
     let mut invocations = Vec::new();
@@ -562,6 +547,7 @@ pub(super) fn execute_openai_tool_calls(
                 request_config,
                 structured_output,
             },
+            tool_filter,
             &tool_call.name,
             tool_call.arguments.clone(),
         )?;
