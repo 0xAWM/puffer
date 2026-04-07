@@ -222,6 +222,13 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             CommandKind::Ui,
         ),
         cmd(
+            "loop",
+            &[],
+            "Run a prompt on a recurring interval until a condition is met",
+            Some("<interval> <prompt> | stop"),
+            CommandKind::Local,
+        ),
+        cmd(
             "logout",
             &[],
             "Sign out from a provider",
@@ -229,11 +236,25 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             CommandKind::Ui,
         ),
         cmd(
+            "maximize",
+            &["max"],
+            "Iteratively maximize a metric via repeated prompt execution",
+            Some("<metric> <prompt>"),
+            CommandKind::Local,
+        ),
+        cmd(
             "mcp",
             &[],
             "Manage MCP servers",
             Some("[enable|disable [server-name]]"),
             CommandKind::Ui,
+        ),
+        cmd(
+            "minimize",
+            &["min"],
+            "Iteratively minimize a metric via repeated prompt execution",
+            Some("<metric> <prompt>"),
+            CommandKind::Local,
         ),
         cmd("memory", &[], "Edit memory files", None, CommandKind::Ui),
         cmd(
@@ -955,6 +976,15 @@ fn execute_local_command(
         "tag" => handle_tag_command(state, session_store, args),
         "resume" => handle_resume_command(state, session_store, args),
         "branch" => handle_branch_command(state, session_store, args),
+        "loop" | "maximize" | "minimize" => {
+            // Handled in TUI flow layer which has access to TuiState.
+            // If we reach here the command was dispatched outside the TUI.
+            emit_system(
+                state,
+                session_store,
+                format!("/{} requires the interactive TUI.", command.name),
+            )
+        }
         "rewind" => rewind_transcript(state, session_store, args),
         "terminal-setup" => handle_terminal_setup_command(state, session_store),
         _ => emit_system(

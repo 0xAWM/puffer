@@ -12,6 +12,44 @@ use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
+
+/// Distinguishes the three loop command flavors.
+#[derive(Debug, Clone)]
+pub(crate) enum LoopKind {
+    /// Pure interval-based repeat: re-run the prompt every N seconds.
+    Loop,
+    /// Iteratively maximize a named metric.
+    Maximize(String),
+    /// Iteratively minimize a named metric.
+    Minimize(String),
+}
+
+/// Tracks whether a loop is actively running, waiting, or finished.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum LoopStatus {
+    Running,
+    WaitingInterval,
+    Paused,
+    Completed(String),
+}
+
+/// Persistent state for an active `/loop`, `/maximize`, or `/minimize` session.
+#[derive(Debug, Clone)]
+pub(crate) struct LoopState {
+    pub(crate) kind: LoopKind,
+    pub(crate) prompt: String,
+    pub(crate) iteration: usize,
+    pub(crate) max_iterations: usize,
+    /// Delay between iterations for `/loop`; None for optimize commands.
+    pub(crate) interval: Option<Duration>,
+    /// When the next `/loop` iteration should fire.
+    pub(crate) next_fire: Option<Instant>,
+    /// Recorded metric values for `/maximize` and `/minimize`.
+    pub(crate) target_history: Vec<f64>,
+    pub(crate) status: LoopStatus,
+}
 
 /// Stores editable TUI input state plus the active overlay and deferred prompt.
 pub(crate) struct TuiState {
@@ -26,6 +64,7 @@ pub(crate) struct TuiState {
     pub(crate) deferred_prompt: Option<String>,
     pub(crate) pending_submit: Option<PendingSubmit>,
     pub(crate) queued_prompts: VecDeque<String>,
+    pub(crate) active_loop: Option<LoopState>,
 }
 
 /// Carries one completed background provider turn back to the UI thread.
@@ -68,6 +107,7 @@ impl Default for TuiState {
             deferred_prompt: None,
             pending_submit: None,
             queued_prompts: VecDeque::new(),
+            active_loop: None,
         }
     }
 }
