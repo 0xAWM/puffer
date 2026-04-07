@@ -202,22 +202,29 @@
     padding: 0.6rem 0 0.6rem 0.9rem;
     border: 0;
     border-left: 2px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 0 0 1px transparent inset;
     background: transparent;
     text-align: left;
     cursor: pointer;
     color: #d9d3ca;
-    transition: border-color 120ms ease, color 120ms ease, transform 120ms ease;
+    transition: border-color 120ms ease, color 120ms ease, transform 120ms ease,
+      background 120ms ease, box-shadow 120ms ease;
   }
 
   .session-link:hover {
     transform: translateX(2px);
     border-left-color: rgba(135, 201, 172, 0.28);
     color: #f5efe4;
+    background: rgba(255, 255, 255, 0.03);
   }
 
   .session-link.selected {
     border-left-color: #87c9ac;
     color: #f8f3ea;
+    background: rgba(255, 255, 255, 0.05);
+    box-shadow:
+      0 0 0 1px rgba(135, 201, 172, 0.16) inset,
+      3px 0 0 rgba(135, 201, 172, 0.9) inset;
   }
 
   .session-name {

@@ -59,6 +59,27 @@ const sessionC: SessionListItem = {
   parentSessionId: null
 };
 
+const sessionADiff: DiffSnapshot = {
+  id: "diff-a",
+  source: "session_history",
+  title: "Claude parity permission regression sweep",
+  command: "/diff",
+  status: "4 files changed, 39 insertions(+), 12 deletions(-)",
+  unstagedDiffstat: "crates/puffer-core/runtime/*",
+  stagedDiffstat: "",
+  patch: [
+    "@@ -44,7 +44,10 @@",
+    " pub(crate) fn evaluate_permission(...) {",
+    "-    return PermissionDecision::Deny;",
+    "+    if context.plan_mode() {",
+    "+        return PermissionDecision::Ask;",
+    "+    }",
+    "+",
+    "+    return PermissionDecision::Deny;",
+    " }"
+  ].join("\n")
+};
+
 export const mockFolders: FolderGroup[] = [
   {
     id: "/home/c/puffer",
@@ -166,6 +187,62 @@ const olderDiff: DiffSnapshot = {
     "+}"
   ].join("\n")
 };
+
+const sessionATimeline: TimelineItem[] = [
+  {
+    id: "a-msg-1",
+    kind: "user",
+    title: "User message",
+    summary: "Permission prompts still diverge from Claude Code.",
+    body: "Permission prompts still diverge from Claude Code when a tool call happens in plan mode.",
+    meta: ["Turn 1"]
+  },
+  {
+    id: "a-msg-2",
+    kind: "assistant",
+    title: "Assistant response",
+    summary: "I’m comparing the runtime path against Claude-compatible behavior.",
+    body: [
+      "I’m comparing the runtime path against Claude-compatible behavior.",
+      "",
+      "The focus is on:",
+      "- permission escalation rules",
+      "- prompt wording",
+      "- whether plan mode should ask or deny by default"
+    ].join("\n"),
+    meta: ["Turn 1"]
+  },
+  {
+    id: "a-tool-1",
+    kind: "tool",
+    title: "Tool call: Read",
+    summary: "Read the permission runtime and prompt renderer.",
+    body: "Inspected the runtime permission context and the prompt text generators.",
+    meta: ["Read", "ok"],
+    toolName: "Read",
+    status: "ok",
+    input: "{\"paths\":[\"crates/puffer-core/permissions.rs\",\"crates/puffer-tui/src/approval_overlay.rs\"]}",
+    output: [
+      "permissions.rs: enforce_tool_call() still returns Deny in one branch",
+      "approval_overlay.rs: prompt text differs from Claude wording"
+    ].join("\n"),
+    inputJson: {
+      paths: [
+        "crates/puffer-core/permissions.rs",
+        "crates/puffer-tui/src/approval_overlay.rs"
+      ]
+    }
+  },
+  {
+    id: "a-diff-1",
+    kind: "diff",
+    title: sessionADiff.title,
+    summary: sessionADiff.status,
+    body: sessionADiff.patch,
+    meta: [sessionADiff.command],
+    diff: sessionADiff
+  }
+];
 
 const timeline: TimelineItem[] = [
   {
@@ -306,6 +383,69 @@ export const mockSessionDetail: SessionDetail = {
   diffHistory: [latestDiff, olderDiff],
   repoStatus: mockRepoStatus
 };
+
+const mockSessionDetailA: SessionDetail = {
+  session: sessionA,
+  timeline: sessionATimeline,
+  latestDiff: sessionADiff,
+  diffHistory: [sessionADiff],
+  repoStatus: {
+    ...mockRepoStatus,
+    sessionId: sessionA.id,
+    cwd: sessionA.cwd,
+    branch: "fix/permission-parity",
+    pullRequest: null
+  }
+};
+
+const mockSessionDetailC: SessionDetail = {
+  session: sessionC,
+  timeline: [
+    {
+      id: "c-msg-1",
+      kind: "user",
+      title: "User message",
+      summary: "Validate pyright diagnostics on the sample workspace.",
+      body: "Validate pyright diagnostics on the sample workspace and confirm the overlay behavior.",
+      meta: ["Turn 1"]
+    },
+    {
+      id: "c-tool-1",
+      kind: "tool",
+      title: "Tool call: Bash",
+      summary: "Ran pyright over the sample repository.",
+      body: "Executed pyright and captured diagnostics output.",
+      meta: ["Bash", "ok"],
+      toolName: "Bash",
+      status: "ok",
+      input: "{\"command\":\"pyright\"}",
+      output: "0 errors, 0 warnings, 0 informations",
+      inputJson: { command: "pyright" }
+    }
+  ],
+  latestDiff: null,
+  diffHistory: [],
+  repoStatus: {
+    ...mockRepoStatus,
+    sessionId: sessionC.id,
+    cwd: sessionC.cwd,
+    branch: "main",
+    pullRequest: null,
+    hasUncommittedChanges: false,
+    isClean: true,
+    statusLines: []
+  }
+};
+
+export function mockSessionDetailFor(sessionId: string): SessionDetail {
+  if (sessionId === sessionA.id) {
+    return mockSessionDetailA;
+  }
+  if (sessionId === sessionC.id) {
+    return mockSessionDetailC;
+  }
+  return mockSessionDetail;
+}
 
 export function mockCreatePrResult(): RepoActionResult {
   return {

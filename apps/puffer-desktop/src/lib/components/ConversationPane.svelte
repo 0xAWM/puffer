@@ -1,5 +1,10 @@
 <script lang="ts">
-  import type { PermissionTimelineItem, SessionListItem, TimelineItem } from "../types";
+  import type {
+    PermissionTimelineItem,
+    SessionListItem,
+    TimelineItem,
+    ToolTimelineItem
+  } from "../types";
   import MessageBody from "./MessageBody.svelte";
 
   export let session: SessionListItem | null = null;
@@ -95,6 +100,10 @@
     return "allow_once";
   }
 
+  function isToolItem(item: TimelineItem): item is ToolTimelineItem {
+    return item.kind === "tool";
+  }
+
   $: transcriptItems = timeline.filter((item) => item.kind !== "permission" && item.kind !== "diff");
   $: {
     const next = new Set(collapsedIds);
@@ -131,11 +140,50 @@
             <div class="bubble">
               <MessageBody body={item.body} />
             </div>
+          {:else if isToolItem(item)}
+            <div class="entry-meta">
+              <span>{item.toolName} · {item.status}</span>
+
+              {#if shouldCollapse(item)}
+                <button class="collapse-toggle" on:click={() => toggleCollapsed(item)}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path
+                      d={isCollapsed(item) ? "M6 4l4 4-4 4" : "M4 6l4 4 4-4"}
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.4"
+                    />
+                  </svg>
+                  <span>{isCollapsed(item) ? "Expand" : "Collapse"}</span>
+                </button>
+              {/if}
+            </div>
+
+            {#if isCollapsed(item)}
+              <pre class="collapsed-preview">{previewText(item)}</pre>
+            {:else}
+              <div class="tool-log">
+                <p class="tool-summary">{item.summary}</p>
+                <div class="tool-grid">
+                  <div class="tool-section">
+                    <span class="tool-label">Input</span>
+                    <pre>{item.input}</pre>
+                  </div>
+
+                  {#if item.output}
+                    <div class="tool-section">
+                      <span class="tool-label">Output</span>
+                      <pre>{item.output}</pre>
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/if}
           {:else}
             <div class="entry-meta">
-              {#if item.kind === "tool"}
-                <span>{item.toolName} · {item.status}</span>
-              {:else if item.kind === "command"}
+              {#if item.kind === "command"}
                 <span>Slash command</span>
               {:else if item.kind === "system"}
                 <span>System</span>
@@ -332,6 +380,48 @@
     font-size: 1rem;
   }
 
+  .tool-log {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .tool-summary {
+    margin: 0;
+    line-height: 1.72;
+  }
+
+  .tool-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
+  }
+
+  .tool-section {
+    display: grid;
+    gap: 0.28rem;
+  }
+
+  .tool-label {
+    color: var(--text-soft);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .tool-section pre {
+    margin: 0;
+    padding: 0.8rem 0.9rem;
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.55) inset,
+      0 0 0 1px rgba(118, 97, 72, 0.1);
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+    font-size: 0.84rem;
+    line-height: 1.65;
+    overflow: auto;
+  }
+
   .collapsed-preview {
     margin: 0;
     white-space: pre-wrap;
@@ -453,6 +543,10 @@
   }
 
   @media (max-width: 980px) {
+    .tool-grid {
+      grid-template-columns: 1fr;
+    }
+
     .composer {
       grid-template-columns: 1fr;
     }

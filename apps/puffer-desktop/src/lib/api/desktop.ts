@@ -20,6 +20,7 @@ import {
   mockMergePrResult,
   mockRepoStatus,
   mockSessionDetail,
+  mockSessionDetailFor,
   mockSettingsSnapshot
 } from "../mockData";
 
@@ -353,7 +354,7 @@ export async function loadSessionDetail(
   remote?: RemoteConnection
 ): Promise<SessionDetail> {
   if (!canInvokeTauri()) {
-    return mockSessionDetail;
+    return mockSessionDetailFor(sessionId);
   }
   const response = await invoke<BackendSessionDetail>("load_session_detail", {
     sessionId,

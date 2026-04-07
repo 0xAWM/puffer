@@ -428,7 +428,7 @@
           {#if sessionDetail?.latestDiff}
             <DiffView diff={sessionDetail.latestDiff} />
           {:else}
-            <div class="loading-card">
+            <div class="empty-diff">
               <strong>No diff captured</strong>
               <span>The latest session diff will appear here in GitHub-style format.</span>
             </div>
