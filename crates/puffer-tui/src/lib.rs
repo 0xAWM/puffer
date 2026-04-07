@@ -1,5 +1,6 @@
 mod flow;
 mod markdown;
+mod markdown_render;
 #[path = "onboarding/mod.rs"]
 mod onboarding;
 mod popup;
