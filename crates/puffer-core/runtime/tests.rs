@@ -815,18 +815,12 @@ fn execute_anthropic_tool_calls_runs_agent_runtime_tool() {
 
     let mut providers = ProviderRegistry::new();
     providers.register(provider.clone());
-
     let mut state = state();
     state.current_provider = Some("local-anthropic".to_string());
     state.current_model = Some("local-anthropic/claude-sonnet-4-5".to_string());
 
     let resources = LoadedResources {
-        agents: vec![loaded_agent(
-            "Explore",
-            "Read-only agent",
-            "You are a read-only subagent.",
-            &["read_file"],
-        )],
+        agents: vec![loaded_agent("Explore", "Read-only agent", "You are a read-only subagent.", &["read_file"])],
         tools: vec![
             loaded_tool("Agent", "Delegate work", "runtime:agent"),
             loaded_tool("read_file", "Read files", "read_file"),
@@ -909,16 +903,9 @@ fn execute_agent_tool_rejects_background_requests() {
         &ProviderRegistry::new(),
         &mut AuthStore::default(),
         std::env::current_dir().unwrap().as_path(),
-        json!({
-            "description": "Background request",
-            "prompt": "Do the thing",
-            "run_in_background": true
-        }),
-    )
-    .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("background agent execution is not implemented"));
+        json!({ "description": "Background request", "prompt": "Do the thing", "run_in_background": true }),
+    ).unwrap_err();
+    assert!(error.to_string().contains("background agent execution is not implemented"));
 }
 
 #[test]

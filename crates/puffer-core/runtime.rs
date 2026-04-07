@@ -120,6 +120,7 @@ where
             openai::execute_openai_streaming(
                 state,
                 resources,
+                providers,
                 provider,
                 model_id,
                 auth_store,
