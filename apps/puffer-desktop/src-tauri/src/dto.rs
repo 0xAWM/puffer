@@ -100,6 +100,7 @@ pub struct DiffSnapshotDto {
     pub status: String,
     pub unstaged_diffstat: String,
     pub staged_diffstat: String,
+    pub patch: String,
     pub patch_excerpt: String,
 }
 

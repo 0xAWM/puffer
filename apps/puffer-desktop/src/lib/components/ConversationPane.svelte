@@ -1,306 +1,472 @@
 <script lang="ts">
-  import type { TimelineItem } from "../types";
-  import TimelineItemCard from "./TimelineItemCard.svelte";
+  import type { PermissionTimelineItem, SessionListItem, TimelineItem } from "../types";
+  import MessageBody from "./MessageBody.svelte";
 
+  export let session: SessionListItem | null = null;
   export let timeline: TimelineItem[] = [];
-  export let selectedId: string | null = null;
   export let loading = false;
-  export let onSelect: (item: TimelineItem) => void = () => {};
+  export let pendingPermissions: PermissionTimelineItem[] = [];
+  export let onSubmitMessage: (message: string) => void = () => {};
+  export let onResolvePermission: (permissionId: string, choice: string) => void = () => {};
 
-  type FilterMode = "all" | "messages" | "tools" | "permissions" | "diffs";
+  let draft = "";
+  let collapsedIds = new Set<string>();
 
-  let filterMode: FilterMode = "all";
-  let query = "";
-
-  function matchesFilter(item: TimelineItem, mode: FilterMode): boolean {
-    if (mode === "all") {
-      return true;
+  function transcriptText(item: TimelineItem): string {
+    switch (item.kind) {
+      case "user":
+      case "assistant":
+      case "system":
+        return item.body;
+      case "command":
+        return ["```sh", item.body, "```"].join("\n");
+      case "tool":
+        return [
+          item.summary,
+          "",
+          item.input ? "Input" : "",
+          item.input ? "```json" : "",
+          item.input ?? "",
+          item.input ? "```" : "",
+          item.output ? "" : "",
+          item.output ? "Output" : "",
+          item.output ? "```text" : "",
+          item.output ?? "",
+          item.output ? "```" : ""
+        ]
+          .filter(Boolean)
+          .join("\n");
+      default:
+        return item.body;
     }
-    if (mode === "messages") {
-      return item.kind === "user" || item.kind === "assistant" || item.kind === "system" || item.kind === "command";
-    }
-    if (mode === "tools") {
-      return item.kind === "tool";
-    }
-    if (mode === "permissions") {
-      return item.kind === "permission";
-    }
-    return item.kind === "diff";
   }
 
-  function matchesQuery(item: TimelineItem, search: string): boolean {
-    if (!search) {
-      return true;
+  function rawText(item: TimelineItem): string {
+    return transcriptText(item).replace(/\r\n?/g, "\n");
+  }
+
+  function lineCount(item: TimelineItem): number {
+    return rawText(item).split("\n").length;
+  }
+
+  function shouldCollapse(item: TimelineItem): boolean {
+    return item.kind !== "user" && lineCount(item) > 12;
+  }
+
+  function previewText(item: TimelineItem): string {
+    const lines = rawText(item).split("\n");
+    if (lines.length <= 4) {
+      return lines.join("\n");
     }
-    return [item.title, item.summary, item.body, item.meta.join(" ")]
-      .join(" ")
-      .toLowerCase()
-      .includes(search);
+    return [...lines.slice(0, 2), "...", ...lines.slice(-2)].join("\n");
   }
 
-  function filterCount(mode: FilterMode): number {
-    return timeline.filter((item) => matchesFilter(item, mode)).length;
+  function isCollapsed(item: TimelineItem): boolean {
+    return collapsedIds.has(item.id);
   }
 
-  function resetFilters() {
-    filterMode = "all";
-    query = "";
+  function toggleCollapsed(item: TimelineItem) {
+    const next = new Set(collapsedIds);
+    if (next.has(item.id)) {
+      next.delete(item.id);
+    } else {
+      next.add(item.id);
+    }
+    collapsedIds = next;
   }
 
-  $: toolCount = timeline.filter((item) => item.kind === "tool").length;
-  $: permissionCount = timeline.filter((item) => item.kind === "permission").length;
-  $: diffCount = timeline.filter((item) => item.kind === "diff").length;
-  $: trimmedQuery = query.trim().toLowerCase();
-  $: visibleTimeline = timeline.filter((item) => matchesFilter(item, filterMode) && matchesQuery(item, trimmedQuery));
-  $: selectedVisible = selectedId ? visibleTimeline.some((item) => item.id === selectedId) : true;
+  function submitDraft() {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      return;
+    }
+    onSubmitMessage(trimmed);
+    draft = "";
+  }
+
+  function permissionIcon(choice: string): "allow_once" | "allow_session" | "deny" {
+    const normalized = choice.toLowerCase();
+    if (normalized.includes("session")) {
+      return "allow_session";
+    }
+    if (normalized.includes("deny")) {
+      return "deny";
+    }
+    return "allow_once";
+  }
+
+  $: transcriptItems = timeline.filter((item) => item.kind !== "permission" && item.kind !== "diff");
+  $: {
+    const next = new Set(collapsedIds);
+    for (const id of Array.from(next)) {
+      if (!transcriptItems.some((item) => item.id === id && shouldCollapse(item))) {
+        next.delete(id);
+      }
+    }
+    collapsedIds = next;
+  }
 </script>
 
 <section class="conversation">
-  <div class="section-header">
-    <div>
-      <p class="eyebrow">Conversation</p>
-      <h2>Transcript and tool activity</h2>
-    </div>
-    <div class="counters">
-      <span>{timeline.length} items</span>
-      <span>{toolCount} tools</span>
-      <span>{permissionCount} approvals</span>
-      <span>{diffCount} diffs</span>
-    </div>
-  </div>
-
-  <div class="controls">
-    <div class="filters">
-      <button class:active={filterMode === "all"} on:click={() => (filterMode = "all")}>
-        All {filterCount("all")}
-      </button>
-      <button class:active={filterMode === "messages"} on:click={() => (filterMode = "messages")}>
-        Messages {filterCount("messages")}
-      </button>
-      <button class:active={filterMode === "tools"} on:click={() => (filterMode = "tools")}>
-        Tools {filterCount("tools")}
-      </button>
-      <button class:active={filterMode === "permissions"} on:click={() => (filterMode = "permissions")}>
-        Approvals {filterCount("permissions")}
-      </button>
-      <button class:active={filterMode === "diffs"} on:click={() => (filterMode = "diffs")}>
-        Diffs {filterCount("diffs")}
-      </button>
-    </div>
-
-    <div class="search">
-      <input bind:value={query} placeholder="Filter title, summary, body, metadata" spellcheck={false} />
-      <div class="search-actions">
-        <span>{visibleTimeline.length} shown</span>
-        {#if query || filterMode !== "all"}
-          <button class="clear" on:click={resetFilters}>Reset</button>
-        {/if}
-      </div>
-    </div>
-  </div>
-
-  <div class="items">
-    {#if loading}
-      <div class="empty-card">Loading conversation...</div>
-    {:else if !timeline.length}
-      <div class="empty-card">No conversation items are available for this session yet.</div>
-    {:else if !visibleTimeline.length}
-      <div class="empty-card">No conversation items match the current filter.</div>
-    {:else}
-      {#if !selectedVisible}
-        <div class="notice-card">
-          <span>The focused item is hidden by the current filter.</span>
-          <button on:click={resetFilters}>Show everything</button>
-        </div>
+  <header class="conversation-header">
+    <h2>{session?.displayName ?? session?.title ?? "Select a session"}</h2>
+    <p class="session-meta">
+      {#if session}
+        {session.cwd}
+      {:else}
+        Choose a conversation from the workspace tree.
       {/if}
-      {#each visibleTimeline as item}
-        <TimelineItemCard
-          item={item}
-          selected={item.id === selectedId}
-          onSelect={() => onSelect(item)}
-        />
+    </p>
+  </header>
+
+  <div class="thread">
+    {#if loading}
+      <p class="state">Loading conversation...</p>
+    {:else if !transcriptItems.length}
+      <p class="state">No messages in this session yet.</p>
+    {:else}
+      {#each transcriptItems as item}
+        <article class:user={item.kind === "user"} class="entry">
+          {#if item.kind === "user"}
+            <div class="bubble">
+              <MessageBody body={item.body} />
+            </div>
+          {:else}
+            <div class="entry-meta">
+              {#if item.kind === "tool"}
+                <span>{item.toolName} · {item.status}</span>
+              {:else if item.kind === "command"}
+                <span>Slash command</span>
+              {:else if item.kind === "system"}
+                <span>System</span>
+              {/if}
+
+              {#if shouldCollapse(item)}
+                <button class="collapse-toggle" on:click={() => toggleCollapsed(item)}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path
+                      d={isCollapsed(item) ? "M6 4l4 4-4 4" : "M4 6l4 4 4-4"}
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="1.4"
+                    />
+                  </svg>
+                  <span>{isCollapsed(item) ? "Expand" : "Collapse"}</span>
+                </button>
+              {/if}
+            </div>
+
+            <div class="markdown">
+              {#if isCollapsed(item)}
+                <pre class="collapsed-preview">{previewText(item)}</pre>
+              {:else}
+                <MessageBody body={transcriptText(item)} />
+              {/if}
+            </div>
+          {/if}
+        </article>
       {/each}
     {/if}
   </div>
+
+  <form class="composer" on:submit|preventDefault={submitDraft}>
+    <textarea
+      bind:value={draft}
+      rows={3}
+      placeholder="Send a message to continue this session"
+      spellcheck={false}
+    ></textarea>
+    <button disabled={!draft.trim()} type="submit">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M2 8h9M8 3l5 5-5 5"
+          fill="none"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="1.4"
+        />
+      </svg>
+      <span>Send</span>
+    </button>
+  </form>
+
+  {#if pendingPermissions.length}
+    <div class="permission-bar">
+      {#each pendingPermissions as permission}
+        <div class="permission-copy">
+          <p class="permission-label">Permission required</p>
+          <p>{permission.permissionDialog.reason}</p>
+        </div>
+        <div class="permission-actions">
+          {#each permission.choices as choice}
+            <button type="button" on:click={() => onResolvePermission(permission.id, choice)}>
+              {#if permissionIcon(choice) === "allow_once"}
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M3.5 8.5 6.5 11.5 12.5 4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.4"
+                  />
+                </svg>
+              {:else if permissionIcon(choice) === "allow_session"}
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="5.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                  />
+                  <path
+                    d="M8 5v3.2l2 1.3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.4"
+                  />
+                </svg>
+              {:else}
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.4"
+                  />
+                </svg>
+              {/if}
+              <span>{choice}</span>
+            </button>
+          {/each}
+        </div>
+      {/each}
+    </div>
+  {/if}
 </section>
 
 <style>
   .conversation {
     min-width: 0;
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     background:
-      linear-gradient(180deg, rgba(252, 248, 242, 0.92), rgba(248, 242, 234, 0.78)),
+      linear-gradient(180deg, rgba(252, 248, 242, 0.94), rgba(247, 240, 231, 0.8)),
       var(--canvas);
   }
 
-  .section-header {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    align-items: end;
-    padding: 1.1rem 1.15rem 0.95rem;
-    border-bottom: 1px solid rgba(92, 73, 50, 0.12);
-    background: rgba(253, 249, 243, 0.94);
-  }
-
-  .eyebrow {
-    margin: 0 0 0.28rem;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.18em;
-    color: var(--text-soft);
-    font-weight: 600;
+  .conversation-header {
+    padding: 1.1rem 1.7rem 0.35rem;
   }
 
   h2 {
+    margin: 0 0 0.22rem;
+    font-family: var(--font-display);
+    font-size: 1.28rem;
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+  }
+
+  .session-meta {
     margin: 0;
-    font-size: 1.06rem;
-    line-height: 1.2;
-  }
-
-  .counters {
-    display: flex;
-    gap: 0.45rem;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .counters span {
-    padding: 0.34rem 0.6rem;
-    border-radius: 999px;
-    border: 1px solid rgba(102, 83, 62, 0.1);
-    background: rgba(255, 255, 255, 0.62);
     color: var(--text-soft);
-    font-size: 0.75rem;
+    font-size: 0.76rem;
+    letter-spacing: 0.01em;
   }
 
-  .items {
+  .thread {
     min-height: 0;
     overflow: auto;
-    padding: 1rem 1.05rem 1.1rem;
+    padding: 0.25rem 1.7rem 1.3rem;
     display: grid;
-    gap: 0.9rem;
+    gap: 1.3rem;
     align-content: start;
   }
 
-  .controls {
+  .entry {
+    display: grid;
+    gap: 0.45rem;
+    max-width: 44rem;
+  }
+
+  .entry.user {
+    justify-items: end;
+    justify-self: end;
+    width: 100%;
+  }
+
+  .entry-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--text-soft);
+    font-size: 0.74rem;
+    letter-spacing: 0.01em;
+  }
+
+  .bubble {
+    max-width: min(42rem, 80%);
+    padding: 1rem 1.15rem;
+    border-radius: 0;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow:
+      0 16px 30px rgba(16, 21, 28, 0.06),
+      0 1px 0 rgba(255, 255, 255, 0.55) inset;
+  }
+
+  .markdown {
+    display: grid;
+    gap: 0.8rem;
+    color: var(--text);
+    font-size: 1rem;
+  }
+
+  .collapsed-preview {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    line-height: 1.72;
+    color: var(--text-muted);
+  }
+
+  .composer {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.9rem;
-    padding: 0.9rem 1.05rem;
-    border-bottom: 1px solid rgba(92, 73, 50, 0.1);
-    background: rgba(247, 240, 231, 0.72);
-    align-items: center;
+    padding: 1.05rem 1.7rem 1.15rem;
+    background: rgba(246, 239, 229, 0.92);
+    box-shadow: 0 -1px 0 rgba(120, 99, 72, 0.08) inset;
   }
 
-  .filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.45rem;
-    align-items: center;
-  }
-
-  .filters button {
-    border: 1px solid rgba(102, 83, 62, 0.12);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.78);
-    color: var(--text-muted);
-    padding: 0.48rem 0.74rem;
-    cursor: pointer;
-    box-shadow: var(--shadow-edge);
-  }
-
-  .filters button.active {
-    border-color: rgba(36, 105, 81, 0.14);
-    background: rgba(220, 234, 224, 0.88);
-    color: var(--accent-strong);
-  }
-
-  .search {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.8rem;
-    align-items: center;
-    min-width: min(26rem, 100%);
-  }
-
-  .search input {
-    flex: 1;
-    border: 1px solid rgba(102, 83, 62, 0.12);
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.86);
+  textarea {
+    resize: vertical;
+    min-height: 4rem;
+    max-height: 12rem;
+    padding: 1rem 1.05rem;
+    border: 0;
+    border-radius: 0;
+    background: rgba(255, 255, 255, 0.82);
     color: var(--text);
-    padding: 0.78rem 0.94rem;
+    font: inherit;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.55) inset;
     outline: none;
   }
 
-  .search input:focus {
-    border-color: rgba(36, 105, 81, 0.26);
-    box-shadow: 0 0 0 3px rgba(36, 105, 81, 0.1);
+  textarea:focus {
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.55) inset,
+      0 0 0 3px rgba(36, 105, 81, 0.1);
   }
 
-  .search span {
-    white-space: nowrap;
-    color: var(--text-soft);
-    font-size: 0.8rem;
-  }
-
-  .search-actions {
-    display: flex;
+  .composer button,
+  .collapse-toggle,
+  .permission-actions button {
+    border: 0;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.76);
+    color: var(--text);
+    padding: 0.58rem 0.82rem;
+    cursor: pointer;
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.55) inset,
+      0 0 0 1px rgba(118, 97, 72, 0.14);
+    font: inherit;
+    display: inline-flex;
     align-items: center;
+    gap: 0.42rem;
+  }
+
+  .composer button {
+    align-self: end;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--text);
+    padding-inline: 1.05rem;
+  }
+
+  .composer button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .collapse-toggle {
+    padding: 0.24rem 0.5rem;
+    color: var(--text-soft);
+    font-size: 0.72rem;
+  }
+
+  .collapse-toggle svg,
+  .composer button svg,
+  .permission-actions button svg {
+    width: 0.8rem;
+    height: 0.8rem;
+    flex: 0 0 auto;
+  }
+
+  .permission-bar {
+    display: grid;
+    gap: 0.7rem;
+    padding: 1rem 1.7rem 1.2rem;
+    background: rgba(244, 230, 208, 0.82);
+    box-shadow: 0 -1px 0 rgba(141, 97, 48, 0.08) inset;
+  }
+
+  .permission-copy {
+    display: grid;
+    gap: 0.2rem;
+  }
+
+  .permission-label {
+    margin: 0;
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--warning);
+    font-weight: 600;
+  }
+
+  .permission-copy p:last-child {
+    margin: 0;
+    color: var(--text);
+  }
+
+  .permission-actions {
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.55rem;
   }
 
-  .clear,
-  .notice-card button {
-    border: 1px solid rgba(102, 83, 62, 0.12);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.78);
-    color: var(--text-muted);
-    padding: 0.4rem 0.66rem;
-    cursor: pointer;
+  .state {
+    margin: 0;
+    color: var(--text-soft);
   }
 
-  .empty-card {
-    padding: 1rem 1.05rem;
-    border-radius: 18px;
-    background: rgba(255, 251, 246, 0.72);
-    border: 1px dashed rgba(102, 83, 62, 0.18);
-    color: var(--text-muted);
-    min-height: min(18rem, 42vh);
-    display: grid;
-    align-content: center;
-  }
-
-  .notice-card {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.8rem;
-    padding: 0.9rem 0.98rem;
-    border-radius: 18px;
-    background: rgba(244, 230, 208, 0.74);
-    border: 1px solid rgba(141, 97, 48, 0.14);
-    color: var(--text-muted);
-  }
-
-  @media (max-width: 900px) {
-    .controls {
+  @media (max-width: 980px) {
+    .composer {
       grid-template-columns: 1fr;
     }
 
-    .search {
-      flex-direction: column;
-      align-items: stretch;
+    .bubble {
+      max-width: 100%;
     }
 
-    .search-actions,
-    .notice-card {
-      justify-content: space-between;
+    .conversation-header,
+    .thread,
+    .composer,
+    .permission-bar {
+      padding-left: 1.1rem;
+      padding-right: 1.1rem;
     }
   }
 </style>

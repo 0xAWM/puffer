@@ -37,6 +37,7 @@ pub(crate) struct DiffSummaryDto {
     pub(crate) status_text: String,
     pub(crate) unstaged_diffstat: String,
     pub(crate) staged_diffstat: String,
+    pub(crate) patch: String,
     pub(crate) patch_excerpt: String,
 }
 

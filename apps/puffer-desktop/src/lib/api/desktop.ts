@@ -53,6 +53,7 @@ type BackendDiff = {
   statusText: string;
   unstagedDiffstat: string;
   stagedDiffstat: string;
+  patch: string;
   patchExcerpt: string;
 };
 
@@ -213,7 +214,7 @@ function normalizeDiff(value: BackendDiff): DiffSnapshot {
     status: value.statusText,
     unstagedDiffstat: value.unstagedDiffstat,
     stagedDiffstat: value.stagedDiffstat,
-    patchExcerpt: value.patchExcerpt
+    patch: value.patch || value.patchExcerpt
   };
 }
 
@@ -314,7 +315,7 @@ function normalizeTimelineItem(value: BackendTimelineItem): TimelineItem {
         kind: "diff",
         title: diff.title,
         summary: diff.status,
-        body: diff.patchExcerpt,
+        body: diff.patch,
         meta: [diff.command],
         diff
       };

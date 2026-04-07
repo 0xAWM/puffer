@@ -430,6 +430,7 @@ fn capture_git_diff_snapshot(cwd: &PathBuf, command_name: &str, args: &str) -> G
         status,
         unstaged_diffstat,
         staged_diffstat,
+        patch,
         patch_excerpt,
     }
 }

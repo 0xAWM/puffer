@@ -1,215 +1,267 @@
 <script lang="ts">
   import type { DiffSnapshot } from "../types";
 
+  type PatchLine = {
+    kind: "meta" | "context" | "added" | "removed";
+    text: string;
+    oldNumber: number | null;
+    newNumber: number | null;
+  };
+
   export let diff: DiffSnapshot;
   export let compact = false;
-  const compactLineLimit = 18;
 
-  function classify(line: string) {
-    if (line.startsWith("+")) {
-      return "added";
-    }
-    if (line.startsWith("-")) {
-      return "removed";
-    }
-    if (line.startsWith("@@")) {
-      return "meta";
-    }
-    return "normal";
-  }
+  const compactLineLimit = 40;
 
   function diffStats(text: string) {
     const lines = text.split("\n");
     let additions = 0;
     let removals = 0;
-    let hunks = 0;
 
     for (const line of lines) {
-      if (line.startsWith("@@")) {
-        hunks += 1;
-      } else if (line.startsWith("+") && !line.startsWith("+++")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) {
         additions += 1;
       } else if (line.startsWith("-") && !line.startsWith("---")) {
         removals += 1;
       }
     }
 
-    return { additions, removals, hunks };
+    return { additions, removals };
   }
 
-  $: stats = diffStats(diff.patchExcerpt);
-  $: patchLines = diff.patchExcerpt.split("\n");
+  function parsePatch(text: string): PatchLine[] {
+    const result: PatchLine[] = [];
+    const lines = text.split("\n");
+    let oldNumber = 0;
+    let newNumber = 0;
+
+    for (const line of lines) {
+      if (line.startsWith("@@")) {
+        const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+        oldNumber = match ? Number(match[1]) : oldNumber;
+        newNumber = match ? Number(match[2]) : newNumber;
+        result.push({ kind: "meta", text: line, oldNumber: null, newNumber: null });
+        continue;
+      }
+
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        result.push({ kind: "added", text: line, oldNumber: null, newNumber });
+        newNumber += 1;
+        continue;
+      }
+
+      if (line.startsWith("-") && !line.startsWith("---")) {
+        result.push({ kind: "removed", text: line, oldNumber, newNumber: null });
+        oldNumber += 1;
+        continue;
+      }
+
+      result.push({ kind: "context", text: line || " ", oldNumber, newNumber });
+      oldNumber += 1;
+      newNumber += 1;
+    }
+
+    return result;
+  }
+
+  $: stats = diffStats(diff.patch);
+  $: patchLines = parsePatch(diff.patch);
   $: displayedLines = compact ? patchLines.slice(0, compactLineLimit) : patchLines;
   $: isTruncated = compact && patchLines.length > compactLineLimit;
 </script>
 
-<article class:compact class="diff-card">
-  <header>
+<article class:compact class="diff-view">
+  <header class="diff-header">
     <div>
-      <p class="eyebrow">Latest snapshot</p>
       <h3>{diff.title}</h3>
+      <p class="diff-status">{diff.status}</p>
     </div>
-    <div class="stats">
-      <span>{diff.command}</span>
-      <span>{diff.status}</span>
+    <div class="diff-summary">
+      <span class="summary-pill">
+        <strong>+{stats.additions}</strong>
+        <span>added</span>
+      </span>
+      <span class="summary-pill removed">
+        <strong>-{stats.removals}</strong>
+        <span>removed</span>
+      </span>
     </div>
   </header>
 
-  <div class="meta-grid">
-    <div>
-      <span>Unstaged</span>
-      <strong>{diff.unstagedDiffstat}</strong>
-    </div>
-    <div>
-      <span>Staged</span>
-      <strong>{diff.stagedDiffstat}</strong>
+  <div class="file-header">
+    <span class="file-path">{diff.command}</span>
+    <span class="file-meta">{diff.unstagedDiffstat || diff.stagedDiffstat || "session diff"}</span>
+  </div>
+
+  <div class="patch-shell">
+    <div class="patch-lines">
+      {#each displayedLines as line}
+        <div class={"patch-line " + line.kind}>
+          <span class="gutter">{line.oldNumber ?? ""}</span>
+          <span class="gutter">{line.newNumber ?? ""}</span>
+          <code>{line.text}</code>
+        </div>
+      {/each}
     </div>
   </div>
 
-  <div class="delta-row">
-    <span class="delta added">+{stats.additions} added</span>
-    <span class="delta removed">-{stats.removals} removed</span>
-    <span class="delta neutral">{stats.hunks} hunks</span>
-  </div>
-
-  <pre class="patch">{#each displayedLines as line}<span class={classify(line)}>{line || " "}</span>
-{/each}</pre>
   {#if isTruncated}
-    <p class="truncation-note">Showing first {compactLineLimit} of {patchLines.length} diff lines.</p>
+    <p class="truncation-note">Showing first {compactLineLimit} diff lines.</p>
   {/if}
 </article>
 
 <style>
-  .diff-card {
+  .diff-view {
     display: grid;
     gap: 1rem;
-    padding: 1rem;
-    border: 1px solid var(--border);
-    border-radius: 22px;
-    background: rgba(255, 252, 246, 0.84);
-    box-shadow: var(--shadow-soft);
+    padding: 1.35rem 1.45rem 1.5rem;
+    min-height: 100%;
+    align-content: start;
+    background:
+      linear-gradient(180deg, rgba(250, 246, 240, 0.98), rgba(242, 235, 225, 0.94)),
+      var(--canvas-muted);
   }
 
-  .diff-card.compact {
-    gap: 0.75rem;
-    padding: 0.85rem;
+  .diff-view.compact {
+    padding: 0.95rem 1rem;
+    min-height: auto;
   }
 
-  header {
+  .diff-header {
     display: flex;
     justify-content: space-between;
     gap: 1rem;
+    align-items: start;
   }
 
   h3 {
-    margin: 0.2rem 0 0;
-    font-size: 1rem;
-    line-height: 1.3;
-  }
-
-  .eyebrow {
     margin: 0;
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    line-height: 1.02;
+    letter-spacing: -0.03em;
   }
 
-  .stats {
+  .diff-status {
+    margin: 0.4rem 0 0;
+    color: var(--text-soft);
+    font-size: 0.88rem;
+  }
+
+  .diff-summary {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 0.3rem;
-    color: var(--text-muted);
-    font-size: 0.82rem;
-    text-align: right;
-  }
-
-  .meta-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.75rem;
-  }
-
-  .meta-grid div {
-    display: grid;
-    gap: 0.2rem;
-    padding: 0.75rem;
-    border-radius: 16px;
-    background: rgba(228, 221, 208, 0.42);
-  }
-
-  .meta-grid span {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-  }
-
-  .meta-grid strong {
-    font-weight: 500;
-    line-height: 1.45;
-  }
-
-  .delta-row {
-    display: flex;
+    gap: 0.55rem;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    justify-content: flex-end;
   }
 
-  .delta {
-    padding: 0.34rem 0.56rem;
-    border-radius: 999px;
-    font-size: 0.76rem;
-    border: 1px solid rgba(111, 101, 89, 0.14);
-    background: rgba(255, 255, 255, 0.72);
-    color: var(--text-muted);
+  .summary-pill {
+    display: grid;
+    gap: 0.04rem;
+    padding: 0.45rem 0.7rem;
+    border-radius: 0;
+    background: rgba(46, 160, 67, 0.1);
+    color: #1a7f37;
+    min-width: 5.2rem;
+    text-align: center;
   }
 
-  .delta.added {
-    color: var(--accent);
-    border-color: rgba(20, 99, 86, 0.14);
-    background: rgba(222, 238, 232, 0.56);
+  .summary-pill.removed {
+    background: rgba(207, 34, 46, 0.1);
+    color: #cf222e;
   }
 
-  .delta.removed {
-    color: var(--danger);
-    border-color: rgba(157, 58, 43, 0.14);
-    background: rgba(247, 225, 220, 0.56);
+  .summary-pill strong {
+    font-size: 0.96rem;
+    line-height: 1;
   }
 
-  .patch {
-    margin: 0;
-    padding: 1rem;
-    border-radius: 16px;
-    background: #f7f3eb;
-    border: 1px solid rgba(109, 95, 79, 0.14);
-    font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-    font-size: 0.82rem;
+  .summary-pill span {
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .file-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.78rem 0.95rem;
+    border-radius: 0;
+    background: #f6f8fa;
+    box-shadow: 0 0 0 1px #d0d7de inset;
+    color: #57606a;
+    font-size: 0.84rem;
+  }
+
+  .file-path {
+    font-weight: 600;
+    color: #24292f;
+  }
+
+  .patch-shell {
+    overflow: hidden;
+    border-radius: 0;
+    box-shadow: 0 0 0 1px #d0d7de inset;
+    background: #ffffff;
+  }
+
+  .patch-lines {
+    display: grid;
+  }
+
+  .patch-line {
+    display: grid;
+    grid-template-columns: 3rem 3rem minmax(0, 1fr);
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
     line-height: 1.6;
-    white-space: pre-wrap;
-    overflow: auto;
   }
 
-  .patch span {
+  .patch-line + .patch-line {
+    box-shadow: 0 -1px 0 rgba(208, 215, 222, 0.7) inset;
+  }
+
+  .patch-line.meta {
+    background: #f6f8fa;
+    color: #57606a;
+  }
+
+  .patch-line.added {
+    background: #dafbe1;
+    color: #1a7f37;
+  }
+
+  .patch-line.removed {
+    background: #ffebe9;
+    color: #cf222e;
+  }
+
+  .patch-line.context {
+    background: #ffffff;
+    color: #24292f;
+  }
+
+  .gutter {
+    display: grid;
+    place-items: center end;
+    padding: 0.18rem 0.55rem 0.18rem 0.2rem;
+    color: #8c959f;
+    user-select: none;
+    box-shadow: 1px 0 0 rgba(208, 215, 222, 0.7) inset;
+  }
+
+  code {
     display: block;
-  }
-
-  .patch .added {
-    color: var(--accent);
-  }
-
-  .patch .removed {
-    color: var(--danger);
-  }
-
-  .patch .meta {
-    color: #8a5b2a;
+    padding: 0.18rem 0.9rem;
+    overflow-x: auto;
+    white-space: pre;
   }
 
   .truncation-note {
-    margin: -0.35rem 0 0;
-    color: var(--text-muted);
-    font-size: 0.78rem;
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.76rem;
   }
 </style>

@@ -191,6 +191,11 @@ fn diff_summary(index: usize, snapshot: &GitDiffSnapshot) -> DiffSummaryDto {
         status_text: snapshot.status.clone(),
         unstaged_diffstat: snapshot.unstaged_diffstat.clone(),
         staged_diffstat: snapshot.staged_diffstat.clone(),
+        patch: if snapshot.patch.is_empty() {
+            snapshot.patch_excerpt.clone()
+        } else {
+            snapshot.patch.clone()
+        },
         patch_excerpt: snapshot.patch_excerpt.clone(),
     }
 }

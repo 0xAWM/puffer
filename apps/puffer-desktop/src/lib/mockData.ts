@@ -113,18 +113,40 @@ const latestDiff: DiffSnapshot = {
   status: "6 files changed, 214 insertions(+), 0 deletions(-)",
   unstagedDiffstat: "apps/puffer-desktop/src/*",
   stagedDiffstat: "",
-  patchExcerpt: [
+  patch: [
     "@@ -0,0 +1,62 @@",
     "+<script lang=\"ts\">",
     "+  let inspectorTab = \"latest-diff\";",
     "+  let inspectorOpen = true;",
+    "+  let composerValue = \"\";",
     "+</script>",
     "+",
     "+<main class=\"shell\">",
     "+  <SessionSidebar />",
     "+  <ConversationPane />",
     "+  <InspectorPane />",
-    "+</main>"
+    "+</main>",
+    "+",
+    "+<style>",
+    "+  .shell {",
+    "+    display: grid;",
+    "+    grid-template-columns: 280px minmax(0, 1fr) 420px;",
+    "+    min-height: 100vh;",
+    "+  }",
+    "+",
+    "+  .composer {",
+    "+    position: sticky;",
+    "+    bottom: 0;",
+    "+    padding: 1rem 1.2rem;",
+    "+    background: rgba(255, 255, 255, 0.94);",
+    "+    box-shadow: 0 -1px 0 rgba(30, 35, 40, 0.08);",
+    "+  }",
+    "+",
+    "+  .diff-pane {",
+    "+    overflow: auto;",
+    "+    border-left: 1px solid rgba(30, 35, 40, 0.08);",
+    "+  }",
+    "+</style>"
   ].join("\n")
 };
 
@@ -136,7 +158,7 @@ const olderDiff: DiffSnapshot = {
   status: "3 files changed, 121 insertions(+), 0 deletions(-)",
   unstagedDiffstat: "",
   stagedDiffstat: "apps/puffer-desktop/src-tauri/src/session_data.rs",
-  patchExcerpt: [
+  patch: [
     "@@ -0,0 +1,80 @@",
     "+#[tauri::command]",
     "+pub fn list_grouped_sessions() -> Result<Vec<FolderGroupDto>, String> {",
@@ -184,8 +206,32 @@ const timeline: TimelineItem[] = [
     toolName: "Bash",
     status: "ok",
     input: "{\"command\":\"gh --version\"}",
-    output: "gh version 2.89.0",
+    output: [
+      "gh version 2.89.0",
+      "https://github.com/cli/cli/releases/tag/v2.89.0",
+      "authenticated: yes",
+      "active account: fuzz-land"
+    ].join("\n"),
     inputJson: { command: "gh --version" }
+  },
+  {
+    id: "tool-2",
+    kind: "tool",
+    title: "Tool call: Read",
+    summary: "Loaded the transcript and session metadata from the local store.",
+    body: "Read the most recent session transcript and normalized the event stream for desktop rendering.",
+    meta: ["Read", "ok"],
+    toolName: "Read",
+    status: "ok",
+    input: "{\"path\":\"~/.puffer/sessions/session-b.json\"}",
+    output: [
+      "{",
+      "  \"events\": 31,",
+      "  \"latest_diff\": \"Desktop UI shell and inspector layout\",",
+      "  \"permissions\": 1",
+      "}"
+    ].join("\n"),
+    inputJson: { path: "~/.puffer/sessions/session-b.json" }
   },
   {
     id: "perm-1",
@@ -216,7 +262,7 @@ const timeline: TimelineItem[] = [
     kind: "diff",
     title: latestDiff.title,
     summary: latestDiff.status,
-    body: latestDiff.patchExcerpt,
+    body: latestDiff.patch,
     meta: [latestDiff.command],
     diff: latestDiff
   },
@@ -233,6 +279,23 @@ const timeline: TimelineItem[] = [
       "- one-click PR and merge actions"
     ].join("\n"),
     meta: ["Turn 2"]
+  },
+  {
+    id: "msg-4",
+    kind: "assistant",
+    title: "Assistant response",
+    summary: "The next pass should remove dashboard framing and make the transcript primary.",
+    body: [
+      "The next pass should remove dashboard framing and make the transcript primary.",
+      "",
+      "What matters most in this view is:",
+      "- the current conversation",
+      "- what tools actually did",
+      "- the diff at the moment the work changed",
+      "",
+      "That means fewer status boxes and stronger transcript readability."
+    ].join("\n"),
+    meta: ["Turn 3"]
   }
 ];
 

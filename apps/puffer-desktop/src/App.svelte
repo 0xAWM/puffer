@@ -1,10 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import HeaderBar from "./lib/components/HeaderBar.svelte";
   import SessionSidebar from "./lib/components/SessionSidebar.svelte";
   import ConversationPane from "./lib/components/ConversationPane.svelte";
-  import InspectorPane from "./lib/components/InspectorPane.svelte";
-  import OverviewStrip from "./lib/components/OverviewStrip.svelte";
+  import DiffView from "./lib/components/DiffView.svelte";
   import SettingsView from "./lib/components/SettingsView.svelte";
   import LoginView from "./lib/components/LoginView.svelte";
   import {
@@ -25,7 +23,7 @@
     AppView,
     DesktopPreferences,
     FolderGroup,
-    InspectorTab,
+    PermissionTimelineItem,
     RemoteConnection,
     RemoteOperation,
     SessionDetail,
@@ -38,11 +36,7 @@
   let selectedSession: SessionListItem | null = null;
   let sessionDetail: SessionDetail | null = null;
   let settingsSnapshot: SettingsSnapshot | null = null;
-  let selectedItem: TimelineItem | null = null;
   let view: AppView = "workspace";
-  let inspectorOpen = true;
-  let inspectorTab: InspectorTab = "latest-diff";
-  let inspectorWidth = 50;
   let statusMessage = "Desktop workspace ready.";
   let groupsLoading = true;
   let sessionLoading = false;
@@ -54,8 +48,8 @@
   let remoteBusy = false;
   let preferredSessionId: string | null = null;
   let remotePassword = "";
-  let contentElement: HTMLDivElement | null = null;
-  let isResizingInspector = false;
+  let submittedMessages: TimelineItem[] = [];
+  let dismissedPermissionIds: string[] = [];
 
   const defaultDesktopPreferences: DesktopPreferences = {
     rememberSession: true,
@@ -77,11 +71,15 @@
     prefs: "puffer-desktop:preferences"
   } as const;
 
-  $: timeline = sessionDetail?.timeline ?? [];
+  $: baseTimeline = sessionDetail?.timeline ?? [];
+  $: timeline = [...baseTimeline, ...submittedMessages];
+  $: conversationTimeline = timeline.filter((item) => item.kind !== "permission" && item.kind !== "diff");
+  $: pendingPermissions = timeline.filter(
+    (item) => item.kind === "permission" && !dismissedPermissionIds.includes(item.id)
+  ) as PermissionTimelineItem[];
   $: pendingPermissionCount = timeline.filter((item) => item.kind === "permission").length;
   $: toolCount = timeline.filter((item) => item.kind === "tool").length;
   $: diffCount = timeline.filter((item) => item.kind === "diff").length;
-  $: selectedLabel = selectedItem ? `${selectedItem.kind}: ${selectedItem.title}` : "No focused item";
   $: remoteConnection = {
     enabled:
       desktopPreferences.remoteEnabled && desktopPreferences.remoteTarget.trim().length > 0,
@@ -89,29 +87,6 @@
     cwd: desktopPreferences.remoteCwd.trim(),
     password: remotePassword
   } satisfies RemoteConnection;
-
-  function syncInspectorForItem(item: TimelineItem | null) {
-    selectedItem = item;
-    if (!item) {
-      return;
-    }
-    inspectorTab =
-      item.kind === "diff"
-        ? "latest-diff"
-        : item.kind === "tool" || item.kind === "permission"
-          ? "tool-details"
-          : "history";
-  }
-
-  function chooseDefaultItem(items: TimelineItem[]): TimelineItem | null {
-    return (
-      items.find((item) => item.kind === "permission") ??
-      items.find((item) => item.kind === "tool") ??
-      items.find((item) => item.kind === "diff") ??
-      items[0] ??
-      null
-    );
-  }
 
   function buildPrDefaults(session: SessionListItem) {
     return {
@@ -123,48 +98,6 @@
         .filter(Boolean)
         .join("\n")
     };
-  }
-
-  function clampInspectorWidth(value: number): number {
-    return Math.min(68, Math.max(32, value));
-  }
-
-  function updateInspectorWidth(clientX: number) {
-    if (!contentElement) {
-      return;
-    }
-    const rect = contentElement.getBoundingClientRect();
-    if (rect.width <= 0) {
-      return;
-    }
-    inspectorWidth = clampInspectorWidth(((rect.right - clientX) / rect.width) * 100);
-  }
-
-  function beginInspectorResize(event: PointerEvent) {
-    if (!inspectorOpen) {
-      return;
-    }
-    isResizingInspector = true;
-    updateInspectorWidth(event.clientX);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    event.preventDefault();
-  }
-
-  function nudgeInspector(event: KeyboardEvent) {
-    if (!inspectorOpen) {
-      return;
-    }
-    if (event.key === "ArrowLeft") {
-      inspectorWidth = clampInspectorWidth(inspectorWidth + 2);
-      event.preventDefault();
-    } else if (event.key === "ArrowRight") {
-      inspectorWidth = clampInspectorWidth(inspectorWidth - 2);
-      event.preventDefault();
-    } else if (event.key === "Enter") {
-      inspectorWidth = 50;
-      event.preventDefault();
-    }
   }
 
   function restoreDesktopState() {
@@ -185,28 +118,6 @@
     preferredSessionId = desktopPreferences.rememberSession
       ? window.localStorage.getItem(storageKeys.sessionId)
       : null;
-    const storedInspectorOpen = window.localStorage.getItem(storageKeys.inspectorOpen);
-    const storedInspectorTab = window.localStorage.getItem(storageKeys.inspectorTab);
-    if (desktopPreferences.rememberInspectorLayout) {
-      if (storedInspectorOpen === "false") {
-        inspectorOpen = false;
-      }
-      if (
-        storedInspectorTab === "latest-diff" ||
-        storedInspectorTab === "history" ||
-        storedInspectorTab === "tool-details"
-      ) {
-        inspectorTab = storedInspectorTab;
-      }
-      const storedInspectorWidth = Number(window.localStorage.getItem(storageKeys.inspectorWidth));
-      if (Number.isFinite(storedInspectorWidth) && storedInspectorWidth > 0) {
-        inspectorWidth = clampInspectorWidth(storedInspectorWidth);
-      }
-    } else {
-      inspectorOpen = desktopPreferences.launchInspectorOpen;
-      inspectorTab = desktopPreferences.defaultInspectorTab;
-      inspectorWidth = clampInspectorWidth(desktopPreferences.defaultInspectorWidth);
-    }
   }
 
   function persistDesktopState() {
@@ -218,15 +129,6 @@
       window.localStorage.setItem(storageKeys.sessionId, selectedSession.id);
     } else if (!desktopPreferences.rememberSession) {
       window.localStorage.removeItem(storageKeys.sessionId);
-    }
-    if (desktopPreferences.rememberInspectorLayout) {
-      window.localStorage.setItem(storageKeys.inspectorOpen, String(inspectorOpen));
-      window.localStorage.setItem(storageKeys.inspectorTab, inspectorTab);
-      window.localStorage.setItem(storageKeys.inspectorWidth, String(inspectorWidth));
-    } else {
-      window.localStorage.removeItem(storageKeys.inspectorOpen);
-      window.localStorage.removeItem(storageKeys.inspectorTab);
-      window.localStorage.removeItem(storageKeys.inspectorWidth);
     }
   }
 
@@ -294,7 +196,6 @@
         groups = [];
         selectedSession = null;
         sessionDetail = null;
-        selectedItem = null;
         view = "login";
       }
     } catch (error) {
@@ -358,33 +259,13 @@
     value: DesktopPreferences[K]
   ) {
     desktopPreferences = { ...desktopPreferences, [key]: value };
-    if (key === "launchInspectorOpen" && !desktopPreferences.rememberInspectorLayout) {
-      inspectorOpen = desktopPreferences.launchInspectorOpen;
-    }
-    if (key === "defaultInspectorTab" && !desktopPreferences.rememberInspectorLayout) {
-      inspectorTab = desktopPreferences.defaultInspectorTab;
-    }
-    if (key === "defaultInspectorWidth" && !desktopPreferences.rememberInspectorLayout) {
-      inspectorWidth = clampInspectorWidth(desktopPreferences.defaultInspectorWidth);
-    }
-    if (key === "rememberInspectorLayout" && !value) {
-      inspectorOpen = desktopPreferences.launchInspectorOpen;
-      inspectorTab = desktopPreferences.defaultInspectorTab;
-      inspectorWidth = clampInspectorWidth(desktopPreferences.defaultInspectorWidth);
-    }
   }
 
   function resetDesktopPreferences() {
     desktopPreferences = { ...defaultDesktopPreferences };
     preferredSessionId = null;
-    inspectorOpen = desktopPreferences.launchInspectorOpen;
-    inspectorTab = desktopPreferences.defaultInspectorTab;
-    inspectorWidth = desktopPreferences.defaultInspectorWidth;
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(storageKeys.sessionId);
-      window.localStorage.removeItem(storageKeys.inspectorOpen);
-      window.localStorage.removeItem(storageKeys.inspectorTab);
-      window.localStorage.removeItem(storageKeys.inspectorWidth);
       window.localStorage.setItem(storageKeys.prefs, JSON.stringify(desktopPreferences));
     }
     statusMessage = "Desktop preferences reset.";
@@ -396,7 +277,8 @@
       const detail = await loadSessionDetail(session.id, remoteConnection);
       selectedSession = detail.session;
       sessionDetail = detail;
-      syncInspectorForItem(chooseDefaultItem(detail.timeline));
+      submittedMessages = [];
+      dismissedPermissionIds = [];
       statusMessage = `Loaded ${detail.timeline.length} conversation items.`;
     } catch (error) {
       statusMessage = String(error);
@@ -422,7 +304,8 @@
       if (!nextSession) {
         selectedSession = null;
         sessionDetail = null;
-        selectedItem = null;
+        submittedMessages = [];
+        dismissedPermissionIds = [];
         statusMessage = "No sessions found in this workspace yet.";
         return;
       }
@@ -485,36 +368,35 @@
     }
   }
 
+  function submitMessage(message: string) {
+    const now = Date.now();
+    submittedMessages = [
+      ...submittedMessages,
+      {
+        id: `local-user-${now}`,
+        kind: "user",
+        title: "User",
+        summary: message,
+        body: message,
+        meta: []
+      }
+    ];
+    statusMessage = "Added a local draft message to the transcript.";
+  }
+
+  function resolvePermission(permissionId: string, choice: string) {
+    dismissedPermissionIds = [...dismissedPermissionIds, permissionId];
+    statusMessage = `${choice} selected for the pending permission request.`;
+  }
+
   onMount(() => {
     restoreDesktopState();
-    const handlePointerMove = (event: PointerEvent) => {
-      if (!isResizingInspector) {
-        return;
-      }
-      updateInspectorWidth(event.clientX);
-    };
-    const handlePointerUp = () => {
-      if (!isResizingInspector) {
-        return;
-      }
-      isResizingInspector = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
     void (async () => {
       await refreshSettings();
       if (view !== "login") {
         await refreshGroups(preferredSessionId ?? undefined);
       }
     })();
-    return () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
   });
 
   $: persistDesktopState();
@@ -531,82 +413,27 @@
   {/if}
 
   <main class="workspace">
-    <HeaderBar
-      session={selectedSession}
-      repoStatus={sessionDetail?.repoStatus ?? null}
-      {view}
-      remoteLabel={remoteConnection.enabled ? remoteConnection.target : null}
-      busy={actionBusy || sessionLoading}
-      statusMessage={statusMessage}
-      onRefresh={() => (view === "workspace" ? void refreshSelectedRepo() : void refreshSettings())}
-      onCreatePr={() => void runRepoAction("create")}
-      onMergePr={() => void runRepoAction("merge")}
-      onOpenSettings={() => void openSettingsView()}
-      onBackToWorkspace={() => (view = "workspace")}
-    />
-
     {#if view === "workspace"}
-      <OverviewStrip
-        session={selectedSession}
-        repoStatus={sessionDetail?.repoStatus ?? null}
-        latestDiff={sessionDetail?.latestDiff ?? null}
-        selectedItem={selectedItem}
-        permissionCount={pendingPermissionCount}
-        toolCount={toolCount}
-        diffCount={diffCount}
-        onOpenDiff={() => {
-          inspectorOpen = true;
-          inspectorTab = "latest-diff";
-        }}
-        onOpenHistory={() => {
-          inspectorOpen = true;
-          inspectorTab = "history";
-        }}
-        onOpenDetails={() => {
-          inspectorOpen = true;
-          inspectorTab = "tool-details";
-        }}
-      />
-
-      <div
-        bind:this={contentElement}
-        class:loading={sessionLoading}
-        class:resizing={isResizingInspector}
-        class:single-pane={!inspectorOpen}
-        class="content"
-        style={`--inspector-width: ${inspectorWidth}%`}
-      >
+      <div class:loading={sessionLoading} class="content workspace-split">
         <ConversationPane
-          timeline={timeline}
-          selectedId={selectedItem?.id ?? null}
+          session={selectedSession}
+          timeline={conversationTimeline}
           loading={sessionLoading}
-          onSelect={(item) => syncInspectorForItem(item)}
+          {pendingPermissions}
+          onSubmitMessage={submitMessage}
+          onResolvePermission={resolvePermission}
         />
 
-        {#if inspectorOpen}
-          <button
-            type="button"
-            class="pane-divider"
-            aria-label="Resize inspector"
-            on:pointerdown={beginInspectorResize}
-            on:keydown={nudgeInspector}
-          >
-            <span></span>
-          </button>
-        {/if}
-
-        <InspectorPane
-          open={inspectorOpen}
-          tab={inspectorTab}
-          latestDiff={sessionDetail?.latestDiff ?? null}
-          diffHistory={sessionDetail?.diffHistory ?? []}
-          timeline={timeline}
-          selectedId={selectedItem?.id ?? null}
-          selectedItem={selectedItem}
-          onTabChange={(tab) => (inspectorTab = tab)}
-          onToggle={() => (inspectorOpen = !inspectorOpen)}
-          onSelectItem={(item) => syncInspectorForItem(item)}
-        />
+        <section class="diff-pane">
+          {#if sessionDetail?.latestDiff}
+            <DiffView diff={sessionDetail.latestDiff} />
+          {:else}
+            <div class="loading-card">
+              <strong>No diff captured</strong>
+              <span>The latest session diff will appear here in GitHub-style format.</span>
+            </div>
+          {/if}
+        </section>
 
         {#if sessionLoading}
           <div class="loading-overlay">
@@ -647,21 +474,5 @@
         onRefresh={() => void refreshSettings()}
       />
     {/if}
-
-    <footer class="statusbar">
-      <div class="status-primary">
-        <span>{groupsLoading ? "Loading sessions..." : statusMessage}</span>
-        {#if selectedSession}
-          <span class="status-meta">{selectedSession.cwd}</span>
-        {/if}
-      </div>
-      <div class="status-secondary">
-        <span class="status-pill">{inspectorOpen ? inspectorTab : "inspector collapsed"}</span>
-        <span class="status-pill">{selectedLabel}</span>
-        <span class="status-pill">{toolCount} tools</span>
-        <span class="status-pill">{pendingPermissionCount} approvals</span>
-        <span class="status-pill">{diffCount} diffs</span>
-      </div>
-    </footer>
   </main>
 </div>

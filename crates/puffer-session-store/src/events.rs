@@ -22,6 +22,8 @@ pub struct GitDiffSnapshot {
     pub status: String,
     pub unstaged_diffstat: String,
     pub staged_diffstat: String,
+    #[serde(default)]
+    pub patch: String,
     pub patch_excerpt: String,
 }
 

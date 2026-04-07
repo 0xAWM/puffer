@@ -89,7 +89,7 @@ export type DiffSnapshot = {
   status: string;
   unstagedDiffstat: string;
   stagedDiffstat: string;
-  patchExcerpt: string;
+  patch: string;
 };
 
 type TimelineBase = {

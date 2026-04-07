@@ -186,6 +186,11 @@ fn snapshot_to_dto(snapshot: &GitDiffSnapshot) -> DiffSnapshotDto {
         status: snapshot.status.clone(),
         unstaged_diffstat: snapshot.unstaged_diffstat.clone(),
         staged_diffstat: snapshot.staged_diffstat.clone(),
+        patch: if snapshot.patch.is_empty() {
+            snapshot.patch_excerpt.clone()
+        } else {
+            snapshot.patch.clone()
+        },
         patch_excerpt: snapshot.patch_excerpt.clone(),
     }
 }
@@ -352,6 +357,7 @@ mod tests {
                         status: "M file".to_string(),
                         unstaged_diffstat: String::new(),
                         staged_diffstat: String::new(),
+                        patch: "old".to_string(),
                         patch_excerpt: "old".to_string(),
                     },
                 },
@@ -361,6 +367,7 @@ mod tests {
                         status: "M file".to_string(),
                         unstaged_diffstat: String::new(),
                         staged_diffstat: String::new(),
+                        patch: "new".to_string(),
                         patch_excerpt: "new".to_string(),
                     },
                 },

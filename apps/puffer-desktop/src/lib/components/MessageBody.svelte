@@ -47,7 +47,7 @@
       }
       blocks.push({
         kind: "paragraph",
-        text: paragraphLines.join(" ").trim()
+        text: paragraphLines.join("\n").trim()
       });
       paragraphLines = [];
     }
@@ -182,7 +182,8 @@
 <style>
   .message-body {
     display: grid;
-    gap: 0.85rem;
+    gap: 0.95rem;
+    font-size: 1rem;
   }
 
   p,
@@ -194,32 +195,36 @@
   p,
   li,
   blockquote {
-    line-height: 1.72;
+    line-height: 1.78;
+  }
+
+  p {
+    white-space: pre-wrap;
   }
 
   .list {
     margin: 0;
-    padding-left: 1.2rem;
+    padding-left: 1.35rem;
     display: grid;
-    gap: 0.35rem;
+    gap: 0.42rem;
   }
 
   blockquote {
-    padding: 0.8rem 0.95rem;
+    padding: 0.9rem 1rem;
     border-left: 3px solid rgba(20, 99, 86, 0.24);
     background: rgba(222, 238, 232, 0.38);
-    border-radius: 14px;
+    border-radius: 0;
     color: var(--text-muted);
     white-space: pre-wrap;
   }
 
   code {
-    font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-    font-size: 0.92em;
+    font-family: var(--font-mono);
+    font-size: 0.9em;
     padding: 0.08rem 0.32rem;
-    border-radius: 8px;
+    border-radius: 0;
     background: rgba(247, 243, 235, 0.92);
-    border: 1px solid rgba(111, 101, 89, 0.12);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.55) inset;
   }
 
   .code-block {
@@ -230,19 +235,19 @@
   .language {
     color: var(--text-muted);
     font-size: 0.74rem;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
   }
 
   pre {
-    padding: 0.85rem 0.95rem;
-    border-radius: 16px;
+    padding: 0.95rem 1rem;
+    border-radius: 0;
     background: rgba(247, 243, 235, 0.82);
-    border: 1px solid rgba(111, 101, 89, 0.14);
-    font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-    font-size: 0.82rem;
-    line-height: 1.58;
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
+    line-height: 1.68;
     white-space: pre-wrap;
     overflow: auto;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.55) inset;
   }
 </style>
