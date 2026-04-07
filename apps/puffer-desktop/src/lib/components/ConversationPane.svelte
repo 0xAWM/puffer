@@ -161,7 +161,7 @@
       <p class="state">No messages in this session yet.</p>
     {:else}
       {#each transcriptItems as item}
-        <article class:user={item.kind === "user"} class="entry">
+        <article class:user={item.kind === "user"} class={"entry " + item.kind}>
           {#if item.kind === "user"}
             <div class="bubble">
               <MessageBody body={item.body} />
@@ -213,7 +213,9 @@
             </div>
           {:else}
             <div class="entry-meta">
-              {#if item.kind === "system"}
+              {#if item.kind === "assistant"}
+                <span>Assistant</span>
+              {:else if item.kind === "system"}
                 <span>System</span>
               {/if}
 
@@ -374,12 +376,29 @@
     display: grid;
     gap: 0.45rem;
     max-width: 50rem;
+    padding-left: 0.95rem;
+    border-left: 2px solid transparent;
   }
 
   .entry.user {
     justify-items: end;
     justify-self: end;
     width: 100%;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .entry.assistant {
+    border-left-color: rgba(36, 105, 81, 0.2);
+  }
+
+  .entry.tool {
+    border-left-color: rgba(118, 97, 72, 0.2);
+  }
+
+  .entry.command,
+  .entry.system {
+    border-left-color: rgba(118, 97, 72, 0.12);
   }
 
   .entry-meta {
@@ -388,8 +407,9 @@
     align-items: center;
     gap: 0.75rem;
     color: var(--text-soft);
-    font-size: 0.74rem;
-    letter-spacing: 0.01em;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .bubble {
@@ -558,8 +578,10 @@
   }
 
   .permission-bar {
-    display: grid;
-    gap: 0.7rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
     padding: 1rem 1.7rem 1.2rem;
     background: rgba(244, 230, 208, 0.82);
     box-shadow: 0 -1px 0 rgba(141, 97, 48, 0.08) inset;
@@ -568,6 +590,7 @@
   .permission-copy {
     display: grid;
     gap: 0.2rem;
+    max-width: 42rem;
   }
 
   .permission-label {
@@ -588,6 +611,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.55rem;
+    justify-content: flex-end;
   }
 
   .state {
@@ -602,6 +626,10 @@
 
     .composer {
       grid-template-columns: 1fr;
+    }
+
+    .permission-bar {
+      display: grid;
     }
 
     .bubble {
