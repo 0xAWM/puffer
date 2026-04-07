@@ -5,7 +5,7 @@ use crate::permissions::{
 };
 use crate::AppState;
 use anyhow::Result;
-use puffer_config::{ensure_workspace_dirs, save_user_config, ConfigPaths};
+use puffer_config::{ensure_workspace_dirs, load_config, save_user_config, ConfigPaths};
 use puffer_resources::{hook_by_id, LoadedResources};
 use puffer_session_store::SessionStore;
 use puffer_tools::ToolRegistry;
@@ -48,6 +48,50 @@ pub(crate) fn describe_permissions(
         );
     }
     emit_system(state, session_store, text)
+}
+
+/// Renders the current workspace config summary without mutating transcript state.
+pub(crate) fn render_config_summary(state: &AppState) -> Result<String> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let config_path = paths.workspace_config_file();
+    Ok(format!(
+        "Config summary:\npath={}\napp_name={}\ndefault_provider={}\ndefault_model={}\nopenai_base_url={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}\nstatus_line_command={}\nstatus_line_padding={}",
+        config_path.display(),
+        state.config.app_name,
+        state.config.default_provider.as_deref().unwrap_or("<unset>"),
+        state.config.default_model.as_deref().unwrap_or("<unset>"),
+        state.config.openai_base_url.as_deref().unwrap_or("<unset>"),
+        state.config.theme,
+        state.config.ui.no_alt_screen,
+        state.config.ui.tmux_golden_mode,
+        state
+            .config
+            .ui
+            .status_line
+            .as_ref()
+            .map(|status_line| status_line.command.as_str())
+            .unwrap_or("<unset>"),
+        state
+            .config
+            .ui
+            .status_line
+            .as_ref()
+            .map(|status_line| status_line.padding.to_string())
+            .unwrap_or_else(|| "<unset>".to_string()),
+    ))
+}
+
+/// Renders the current permissions file summary without mutating transcript state.
+pub(crate) fn render_permissions_panel(
+    state: &AppState,
+    resources: &LoadedResources,
+) -> Result<String> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let permissions_path = paths.workspace_config_dir.join("permissions.toml");
+    let settings = load_or_initialize_permissions(&permissions_path, resources)?;
+    Ok(render_permissions_summary(&permissions_path, &settings))
 }
 
 /// Shows or materializes the workspace permissions file.
@@ -168,21 +212,7 @@ pub(crate) fn handle_config_command(
     let trimmed = args.trim();
 
     if trimmed.is_empty() || trimmed == "show" {
-        return emit_system(
-            state,
-            session_store,
-            format!(
-                "Config summary:\npath={}\napp_name={}\ndefault_provider={}\ndefault_model={}\nopenai_base_url={}\ntheme={}\nno_alt_screen={}\ntmux_golden_mode={}",
-                config_path.display(),
-                state.config.app_name,
-                state.config.default_provider.as_deref().unwrap_or("<unset>"),
-                state.config.default_model.as_deref().unwrap_or("<unset>"),
-                state.config.openai_base_url.as_deref().unwrap_or("<unset>"),
-                state.config.theme,
-                state.config.ui.no_alt_screen,
-                state.config.ui.tmux_golden_mode,
-            ),
-        );
+        return emit_system(state, session_store, render_config_summary(state)?);
     }
 
     if trimmed == "path" {
@@ -208,7 +238,7 @@ pub(crate) fn handle_config_command(
         return emit_system(
             state,
             session_store,
-            "Usage: /config [show|path|set <theme|default_provider|default_model|openai_base_url|no_alt_screen|tmux_golden_mode> <value>]".to_string(),
+            "Usage: /config [show|path|set <theme|default_provider|default_model|openai_base_url|no_alt_screen|tmux_golden_mode|status_line_command|status_line_padding> <value>]".to_string(),
         );
     };
     let Some((key, value)) = rest.split_once(' ') else {
@@ -231,6 +261,34 @@ pub(crate) fn handle_config_command(
         }
         "no_alt_screen" => state.config.ui.no_alt_screen = parse_bool(value)?,
         "tmux_golden_mode" => state.config.ui.tmux_golden_mode = parse_bool(value)?,
+        "status_line_command" => {
+            state.config.ui.status_line = match value {
+                "none" | "default" | "<unset>" => None,
+                _ => Some(puffer_config::StatusLineConfig {
+                    command: value.to_string(),
+                    padding: state
+                        .config
+                        .ui
+                        .status_line
+                        .as_ref()
+                        .map(|status_line| status_line.padding)
+                        .unwrap_or(0),
+                }),
+            }
+        }
+        "status_line_padding" => {
+            let padding = value.parse::<u16>()?;
+            let status_line =
+                state
+                    .config
+                    .ui
+                    .status_line
+                    .get_or_insert(puffer_config::StatusLineConfig {
+                        command: String::new(),
+                        padding: 0,
+                    });
+            status_line.padding = padding;
+        }
         _ => {
             return emit_system(
                 state,
@@ -251,6 +309,13 @@ pub(crate) fn handle_config_command(
 pub(crate) fn persist_user_model_selection(state: &AppState) -> Result<()> {
     let paths = ConfigPaths::discover(&state.cwd);
     save_user_config(&paths, &state.config)
+}
+
+/// Reloads the layered Puffer config from disk into the active session state.
+pub(crate) fn reload_config_from_disk(state: &mut AppState) -> Result<()> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    state.config = load_config(&paths)?;
+    Ok(())
 }
 
 /// Shows or materializes the workspace keybindings file.
@@ -354,26 +419,42 @@ pub(crate) fn handle_hooks_command(
     emit_system(
         state,
         session_store,
-        format!(
-            "Hooks directory: {}\nloaded_hooks={}\n{}{}",
-            hooks_dir.display(),
-            resources.hooks.len(),
-            if resources.hooks.is_empty() {
-                format!("Example hook file: {}\n", hooks_path.display())
-            } else {
-                let mut summary = String::from("Loaded hooks:\n");
-                for hook in &resources.hooks {
-                    let _ = writeln!(
-                        &mut summary,
-                        "- {} [{}] -> {}",
-                        hook.value.id, hook.value.event, hook.value.command
-                    );
-                }
-                summary
-            },
-            fs::read_to_string(&hooks_path)?
-        ),
+        render_hooks_summary(state, resources)?,
     )
+}
+
+/// Renders the hooks summary shown by `/hooks` with no arguments.
+pub(crate) fn render_hooks_summary(
+    state: &AppState,
+    resources: &LoadedResources,
+) -> Result<String> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let hooks_dir = paths.workspace_config_dir.join("resources/hooks");
+    fs::create_dir_all(&hooks_dir)?;
+    let hooks_path = hooks_dir.join("tool_end.yaml");
+    if !hooks_path.exists() {
+        fs::write(&hooks_path, default_hooks_contents())?;
+    }
+    Ok(format!(
+        "Hooks directory: {}\nloaded_hooks={}\n{}{}",
+        hooks_dir.display(),
+        resources.hooks.len(),
+        if resources.hooks.is_empty() {
+            format!("Example hook file: {}\n", hooks_path.display())
+        } else {
+            let mut summary = String::from("Loaded hooks:\n");
+            for hook in &resources.hooks {
+                let _ = writeln!(
+                    &mut summary,
+                    "- {} [{}] -> {}",
+                    hook.value.id, hook.value.event, hook.value.command
+                );
+            }
+            summary
+        },
+        fs::read_to_string(&hooks_path)?
+    ))
 }
 
 fn set_permission_level(settings: &mut PermissionsSettings, tool: &str, level: &str) {

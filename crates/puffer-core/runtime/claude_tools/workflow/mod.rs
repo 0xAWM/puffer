@@ -28,3 +28,18 @@ pub mod todo_write;
 mod store;
 mod support;
 mod task_runtime;
+
+use anyhow::Result;
+use std::path::Path;
+
+/// Registers one background Bash task in the shared workflow task store.
+pub(crate) fn register_background_shell_task(
+    cwd: &Path,
+    task_id: &str,
+    subject: &str,
+    command: &str,
+    process_id: u32,
+    output_file: &Path,
+) -> Result<()> {
+    support::register_background_shell_task(cwd, task_id, subject, command, process_id, output_file)
+}

@@ -1,15 +1,16 @@
 use crate::command_helpers::{
-    append_tool_invocations, copy_last_message, describe_context, describe_git_diff, emit_system,
-    execute_skill_command, handle_agents_command, handle_config_command, handle_hooks_command,
-    handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_permissions_command, handle_plugin_command, handle_remote_control_command,
-    handle_remote_env_command, handle_sandbox_command, handle_session_command, list_skills,
-    persist_user_model_selection, record_command_checkpoint, render_login_guidance,
-    rewind_transcript, run_doctor, terminal_setup_advice,
+    append_tool_invocations, describe_context, describe_git_diff, emit_system,
+    execute_skill_command, handle_agents_command, handle_config_command, handle_copy_command,
+    handle_export_command, handle_hooks_command, handle_ide_command, handle_keybindings_command,
+    handle_mcp_command, handle_memory_command, handle_permissions_command, handle_plugin_command,
+    handle_remote_control_command, handle_remote_env_command, handle_sandbox_command,
+    handle_session_command, handle_tasks_command, list_skills, persist_user_model_selection,
+    record_command_checkpoint, reload_config_from_disk, render_login_guidance, rewind_transcript,
+    run_doctor, terminal_setup_advice,
 };
 use crate::{
-    render_buddy_summary, render_cost_summary, render_task_summary, render_usage_summary, AppState,
-    MessageRole,
+    render_buddy_summary, render_cost_summary, render_status_summary, render_usage_summary,
+    AppState, MessageRole,
 };
 use anyhow::Result;
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
@@ -348,7 +349,7 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             &[],
             "Set up the status line UI",
             None,
-            CommandKind::Ui,
+            CommandKind::Prompt,
         ),
         cmd(
             "tasks",
@@ -567,6 +568,9 @@ fn execute_prompt_command(
                     text: turn.assistant_text,
                 },
             )?;
+            if command.name == "statusline" {
+                let _ = reload_config_from_disk(state);
+            }
         }
         Err(error) => {
             let message = format!("Prompt command /{} failed: {error}", command.name);
@@ -593,7 +597,10 @@ fn execute_local_command(
             for command in commands {
                 let _ = writeln!(&mut text, "/{:<16} {}", command.name, command.description);
             }
-            let _ = writeln!(&mut text, "\nRun /skills to list loaded /skill:<name> entries.");
+            let _ = writeln!(
+                &mut text,
+                "\nRun /skills to list loaded /skill:<name> entries."
+            );
             let _ = writeln!(
                 &mut text,
                 "\nResource counts: prompts={} tools={} skills={} plugins={} mcp_servers={} ides={}",
@@ -609,21 +616,7 @@ fn execute_local_command(
         "status" => emit_system(
             state,
             session_store,
-            format!(
-                "provider={:?} model={:?} theme={} color={} effort={} fast={} plan={} sandbox={} vim={} messages={} slug={} parent={:?}",
-                state.current_provider,
-                state.current_model,
-                state.config.theme,
-                state.prompt_color,
-                state.effort_level,
-                state.fast_mode,
-                state.plan_mode,
-                state.sandbox_mode,
-                state.vim_mode,
-                state.transcript.len(),
-                state.session.slug.as_deref().unwrap_or("<none>"),
-                state.session.parent_session_id
-            ),
+            render_status_summary(state, resources, providers, auth_store),
         ),
         "usage" => emit_system(
             state,
@@ -637,11 +630,19 @@ fn execute_local_command(
             emit_system(state, session_store, "Transcript cleared.".to_string())
         }
         "add-dir" => {
-            let dir = if args.is_empty() { state.cwd.clone() } else { PathBuf::from(args) };
+            let dir = if args.is_empty() {
+                state.cwd.clone()
+            } else {
+                PathBuf::from(args)
+            };
             if !state.working_dirs.iter().any(|existing| existing == &dir) {
                 state.working_dirs.push(dir.clone());
             }
-            emit_system(state, session_store, format!("Added working directory {}.", dir.display()))
+            emit_system(
+                state,
+                session_store,
+                format!("Added working directory {}.", dir.display()),
+            )
         }
         "exit" => {
             state.should_exit = true;
@@ -649,18 +650,34 @@ fn execute_local_command(
         }
         "color" => {
             if args.is_empty() {
-                emit_system(state, session_store, format!("Current prompt color is {}.", state.prompt_color))
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Current prompt color is {}.", state.prompt_color),
+                )
             } else {
                 state.prompt_color = args.to_string();
-                emit_system(state, session_store, format!("Prompt color set to {}.", state.prompt_color))
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Prompt color set to {}.", state.prompt_color),
+                )
             }
         }
         "effort" => {
             if args.is_empty() {
-                emit_system(state, session_store, format!("Current effort level is {}.", state.effort_level))
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Current effort level is {}.", state.effort_level),
+                )
             } else {
                 state.effort_level = args.to_string();
-                emit_system(state, session_store, format!("Effort level set to {}.", state.effort_level))
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Effort level set to {}.", state.effort_level),
+                )
             }
         }
         "fast" => {
@@ -672,15 +689,26 @@ fn execute_local_command(
             emit_system(
                 state,
                 session_store,
-                format!("Fast mode is now {}.", if state.fast_mode { "on" } else { "off" }),
+                format!(
+                    "Fast mode is now {}.",
+                    if state.fast_mode { "on" } else { "off" }
+                ),
             )
         }
         "theme" => {
             if args.is_empty() {
-                emit_system(state, session_store, format!("Current theme is {}.", state.config.theme))
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Current theme is {}.", state.config.theme),
+                )
             } else {
                 state.config.theme = args.to_string();
-                emit_system(state, session_store, format!("Theme set to {}.", state.config.theme))
+                emit_system(
+                    state,
+                    session_store,
+                    format!("Theme set to {}.", state.config.theme),
+                )
             }
         }
         "vim" => {
@@ -688,7 +716,10 @@ fn execute_local_command(
             emit_system(
                 state,
                 session_store,
-                format!("Vim mode is now {}.", if state.vim_mode { "on" } else { "off" }),
+                format!(
+                    "Vim mode is now {}.",
+                    if state.vim_mode { "on" } else { "off" }
+                ),
             )
         }
         "model" => {
@@ -720,11 +751,7 @@ fn execute_local_command(
                 if let Some(error) = discovery_error {
                     message.push_str(&format!("\nmodel refresh failed: {error}"));
                 }
-                emit_system(
-                    state,
-                    session_store,
-                    message,
-                )
+                emit_system(state, session_store, message)
             } else if args == "refresh" {
                 let Some(provider_id) = state.current_provider.as_deref() else {
                     return emit_system(
@@ -768,21 +795,22 @@ fn execute_local_command(
                         "No provider is selected. Use onboarding or /login first.".to_string(),
                     );
                 };
-                let requested_model_id = if let Some((requested_provider, model_id)) = args.split_once('/') {
-                    if requested_provider != provider_id {
-                        return emit_system(
-                            state,
-                            session_store,
-                            format!(
-                                "/model only selects models for the active provider ({}).",
-                                provider_id
-                            ),
-                        );
-                    }
-                    model_id
-                } else {
-                    args
-                };
+                let requested_model_id =
+                    if let Some((requested_provider, model_id)) = args.split_once('/') {
+                        if requested_provider != provider_id {
+                            return emit_system(
+                                state,
+                                session_store,
+                                format!(
+                                    "/model only selects models for the active provider ({}).",
+                                    provider_id
+                                ),
+                            );
+                        }
+                        model_id
+                    } else {
+                        args
+                    };
                 let _ = providers.discover_and_merge_provider(provider_id, auth_store);
                 let Some(provider) = providers.provider(provider_id) else {
                     return emit_system(
@@ -820,26 +848,7 @@ fn execute_local_command(
         }
         "permissions" => handle_permissions_command(state, resources, session_store, args),
         "hooks" => handle_hooks_command(state, resources, session_store, args),
-        "statusline" => {
-            if args.is_empty() {
-                state.statusline_enabled = !state.statusline_enabled;
-            } else {
-                state.statusline_enabled = matches!(args, "on" | "true" | "1");
-            }
-            emit_system(
-                state,
-                session_store,
-                format!(
-                    "Status line is now {}.",
-                    if state.statusline_enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    }
-                ),
-            )
-        }
-        "tasks" => emit_system(state, session_store, render_task_summary(state)),
+        "tasks" => handle_tasks_command(state, session_store, args),
         "config" => handle_config_command(state, session_store, args),
         "context" => describe_context(state, resources, session_store),
         "agents" => handle_agents_command(state, session_store, args),
@@ -849,18 +858,17 @@ fn execute_local_command(
         "remote-env" => handle_remote_env_command(state, session_store, args),
         "sandbox" => handle_sandbox_command(state, session_store, args),
         "rename" => {
-            let name = if args.is_empty() { format!("session-{}", &state.session.id.to_string()[..8]) } else { args.to_string() };
+            let name = if args.is_empty() {
+                format!("session-{}", &state.session.id.to_string()[..8])
+            } else {
+                args.to_string()
+            };
             session_store.rename_session(state.session.id, name.clone())?;
             state.session.display_name = Some(name.clone());
             emit_system(state, session_store, format!("Session renamed to {name}."))
         }
-        "export" => {
-            let target = if args.is_empty() { state.cwd.join(format!("{}.json", state.session.id)) } else { PathBuf::from(args) };
-            let payload = serde_json::to_string_pretty(&state.transcript)?;
-            std::fs::write(&target, payload)?;
-            emit_system(state, session_store, format!("Exported transcript to {}.", target.display()))
-        }
-        "copy" => copy_last_message(state, session_store),
+        "export" => handle_export_command(state, session_store, args),
+        "copy" => handle_copy_command(state, session_store, args),
         "diff" => describe_git_diff(state, session_store),
         "doctor" => run_doctor(state, resources, providers, auth_store, session_store),
         "buddy" => emit_system(state, session_store, render_buddy_summary(state, resources)),
@@ -868,7 +876,11 @@ fn execute_local_command(
         "plugin" => handle_plugin_command(state, resources, session_store, args),
         "reload-plugins" => {
             state.reload_resources_requested = true;
-            emit_system(state, session_store, "Reloading plugin changes from disk for this session...".to_string())
+            emit_system(
+                state,
+                session_store,
+                "Reloading plugin changes from disk for this session...".to_string(),
+            )
         }
         "mcp" => handle_mcp_command(state, resources, session_store, args),
         "ide" => handle_ide_command(state, resources, session_store, args),

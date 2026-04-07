@@ -2,8 +2,10 @@ use anyhow::Result;
 use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
     dispatch_command, execute_user_turn, execute_user_turn_streaming_with_permissions,
-    reload_runtime_resources, run_resource_hooks, supported_commands, AppState, MessageRole,
-    PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
+    reload_runtime_resources, render_config_summary, render_hooks_summary, render_mcp_actions,
+    render_permissions_panel, render_plugin_actions, run_resource_hooks, supported_commands,
+    AppState, MessageRole, PermissionPromptAction, PermissionPromptRequest, ToolInvocation,
+    TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -15,22 +17,100 @@ use std::process::Command;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
-use crate::onboarding;
 use crate::approval_overlay::ApprovalOverlay;
+use crate::onboarding;
+use crate::session_overlay::SessionOverlay;
 use crate::state::{
     PendingPermissionRequest, PendingSubmit, PendingSubmitEvent, PendingSubmitResult,
 };
+use crate::status_overlay::StatusOverlay;
+use crate::text_overlay::TextOverlay;
 use crate::{OverlayState, TuiState};
 
 /// Opens a TUI overlay for slash commands that map to picker UI.
 pub(crate) fn try_open_overlay(
     state: &AppState,
+    resources: &LoadedResources,
     providers: &mut ProviderRegistry,
     auth_store: &AuthStore,
     session_store: &SessionStore,
     tui: &mut TuiState,
     submitted: &str,
 ) -> Result<bool> {
+    let without_slash = submitted.trim_start_matches('/');
+    let (name, args) = without_slash
+        .split_once(' ')
+        .map(|(name, args)| (name, args.trim()))
+        .unwrap_or((without_slash, ""));
+    if name == "status" && args.is_empty() {
+        set_overlay_state(
+            tui,
+            Some(StatusOverlay::open(state, resources, providers, auth_store)),
+        );
+        return Ok(true);
+    }
+    let text_overlay = match (name, args.is_empty()) {
+        ("config", true) => Some(TextOverlay::open("Config", render_config_summary(state)?)),
+        ("permissions", true) | ("allowed-tools", true) => Some(TextOverlay::open(
+            "Permissions",
+            render_permissions_panel(state, resources)?,
+        )),
+        ("hooks", true) => Some(TextOverlay::open(
+            "Hooks",
+            render_hooks_summary(state, resources)?,
+        )),
+        _ => None,
+    };
+    if let Some(overlay) = text_overlay {
+        set_overlay_state(tui, Some(overlay));
+        return Ok(true);
+    }
+    if matches!(
+        (name, args.is_empty()),
+        ("plugin", true) | ("plugins", true) | ("marketplace", true)
+    ) {
+        let entries = render_plugin_actions(state, resources)?
+            .into_iter()
+            .map(|entry| crate::ModelPickerEntry {
+                selector: entry.command,
+                description: entry.description,
+            })
+            .collect::<Vec<_>>();
+        if open_command_picker(tui, "Plugins", entries) {
+            return Ok(true);
+        }
+    }
+    if matches!((name, args.is_empty()), ("mcp", true)) {
+        let entries = render_mcp_actions(state, resources)?
+            .into_iter()
+            .map(|entry| crate::ModelPickerEntry {
+                selector: entry.command,
+                description: entry.description,
+            })
+            .collect::<Vec<_>>();
+        if open_command_picker(tui, "MCP", entries) {
+            return Ok(true);
+        }
+    }
+    if matches!(
+        (name, args.is_empty()),
+        ("session", true) | ("remote", true)
+    ) {
+        set_overlay_state(tui, Some(SessionOverlay::open(state)));
+        return Ok(true);
+    }
+    if name == "rewind" && args.is_empty() {
+        let entries = rewind_picker_entries(state);
+        if open_command_picker(tui, "Rewind", entries) {
+            return Ok(true);
+        }
+    }
+    if name == "memory" && args.is_empty() {
+        let entries = memory_picker_entries(state);
+        if open_command_picker(tui, "Memory", entries) {
+            return Ok(true);
+        }
+    }
     if let Some(overlay) =
         onboarding::overlay_from_command(state, providers, auth_store, session_store, submitted)?
     {
@@ -38,6 +118,25 @@ pub(crate) fn try_open_overlay(
         return Ok(true);
     }
     Ok(false)
+}
+
+fn open_command_picker(
+    tui: &mut TuiState,
+    title: &str,
+    entries: Vec<crate::ModelPickerEntry>,
+) -> bool {
+    if entries.is_empty() {
+        return false;
+    }
+    set_overlay_state(
+        tui,
+        Some(OverlayState::CommandPicker {
+            title: title.to_string(),
+            entries,
+            selection: 0,
+        }),
+    );
+    true
 }
 
 /// Replaces the active overlay and clears the overlay query buffer.
@@ -127,10 +226,8 @@ pub(crate) fn handle_prompt_submit(
             },
             move |request: PermissionPromptRequest| {
                 let (response_tx, response_rx) = mpsc::channel();
-                let _ = permission_sender.send(PendingSubmitEvent::PermissionRequest(
-                    request,
-                    response_tx,
-                ));
+                let _ = permission_sender
+                    .send(PendingSubmitEvent::PermissionRequest(request, response_tx));
                 response_rx.recv().unwrap_or(PermissionPromptAction::Deny)
             },
         )
@@ -308,15 +405,29 @@ pub(crate) fn handle_submit(
 
     if submitted.starts_with('/') {
         let previous_auth_store = auth_store.clone();
-        dispatch_command(
-            state,
-            &supported_commands(),
-            resources,
-            providers,
-            auth_store,
-            session_store,
-            &submitted,
-        )?;
+        if command_requires_terminal_restore(&submitted) {
+            run_with_terminal_restored(no_alt_screen, || {
+                dispatch_command(
+                    state,
+                    &supported_commands(),
+                    resources,
+                    providers,
+                    auth_store,
+                    session_store,
+                    &submitted,
+                )
+            })?;
+        } else {
+            dispatch_command(
+                state,
+                &supported_commands(),
+                resources,
+                providers,
+                auth_store,
+                session_store,
+                &submitted,
+            )?;
+        }
         if *auth_store != previous_auth_store {
             auth_store.save(auth_path)?;
         }
@@ -788,198 +899,96 @@ pub(crate) fn allow_prompt_before_onboarding(prompt: &str) -> bool {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
-    use puffer_session_store::SessionMetadata;
-    use tempfile::tempdir;
-
-    fn sample_state(session: SessionMetadata, cwd: &Path) -> AppState {
-        AppState::new(PufferConfig::default(), cwd.to_path_buf(), session)
-    }
-
-    #[test]
-    fn provider_prompt_detection_matches_interactive_surface() {
-        assert!(is_provider_prompt_input("henlo"));
-        assert!(is_provider_prompt_input(" review this diff "));
-        assert!(!is_provider_prompt_input(""));
-        assert!(!is_provider_prompt_input("/help"));
-        assert!(!is_provider_prompt_input("!pwd"));
-        assert!(!is_provider_prompt_input("login openai"));
-        assert!(!is_provider_prompt_input("/logout"));
-    }
-
-    #[test]
-    fn handle_prompt_submit_starts_async_provider_turn_and_polls_result() {
-        let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
-        ensure_workspace_dirs(&paths).unwrap();
-        let session_store = SessionStore::from_paths(&paths).unwrap();
-        let session = session_store
-            .create_session(tempdir.path().to_path_buf())
-            .unwrap();
-        let mut state = sample_state(session, tempdir.path());
-        let mut resources = LoadedResources::default();
-        let mut providers = ProviderRegistry::new();
-        let auth_path = paths.user_config_dir.join("auth.json");
-        let mut auth_store = AuthStore::default();
-        let mut tui = TuiState::default();
-
-        handle_prompt_submit(
-            &mut state,
-            &mut resources,
-            &mut providers,
-            &mut auth_store,
-            &auth_path,
-            &session_store,
-            &mut tui,
-            "henlo".to_string(),
-            true,
-        )
-        .unwrap();
-
-        assert!(tui.has_pending_submit());
-        assert!(matches!(state.transcript.first(), Some(message) if message.text == "henlo"));
-
-        let mut completed = false;
-        for _ in 0..20 {
-            if poll_pending_submit(
-                &mut state,
-                &mut auth_store,
-                &auth_path,
-                &session_store,
-                &mut tui,
-            )
-            .unwrap()
-            {
-                completed = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        assert!(completed);
-        assert!(!tui.has_pending_submit());
-        assert!(state.transcript.iter().any(|message| {
-            message.role == MessageRole::System
-                && message.text.starts_with("Provider request failed:")
-        }));
-    }
-
-    #[test]
-    fn handle_prompt_submit_queues_prompt_while_turn_is_running() {
-        let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
-        ensure_workspace_dirs(&paths).unwrap();
-        let session_store = SessionStore::from_paths(&paths).unwrap();
-        let session = session_store
-            .create_session(tempdir.path().to_path_buf())
-            .unwrap();
-        let mut state = sample_state(session, tempdir.path());
-        let mut resources = LoadedResources::default();
-        let mut providers = ProviderRegistry::new();
-        let auth_path = paths.user_config_dir.join("auth.json");
-        let mut auth_store = AuthStore::default();
-        let mut tui = TuiState::default();
-
-        handle_prompt_submit(
-            &mut state,
-            &mut resources,
-            &mut providers,
-            &mut auth_store,
-            &auth_path,
-            &session_store,
-            &mut tui,
-            "first".to_string(),
-            true,
-        )
-        .unwrap();
-        handle_prompt_submit(
-            &mut state,
-            &mut resources,
-            &mut providers,
-            &mut auth_store,
-            &auth_path,
-            &session_store,
-            &mut tui,
-            "second".to_string(),
-            true,
-        )
-        .unwrap();
-
-        assert!(tui.has_pending_submit());
-        assert_eq!(tui.queued_prompts.len(), 1);
-        assert_eq!(
-            tui.queued_prompts.front().map(String::as_str),
-            Some("second")
-        );
-        assert!(matches!(state.transcript.first(), Some(message) if message.text == "first"));
-    }
-
-    #[test]
-    fn cancel_pending_submit_records_interrupt_and_starts_next_queued_prompt() {
-        let tempdir = tempdir().unwrap();
-        let paths = ConfigPaths::discover(tempdir.path());
-        ensure_workspace_dirs(&paths).unwrap();
-        let session_store = SessionStore::from_paths(&paths).unwrap();
-        let session = session_store
-            .create_session(tempdir.path().to_path_buf())
-            .unwrap();
-        let mut state = sample_state(session, tempdir.path());
-        let mut resources = LoadedResources::default();
-        let mut providers = ProviderRegistry::new();
-        let auth_path = paths.user_config_dir.join("auth.json");
-        let mut auth_store = AuthStore::default();
-        let mut tui = TuiState::default();
-
-        handle_prompt_submit(
-            &mut state,
-            &mut resources,
-            &mut providers,
-            &mut auth_store,
-            &auth_path,
-            &session_store,
-            &mut tui,
-            "first".to_string(),
-            true,
-        )
-        .unwrap();
-        handle_prompt_submit(
-            &mut state,
-            &mut resources,
-            &mut providers,
-            &mut auth_store,
-            &auth_path,
-            &session_store,
-            &mut tui,
-            "second".to_string(),
-            true,
-        )
-        .unwrap();
-
-        assert!(cancel_pending_submit(&mut state, &session_store, &mut tui).unwrap());
-        assert!(!tui.has_pending_submit());
-        assert!(state.transcript.iter().any(|message| {
-            message.role == MessageRole::System && message.text == "Interrupted by user."
-        }));
-
-        assert!(submit_next_queued_prompt(
-            &mut state,
-            &mut resources,
-            &mut providers,
-            &mut auth_store,
-            &auth_path,
-            &session_store,
-            &mut tui,
-            true,
-        )
-        .unwrap());
-        assert!(tui.has_pending_submit());
-        assert!(tui.queued_prompts.is_empty());
-        assert!(state
+fn rewind_picker_entries(state: &AppState) -> Vec<crate::ModelPickerEntry> {
+    let mut entries = vec![crate::ModelPickerEntry {
+        selector: "/rewind".to_string(),
+        description: "Remove the latest rendered transcript item".to_string(),
+    }];
+    entries.extend(
+        state
             .transcript
             .iter()
-            .any(|message| { message.role == MessageRole::User && message.text == "second" }));
+            .filter(|message| message.role == MessageRole::User)
+            .enumerate()
+            .map(|(index, message)| crate::ModelPickerEntry {
+                selector: format!("/rewind {}", index + 1),
+                description: truncate_rewind_label(&message.text),
+            }),
+    );
+    entries
+}
+
+fn truncate_rewind_label(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("<empty>");
+    if line.chars().count() <= 60 {
+        line.to_string()
+    } else {
+        format!("{}...", line.chars().take(57).collect::<String>())
     }
 }
+
+fn memory_picker_entries(state: &AppState) -> Vec<crate::ModelPickerEntry> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    [
+        ("project", state.cwd.join("CLAUDE.md")),
+        ("workspace", paths.workspace_config_dir.join("memory.md")),
+        ("user", paths.user_config_dir.join("memory.md")),
+    ]
+    .into_iter()
+    .map(|(scope, path)| crate::ModelPickerEntry {
+        selector: format!("/memory open {scope}"),
+        description: format!(
+            "{} ({})",
+            path.display(),
+            if path.exists() { "present" } else { "new" }
+        ),
+    })
+    .collect()
+}
+
+fn command_requires_terminal_restore(submitted: &str) -> bool {
+    let trimmed = submitted.trim();
+    matches!(
+        trimmed,
+        "/plan open"
+            | "/memory open"
+            | "/memory open project"
+            | "/memory open workspace"
+            | "/memory open user"
+            | "/memory edit"
+            | "/memory edit project"
+            | "/memory edit workspace"
+            | "/memory edit user"
+    ) || trimmed == "/plugin open"
+        || trimmed == "/plugin edit"
+        || trimmed.starts_with("/plugin open ")
+        || trimmed.starts_with("/plugin edit ")
+        || trimmed == "/mcp open"
+        || trimmed == "/mcp edit"
+        || trimmed.starts_with("/mcp open ")
+        || trimmed.starts_with("/mcp edit ")
+}
+
+fn run_with_terminal_restored<T>(
+    no_alt_screen: bool,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if !no_alt_screen {
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+    }
+    let result = action();
+    if !no_alt_screen {
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    }
+    result
+}
+
+#[cfg(test)]
+#[path = "flow_tests.rs"]
+mod flow_tests;

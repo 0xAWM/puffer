@@ -8,10 +8,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tempfile::tempdir;
 
+mod artifacts;
 mod login_auth;
+mod mcp;
 mod model_scope;
+mod plugin;
 mod remote_history;
 mod sandbox;
+mod status;
+mod tasks;
 mod usage_buddy;
 
 #[test]
@@ -41,6 +46,7 @@ fn app_state_defaults_expose_command_state() {
             ui: UiConfig {
                 no_alt_screen: false,
                 tmux_golden_mode: false,
+                status_line: None,
             },
         },
         PathBuf::from("."),
@@ -413,38 +419,6 @@ fn hooks_command_creates_workspace_file() {
 }
 
 #[test]
-fn plugin_command_creates_workspace_plugin_file() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/plugin",
-    )
-    .unwrap();
-
-    let plugin_path = paths
-        .workspace_config_dir
-        .join("resources/plugins/workspace.yaml");
-    assert!(plugin_path.exists());
-}
-
-#[test]
 fn doctor_reports_discovery_and_diagnostics() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
@@ -510,38 +484,6 @@ fn doctor_reports_discovery_and_diagnostics() {
             && text.contains("resource_diagnostics=1")
             && text.contains("recorded_tasks=1")
     ));
-}
-
-#[test]
-fn mcp_command_creates_workspace_mcp_file() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/mcp",
-    )
-    .unwrap();
-
-    let mcp_path = paths
-        .workspace_config_dir
-        .join("resources/mcp_servers/workspace.yaml");
-    assert!(mcp_path.exists());
 }
 
 #[test]
@@ -682,42 +624,6 @@ fn prompt_commands_append_user_message_and_surface_runtime_failures() {
             role: MessageRole::System,
             text,
         }) if text.contains("Prompt command /review failed")
-    ));
-}
-
-#[test]
-fn tasks_command_reports_recorded_runtime_tasks() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-    let session = session_store
-        .create_session(tempdir.path().to_path_buf())
-        .unwrap();
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().to_path_buf(),
-        session,
-    );
-    state.record_task("bash", "printf hi", true);
-
-    dispatch_command(
-        &mut state,
-        &supported_commands(),
-        &LoadedResources::default(),
-        &mut ProviderRegistry::new(),
-        &mut AuthStore::default(),
-        &session_store,
-        "/tasks",
-    )
-    .unwrap();
-
-    assert!(matches!(
-        state.transcript.last(),
-        Some(RenderedMessage {
-            role: MessageRole::System,
-            text,
-        }) if text.contains("bash") && text.contains("completed")
     ));
 }
 

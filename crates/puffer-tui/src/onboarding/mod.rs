@@ -154,6 +154,9 @@ pub(crate) fn back_overlay(
         | OverlayState::ThemePicker { .. }
         | OverlayState::CommandPicker { .. }
         | OverlayState::PermissionPrompt { .. }
+        | OverlayState::Session(..)
+        | OverlayState::Status(..)
+        | OverlayState::Text(..)
         | OverlayState::OnboardingTheme { .. }
         | OverlayState::OnboardingProvider { .. }
         | OverlayState::OnboardingAuth { .. }

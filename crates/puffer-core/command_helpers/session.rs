@@ -8,6 +8,19 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
+/// Describes the remote-session content shown by the interactive `/session` overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOverlayView {
+    /// The effective remote-session URL when remote mode is configured.
+    pub remote_url: Option<String>,
+    /// The current remote-session status label when one is available.
+    pub remote_status: Option<String>,
+    /// The rendered terminal QR block for the remote URL when `qrencode` is available.
+    pub qr: Option<String>,
+    /// Supplemental guidance or warnings shown below the primary session details.
+    pub notice: Option<String>,
+}
+
 /// Records tool invocations into task history and the visible transcript.
 pub(crate) fn append_tool_invocations(
     state: &mut AppState,
@@ -157,6 +170,11 @@ pub(crate) fn handle_memory_command(
     )
 }
 
+/// Renders the no-argument `/memory` panel summary.
+pub(crate) fn render_memory_panel(state: &AppState) -> String {
+    render_memory_summary(state)
+}
+
 /// Handles `/session` remote summary plus session metadata subcommands.
 pub(crate) fn handle_session_command(
     state: &mut AppState,
@@ -250,6 +268,42 @@ pub(crate) fn handle_session_command(
             session_store,
             "Usage: /session [show|url|qr|list|rename <name>|note <text|clear>|slug <value|clear>|tag add <tag>|tag remove <tag>]".to_string(),
         ),
+    }
+}
+
+/// Renders the no-argument `/session` panel summary.
+pub(crate) fn render_session_panel(state: &AppState) -> String {
+    render_session_summary(state)
+}
+
+/// Builds the dedicated remote-session view used by the interactive `/session` overlay.
+pub(crate) fn render_session_overlay(state: &AppState) -> SessionOverlayView {
+    let Some(remote_url) = effective_remote_session_url(state) else {
+        return SessionOverlayView {
+            remote_url: None,
+            remote_status: None,
+            qr: None,
+            notice: Some("Not in remote mode. Set /remote-control first.".to_string()),
+        };
+    };
+
+    let qr = render_utf8_qr(&remote_url);
+    SessionOverlayView {
+        remote_status: Some(
+            state
+                .remote_session_status
+                .as_deref()
+                .unwrap_or("connected")
+                .to_string(),
+        ),
+        remote_url: Some(remote_url),
+        notice: qr.as_ref().map(|_| None).unwrap_or_else(|| {
+            Some(
+                "QR rendering unavailable (install `qrencode` to enable terminal QR output)."
+                    .to_string(),
+            )
+        }),
+        qr,
     }
 }
 
@@ -620,6 +674,63 @@ impl MemoryScope {
             Self::Workspace => "workspace",
             Self::User => "user",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puffer_config::PufferConfig;
+    use puffer_session_store::SessionMetadata;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn sample_state() -> AppState {
+        AppState::new(
+            PufferConfig::default(),
+            PathBuf::from("/workspace/puffer"),
+            SessionMetadata {
+                id: Uuid::nil(),
+                display_name: Some("demo".to_string()),
+                cwd: PathBuf::from("/workspace/puffer"),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                parent_session_id: None,
+                slug: None,
+                tags: Vec::new(),
+                note: None,
+            },
+        )
+    }
+
+    #[test]
+    fn render_session_overlay_reports_missing_remote_session() {
+        let state = sample_state();
+        let view = render_session_overlay(&state);
+
+        assert_eq!(view.remote_url, None);
+        assert_eq!(view.remote_status, None);
+        assert_eq!(
+            view.notice.as_deref(),
+            Some("Not in remote mode. Set /remote-control first.")
+        );
+    }
+
+    #[test]
+    fn render_session_overlay_uses_computed_remote_url() {
+        let mut state = sample_state();
+        state.remote_name = Some("buildbox".to_string());
+        state.remote_environment = Some("linux".to_string());
+        state.remote_session_id = Some(state.session.id.to_string());
+        state.remote_session_status = Some("configured".to_string());
+
+        let view = render_session_overlay(&state);
+
+        assert_eq!(view.remote_status.as_deref(), Some("configured"));
+        assert_eq!(
+            view.remote_url.as_deref(),
+            Some("puffer://remote/00000000-0000-0000-0000-000000000000?name=buildbox&env=linux")
+        );
     }
 }
 

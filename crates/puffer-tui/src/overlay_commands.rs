@@ -48,7 +48,15 @@ pub(crate) fn handle_onboarding_command_key(
                 return Ok(true);
             }
             let current_input = tui.input.clone();
-            if super::try_open_overlay(state, providers, auth_store, session_store, tui, &current_input)? {
+            if super::try_open_overlay(
+                state,
+                resources,
+                providers,
+                auth_store,
+                session_store,
+                tui,
+                &current_input,
+            )? {
                 return Ok(true);
             }
             let submitted = tui.take_input();

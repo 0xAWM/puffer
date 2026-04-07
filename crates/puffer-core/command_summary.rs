@@ -1,33 +1,12 @@
-use crate::{AppState, CommandSpec, MessageRole};
+use crate::{supported_commands, AppState, CommandSpec, MessageRole};
 use puffer_provider_registry::{
     AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
 };
 use puffer_resources::{mascot_by_id, LoadedResources};
+use puffer_tools::ToolRegistry;
 use puffer_transport_anthropic::{
     fetch_oauth_usage, AnthropicExtraUsage, AnthropicRateLimit, ANTHROPIC_API_BASE_URL,
 };
-use std::fmt::Write as _;
-
-/// Renders the most recent recorded tool and shell tasks.
-pub(crate) fn render_task_summary(state: &AppState) -> String {
-    if state.tasks().is_empty() {
-        return "Tasks:\nNo recorded shell or tool tasks yet.".to_string();
-    }
-
-    let mut text = String::from("Tasks:\n");
-    for task in state.tasks().iter().rev().take(10) {
-        let status = match task.status {
-            crate::TaskStatus::Completed => "completed",
-            crate::TaskStatus::Failed => "failed",
-        };
-        let _ = writeln!(
-            &mut text,
-            "#{} {} [{}]\n{}",
-            task.id, task.label, status, task.detail
-        );
-    }
-    text.trim_end().to_string()
-}
 
 /// Renders a lightweight local cost-style summary for the active session.
 pub(crate) fn render_cost_summary(state: &AppState) -> String {
@@ -76,6 +55,52 @@ pub(crate) fn render_usage_summary(
     sections.push(String::new());
     sections.extend(runtime_summary_lines(
         state, commands, resources, providers, auth_store,
+    ));
+    sections.join("\n")
+}
+
+/// Renders the richer status summary used by `/status` and the interactive status overlay.
+pub(crate) fn render_status_summary(
+    state: &AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+) -> String {
+    let active_provider_id = state.current_provider.as_deref();
+    let active_provider =
+        active_provider_id.and_then(|provider_id| providers.provider(provider_id));
+    let active_credential = active_provider_id.and_then(|provider_id| auth_store.get(provider_id));
+    let commands = supported_commands();
+    let registry = ToolRegistry::from_resources(resources);
+
+    let mut sections = vec![String::from("Status")];
+    sections.extend(account_summary_lines(
+        state,
+        active_provider,
+        active_credential,
+    ));
+    sections.push(String::new());
+    sections.extend(provider_status_lines(active_provider));
+    sections.push(String::new());
+    sections.extend(session_status_lines(state));
+    sections.push(String::new());
+    sections.push(String::from("Resource status"));
+    sections.push(format!("Supported commands: {}", commands.len()));
+    sections.push(format!("Executable tools: {}", registry.tools().count()));
+    sections.push(format!("Loaded tools: {}", resources.tools.len()));
+    sections.push(format!("Prompts: {}", resources.prompts.len()));
+    sections.push(format!("Skills: {}", resources.skills.len()));
+    sections.push(format!("Plugins: {}", resources.plugins.len()));
+    sections.push(format!("MCP servers: {}", resources.mcp_servers.len()));
+    sections.push(format!("IDEs: {}", resources.ides.len()));
+    sections.push(format!("Hooks: {}", resources.hooks.len()));
+    sections.push(format!(
+        "Resource diagnostics: {}",
+        resources.diagnostics.len()
+    ));
+    sections.push(String::new());
+    sections.extend(runtime_summary_lines(
+        state, &commands, resources, providers, auth_store,
     ));
     sections.join("\n")
 }
@@ -322,6 +347,56 @@ fn runtime_summary_lines(
         format!("Plugins: {}", resources.plugins.len()),
         format!("Hooks: {}", resources.hooks.len()),
     ]
+}
+
+fn provider_status_lines(provider: Option<&ProviderDescriptor>) -> Vec<String> {
+    let Some(provider) = provider else {
+        return vec![
+            String::from("Provider details"),
+            String::from("Base URL: <unset>"),
+            String::from("Default API: <unset>"),
+        ];
+    };
+    vec![
+        String::from("Provider details"),
+        format!("Base URL: {}", provider.base_url),
+        format!("Default API: {}", provider.default_api),
+    ]
+}
+
+fn session_status_lines(state: &AppState) -> Vec<String> {
+    let mut lines = vec![
+        String::from("Session"),
+        format!("Session ID: {}", state.session.id),
+        format!(
+            "Display name: {}",
+            state.session.display_name.as_deref().unwrap_or("<unnamed>")
+        ),
+        format!("Working directory: {}", state.cwd.display()),
+        format!("Transcript messages: {}", state.transcript.len()),
+        format!("Working dirs: {}", state.working_dirs.len()),
+        format!("Prompt color: {}", state.prompt_color),
+        format!("Effort: {}", state.effort_level),
+        format!("Fast mode: {}", state.fast_mode),
+        format!("Plan mode: {}", state.plan_mode),
+        format!("Sandbox mode: {}", state.sandbox_mode),
+        format!("Vim mode: {}", state.vim_mode),
+        format!("Status line enabled: {}", state.statusline_enabled),
+    ];
+    if let Some(status_line) = state.config.ui.status_line.as_ref() {
+        lines.push(format!("Status line command: {}", status_line.command));
+        lines.push(format!("Status line padding: {}", status_line.padding));
+    }
+    if let Some(remote_name) = state.remote_name.as_deref() {
+        lines.push(format!("Remote name: {remote_name}"));
+    }
+    if let Some(remote_environment) = state.remote_environment.as_deref() {
+        lines.push(format!("Remote environment: {remote_environment}"));
+    }
+    if let Some(remote_status) = state.remote_session_status.as_deref() {
+        lines.push(format!("Remote status: {remote_status}"));
+    }
+    lines
 }
 
 fn credential_auth_label(state: &AppState, credential: Option<&StoredCredential>) -> &'static str {

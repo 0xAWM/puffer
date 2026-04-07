@@ -1,5 +1,8 @@
 use crate::approval_overlay::ApprovalOverlay;
 use crate::popup::popup_rows;
+use crate::session_overlay::SessionOverlay;
+use crate::status_overlay::StatusOverlay;
+use crate::text_overlay::TextOverlay;
 use crate::usage::UsageOverlay;
 use anyhow::Result;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
@@ -335,7 +338,12 @@ pub(crate) enum OverlayState {
         entries: Vec<ModelPickerEntry>,
         selection: usize,
     },
-    PermissionPrompt { overlay: ApprovalOverlay },
+    PermissionPrompt {
+        overlay: ApprovalOverlay,
+    },
+    Session(SessionOverlay),
+    Status(StatusOverlay),
+    Text(TextOverlay),
     Usage(UsageOverlay),
     OnboardingTheme {
         entries: Vec<ModelPickerEntry>,
@@ -385,6 +393,9 @@ impl OverlayState {
                 *selection = selection.saturating_sub(1);
             }
             Self::PermissionPrompt { overlay } => overlay.select_previous(),
+            Self::Session(overlay) => overlay.scroll_up(),
+            Self::Status(overlay) => overlay.scroll_up(),
+            Self::Text(overlay) => overlay.scroll_up(),
             Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
@@ -427,6 +438,9 @@ impl OverlayState {
                 *selection = (*selection + 1).min(entries.len().saturating_sub(1));
             }
             Self::PermissionPrompt { overlay } => overlay.select_next(),
+            Self::Session(overlay) => overlay.scroll_down(),
+            Self::Status(overlay) => overlay.scroll_down(),
+            Self::Text(overlay) => overlay.scroll_down(),
             Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
@@ -435,6 +449,9 @@ impl OverlayState {
     pub(crate) fn page_up(&mut self) {
         match self {
             Self::PermissionPrompt { overlay } => overlay.page_up(),
+            Self::Session(overlay) => overlay.page_up(),
+            Self::Status(overlay) => overlay.page_up(),
+            Self::Text(overlay) => overlay.page_up(),
             _ => {
                 for _ in 0..10 {
                     self.select_previous();
@@ -447,6 +464,9 @@ impl OverlayState {
     pub(crate) fn page_down(&mut self) {
         match self {
             Self::PermissionPrompt { overlay } => overlay.page_down(),
+            Self::Session(overlay) => overlay.page_down(),
+            Self::Status(overlay) => overlay.page_down(),
+            Self::Text(overlay) => overlay.page_down(),
             _ => {
                 for _ in 0..10 {
                     self.select_next();
@@ -501,6 +521,9 @@ impl OverlayState {
             | Self::AuthPicker { .. }
             | Self::ApiKeyPrompt { .. }
             | Self::PermissionPrompt { .. }
+            | Self::Session(..)
+            | Self::Status(..)
+            | Self::Text(..)
             | Self::Usage(..)
             | Self::OnboardingTheme { .. }
             | Self::OnboardingProvider { .. }
@@ -532,6 +555,9 @@ impl OverlayState {
             | Self::ThemePicker { .. }
             | Self::CommandPicker { .. }
             | Self::PermissionPrompt { .. }
+            | Self::Session(..)
+            | Self::Status(..)
+            | Self::Text(..)
             | Self::Usage(..)
             | Self::OnboardingTheme { .. } => None,
         }
@@ -610,7 +636,10 @@ impl OverlayState {
                     *selection = index;
                 }
             }
-            Self::PermissionPrompt { .. } => {}
+            Self::PermissionPrompt { .. }
+            | Self::Session(..)
+            | Self::Status(..)
+            | Self::Text(..) => {}
             Self::AuthPicker {
                 entries, selection, ..
             } => {
@@ -621,9 +650,7 @@ impl OverlayState {
                     *selection = index;
                 }
             }
-            Self::ApiKeyPrompt { .. }
-            | Self::Usage(..)
-            | Self::OnboardingApiKey { .. } => {}
+            Self::ApiKeyPrompt { .. } | Self::Usage(..) | Self::OnboardingApiKey { .. } => {}
         }
     }
 

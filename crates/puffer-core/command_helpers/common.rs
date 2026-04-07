@@ -1,6 +1,5 @@
 use crate::{AppState, MessageRole};
 use anyhow::{Context, Result};
-use arboard::Clipboard;
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::{skill_by_name, LoadedResources};
 use puffer_session_store::{GitDiffSnapshot, SessionStore, TranscriptEvent};
@@ -78,37 +77,6 @@ pub(crate) fn run_doctor(
         }
     }
     emit_system(state, session_store, text)
-}
-
-/// Copies the latest assistant message or echoes it when clipboard access fails.
-pub(crate) fn copy_last_message(state: &mut AppState, session_store: &SessionStore) -> Result<()> {
-    let last = state
-        .transcript
-        .iter()
-        .rev()
-        .find(|message| message.role == MessageRole::Assistant)
-        .map(|message| message.text.clone())
-        .unwrap_or_default();
-    if last.is_empty() {
-        return emit_system(
-            state,
-            session_store,
-            "No assistant response is available to copy.".to_string(),
-        );
-    }
-
-    match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(last.clone())) {
-        Ok(()) => emit_system(
-            state,
-            session_store,
-            "Copied the latest assistant response.".to_string(),
-        ),
-        Err(_) => emit_system(
-            state,
-            session_store,
-            format!("Latest assistant response:\n{last}"),
-        ),
-    }
 }
 
 /// Prints a compact summary of transcript and loaded-resource context.

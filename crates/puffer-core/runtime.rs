@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 #[cfg(test)]
 mod agent_runtime_tests;
 mod agents;
-mod claude_tools;
+pub(crate) mod claude_tools;
 mod local_mcp_resources;
 mod local_tools;
 mod openai;
@@ -36,10 +36,10 @@ use self::openai::{
 use self::openai::{
     execute_openai, execute_openai_completions, is_event_stream, parse_openai_sse_response,
 };
-pub use self::structured_output_support::StructuredOutputConfig;
 pub use self::permission_prompt::{
     with_permission_prompt_handler, PermissionPromptAction, PermissionPromptRequest,
 };
+pub use self::structured_output_support::StructuredOutputConfig;
 use self::structured_output_support::{
     anthropic_tool_definitions, anthropic_tool_definitions_for_request,
     validate_structured_output_schema,

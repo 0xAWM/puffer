@@ -8,8 +8,12 @@ mod onboarding;
 mod permission_prompt_flow;
 mod popup;
 mod render;
+mod session_overlay;
 #[path = "state.rs"]
 mod state;
+mod status_overlay;
+mod statusline;
+mod text_overlay;
 mod usage;
 
 use anyhow::Result;
@@ -39,6 +43,7 @@ use crate::flow::{
     submit_queued_prompt_if_ready, try_open_overlay,
 };
 use crate::permission_prompt_flow::handle_permission_prompt_key;
+use crate::statusline::refresh_status_line;
 use state::TuiState;
 pub(crate) use state::{AuthPickerAction, ModelPickerEntry, OverlayState};
 
@@ -146,6 +151,7 @@ pub fn run_app(
                 no_alt_screen,
             )?;
         }
+        refresh_status_line(state)?;
         terminal.draw(|frame| {
             render::set_active_overlay(tui.overlay.clone());
             render::set_pending_submit_state(
@@ -342,6 +348,7 @@ fn handle_key(
             let current_input = tui.input.clone();
             if try_open_overlay(
                 state,
+                resources,
                 providers,
                 auth_store,
                 session_store,
@@ -392,8 +399,10 @@ fn handle_overlay_key(
     tui: &mut TuiState,
     no_alt_screen: bool,
 ) -> Result<bool> {
-    if matches!(tui.overlay.as_ref(), Some(OverlayState::PermissionPrompt { .. }))
-        && handle_permission_prompt_key(key, tui)
+    if matches!(
+        tui.overlay.as_ref(),
+        Some(OverlayState::PermissionPrompt { .. })
+    ) && handle_permission_prompt_key(key, tui)
     {
         return Ok(false);
     }

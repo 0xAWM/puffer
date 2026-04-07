@@ -39,6 +39,7 @@ pub(crate) fn prepare_prompt_command_specialization(
             args,
         )?)),
         "pr-comments" => Ok(Some(prepare_pr_comments_prompt_command(args))),
+        "statusline" => Ok(Some(prepare_statusline_prompt_command(args)?)),
         _ => Ok(None),
     }
 }
@@ -121,6 +122,13 @@ pub(crate) fn prepare_plan_prompt_command(
 /// Builds a stronger `/pr-comments` prompt that follows Claude-style CLI guidance.
 pub(crate) fn prepare_pr_comments_prompt_command(args: &str) -> PromptCommandPreparation {
     PromptCommandPreparation::PromptOverride(build_pr_comments_prompt_override(args))
+}
+
+/// Builds the Claude-style `/statusline` setup prompt override.
+pub(crate) fn prepare_statusline_prompt_command(args: &str) -> Result<PromptCommandPreparation> {
+    Ok(PromptCommandPreparation::PromptOverride(
+        build_statusline_prompt_override(args)?,
+    ))
 }
 
 /// Executes the provider-backed `/compact` prompt and persists the compacted transcript.
@@ -342,6 +350,18 @@ Provided target/context: {}\n\
     )
 }
 
+fn build_statusline_prompt_override(args: &str) -> Result<String> {
+    let prompt = if args.trim().is_empty() {
+        "Configure my statusLine from my shell PS1 configuration".to_string()
+    } else {
+        args.trim().to_string()
+    };
+    let prompt_json = serde_json::to_string(&prompt)?;
+    Ok(format!(
+        "Create an Agent with subagent_type \"statusline-setup\" and the prompt {prompt_json}"
+    ))
+}
+
 fn single_line_excerpt(text: &str) -> String {
     let line = text
         .lines()
@@ -381,7 +401,7 @@ mod tests {
     use super::{
         prepare_compact_prompt_command, prepare_plan_prompt_command,
         prepare_pr_comments_prompt_command, prepare_prompt_command_specialization,
-        PromptCommandPreparation,
+        prepare_statusline_prompt_command, PromptCommandPreparation,
     };
     use crate::{AppState, MessageRole};
     use puffer_config::{ensure_workspace_dirs, ConfigPaths, PufferConfig};
@@ -478,6 +498,19 @@ mod tests {
     }
 
     #[test]
+    fn statusline_specialization_uses_agent_setup_prompt() {
+        let outcome = prepare_statusline_prompt_command("").unwrap();
+        match outcome {
+            PromptCommandPreparation::PromptOverride(prompt) => {
+                assert!(prompt.contains("Create an Agent"));
+                assert!(prompt.contains("subagent_type \"statusline-setup\""));
+                assert!(prompt.contains("Configure my statusLine from my shell PS1 configuration"));
+            }
+            PromptCommandPreparation::HandledLocally => panic!("expected prompt override"),
+        }
+    }
+
+    #[test]
     fn dispatcher_helper_routes_known_prompt_specializations() {
         let fixture = sample_state();
         let mut state = fixture.state;
@@ -501,6 +534,16 @@ mod tests {
                 assert!(prompt.contains("Collect and summarize GitHub pull-request comments"));
             }
             _ => panic!("expected pr-comments prompt override"),
+        }
+
+        let statusline =
+            prepare_prompt_command_specialization(&mut state, &session_store, "statusline", "")
+                .unwrap();
+        match statusline {
+            Some(PromptCommandPreparation::PromptOverride(prompt)) => {
+                assert!(prompt.contains("statusline-setup"));
+            }
+            _ => panic!("expected statusline prompt override"),
         }
 
         let none = prepare_prompt_command_specialization(&mut state, &session_store, "review", "")

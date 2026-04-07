@@ -65,12 +65,14 @@ pub struct AppState {
     pub remote_session_url: Option<String>,
     pub remote_session_status: Option<String>,
     pub statusline_enabled: bool,
+    pub status_line_text: Option<String>,
     pub vim_mode: bool,
     pub should_exit: bool,
     pub reload_resources_requested: bool,
     pub(crate) claude_read_state: HashMap<PathBuf, ClaudeReadState>,
     pub(crate) session_tool_permissions: HashMap<String, String>,
     pub(crate) native_structured_output_unsupported: HashSet<String>,
+    pub(crate) status_line_signature: Option<String>,
     tasks: Vec<TaskRecord>,
     next_task_id: u64,
 }
@@ -97,12 +99,14 @@ impl AppState {
             remote_session_url: None,
             remote_session_status: None,
             statusline_enabled: true,
+            status_line_text: None,
             vim_mode: false,
             should_exit: false,
             reload_resources_requested: false,
             claude_read_state: HashMap::new(),
             session_tool_permissions: HashMap::new(),
             native_structured_output_unsupported: HashSet::new(),
+            status_line_signature: None,
             tasks: Vec::new(),
             next_task_id: 1,
         }
@@ -223,6 +227,16 @@ impl AppState {
         };
         self.next_task_id += 1;
         self.tasks.push(task);
+    }
+
+    /// Returns the cached status-line input signature, when one has been recorded.
+    pub fn status_line_signature(&self) -> Option<&str> {
+        self.status_line_signature.as_deref()
+    }
+
+    /// Replaces the cached status-line input signature for the active session.
+    pub fn set_status_line_signature(&mut self, signature: Option<String>) {
+        self.status_line_signature = signature;
     }
 
     /// Builds a persisted snapshot event for the current mutable session state.

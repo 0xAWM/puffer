@@ -20,6 +20,9 @@ use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
 use uuid::Uuid;
 
+mod panels;
+mod status;
+
 fn puffer_home_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -106,11 +109,13 @@ fn try_open_overlay_builds_resume_picker() {
         .unwrap();
 
     let state = sample_state();
+    let resources = sample_resources();
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
     let opened = try_open_overlay(
         &state,
+        &resources,
         &mut providers,
         &auth_store,
         &session_store,
@@ -134,11 +139,13 @@ fn try_open_overlay_builds_agent_picker() {
 
     let mut state = sample_state();
     state.cwd = tempdir.path().to_path_buf();
+    let resources = sample_resources();
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
     let opened = try_open_overlay(
         &state,
+        &resources,
         &mut providers,
         &auth_store,
         &session_store,
@@ -161,11 +168,13 @@ fn try_open_overlay_builds_login_picker() {
     let session_store = SessionStore::from_paths(&paths).unwrap();
 
     let state = sample_state();
+    let resources = sample_resources();
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
     let opened = try_open_overlay(
         &state,
+        &resources,
         &mut providers,
         &auth_store,
         &session_store,
@@ -216,11 +225,13 @@ fn try_open_overlay_builds_logout_picker() {
     let session_store = SessionStore::from_paths(&paths).unwrap();
 
     let state = sample_state();
+    let resources = sample_resources();
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
     let opened = try_open_overlay(
         &state,
+        &resources,
         &mut providers,
         &auth_store,
         &session_store,
@@ -414,11 +425,13 @@ fn try_open_overlay_builds_theme_picker() {
     let session_store = SessionStore::from_paths(&paths).unwrap();
 
     let state = sample_state();
+    let resources = sample_resources();
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
     let mut tui = TuiState::default();
     let opened = try_open_overlay(
         &state,
+        &resources,
         &mut providers,
         &auth_store,
         &session_store,
@@ -530,30 +543,6 @@ fn codex_import_without_base_url_clears_previous_openai_override() {
     } else {
         std::env::remove_var("PUFFER_HOME");
     }
-}
-
-#[test]
-fn try_open_overlay_builds_usage_overlay() {
-    let tempdir = tempdir().unwrap();
-    let paths = ConfigPaths::discover(tempdir.path());
-    ensure_workspace_dirs(&paths).unwrap();
-    let session_store = SessionStore::from_paths(&paths).unwrap();
-
-    let state = sample_state();
-    let mut providers = sample_providers();
-    let auth_store = sample_auth_store();
-    let mut tui = TuiState::default();
-    let opened = try_open_overlay(
-        &state,
-        &mut providers,
-        &auth_store,
-        &session_store,
-        &mut tui,
-        "/usage",
-    )
-    .unwrap();
-    assert!(opened);
-    assert!(matches!(tui.overlay, Some(OverlayState::Usage(..))));
 }
 
 #[test]

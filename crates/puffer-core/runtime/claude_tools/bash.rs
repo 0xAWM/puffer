@@ -90,7 +90,8 @@ pub fn execute(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashExecution
 
 fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
     let output_dir = shell_output_dir(cwd)?;
-    let pending_output_file = output_dir.join("shell-pending.log");
+    let pending_output_file =
+        output_dir.join(format!("shell-pending-{}.log", unique_output_nonce()));
     let stdout = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -115,8 +116,17 @@ fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
             )
         })?;
     let task_id = format!("shell-{}", child.id());
+    let subject = tool_description(&input);
     let output_file = shell_output_path(cwd, child.id())?;
     let _ = fs::rename(&pending_output_file, &output_file);
+    super::workflow::register_background_shell_task(
+        cwd,
+        &task_id,
+        &subject,
+        &input.command,
+        child.id(),
+        &output_file,
+    )?;
     Ok(ClaudeBashExecution {
         success: true,
         output: ClaudeBashOutput {
@@ -179,6 +189,13 @@ fn classify_return_code(code: Option<i32>) -> Option<String> {
 struct TimedCommandOutput {
     output: Output,
     timed_out: bool,
+}
+
+fn unique_output_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 fn shell_output_dir(cwd: &Path) -> Result<std::path::PathBuf> {
@@ -331,6 +348,53 @@ mod tests {
         assert!(result.output.background_task_id.is_some());
         assert_eq!(result.output.backgrounded_by_user, Some(false));
         assert_eq!(result.output.assistant_auto_backgrounded, Some(false));
+    }
+
+    #[test]
+    fn execute_background_persists_shell_task() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = execute(
+            temp.path(),
+            ClaudeBashInput {
+                command: "sleep 0.1".to_string(),
+                timeout: Some(1_000),
+                description: Some("Sleep briefly".to_string()),
+                run_in_background: true,
+                dangerously_disable_sandbox: false,
+            },
+        )
+        .unwrap();
+
+        let task_id = result.output.background_task_id.as_deref().unwrap();
+        let tasks_path = temp
+            .path()
+            .join(".puffer")
+            .join("runtime")
+            .join("claude_workflow")
+            .join("tasks.json");
+        let payload: Value =
+            serde_json::from_str(&fs::read_to_string(tasks_path).unwrap()).unwrap();
+        let tasks = payload.get("tasks").and_then(Value::as_array).unwrap();
+        let stored = tasks
+            .iter()
+            .find(|task| task.get("task_id").and_then(Value::as_str) == Some(task_id))
+            .unwrap();
+        assert_eq!(
+            stored.get("task_type").and_then(Value::as_str),
+            Some("shell")
+        );
+        assert_eq!(
+            stored.get("status").and_then(Value::as_str),
+            Some("running")
+        );
+        assert_eq!(
+            stored.get("command").and_then(Value::as_str),
+            Some("sleep 0.1")
+        );
+        assert_eq!(
+            stored.get("subject").and_then(Value::as_str),
+            Some("Sleep briefly")
+        );
     }
 
     #[test]

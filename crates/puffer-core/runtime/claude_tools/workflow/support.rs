@@ -257,6 +257,40 @@ pub(super) fn execute_todo_write(
     }))?)
 }
 
+/// Persists one background Bash task into the shared workflow task store.
+pub(super) fn register_background_shell_task(
+    cwd: &Path,
+    task_id: &str,
+    subject: &str,
+    command: &str,
+    process_id: u32,
+    output_file: &Path,
+) -> Result<()> {
+    let mut store = load_store::<TaskStore>(&tasks_path(cwd))?;
+    let started_at_ms = now_ms();
+    store.tasks.retain(|task| task.task_id != task_id);
+    store.tasks.push(StoredTask {
+        task_id: task_id.to_string(),
+        subject: subject.to_string(),
+        description: command.to_string(),
+        active_form: "Running bash command".to_string(),
+        status: "running".to_string(),
+        owner: None,
+        blocks: Vec::new(),
+        blocked_by: Vec::new(),
+        metadata: Default::default(),
+        output: None,
+        task_type: Some("shell".to_string()),
+        command: Some(command.to_string()),
+        process_id: Some(process_id),
+        output_file: Some(output_file.display().to_string()),
+        started_at_ms: Some(started_at_ms),
+        updated_at_ms: Some(started_at_ms),
+        exit_code: None,
+    });
+    save_store(&tasks_path(cwd), &store)
+}
+
 /// Executes the live `TaskCreate` workflow tool.
 pub(super) fn execute_task_create(
     state: &mut AppState,

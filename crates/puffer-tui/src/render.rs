@@ -1,10 +1,10 @@
+mod helpers;
 mod overlay_list;
 mod panes;
 mod summary;
-mod top_panel;
 mod tool_messages;
-
-use crate::approval_overlay::render_permission_overlay;
+mod top_panel;
+use self::helpers::{help_pane_active, separator_line};
 use self::overlay_list::{onboarding_fixed_line_count, overlay_selection, visible_overlay_rows};
 use self::panes::{render_empty_state, render_help_pane};
 #[cfg(test)]
@@ -12,11 +12,15 @@ use self::summary::{footer_lines, header_lines, session_lines};
 use self::summary::{
     hint_line, status_compact_line, status_primary_line, status_secondary_line, top_panel_height,
 };
-use self::top_panel::{render_fixed_top_panel, scrollable_top_panel_lines};
 use self::tool_messages::render_tool_message;
+use self::top_panel::{render_fixed_top_panel, scrollable_top_panel_lines};
+use crate::approval_overlay::render_permission_overlay;
 use crate::markdown::render_markdown;
 use crate::popup::popup_rows;
+use crate::session_overlay::render_session_overlay;
 use crate::state::AuthPickerEntry;
+use crate::status_overlay::render_status_overlay;
+use crate::text_overlay::render_text_overlay;
 use crate::usage::render_usage_overlay;
 use crate::{ModelPickerEntry, OverlayState};
 use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage};
@@ -30,7 +34,6 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::cell::RefCell;
-
 const COMPACT_COMPOSER_BREAKPOINT: u16 = 104;
 
 #[derive(Default)]
@@ -103,13 +106,20 @@ pub(crate) fn render(
     let simplified_surface = help_active;
     let scrollable_top_panel = !simplified_surface && !home_active && !onboarding_active;
     let compact_composer = frame.area().width < COMPACT_COMPOSER_BREAKPOINT;
+    let custom_status_line = state.config.ui.status_line.as_ref().and_then(|config| {
+        state.status_line_text.as_ref().map(|text| {
+            let padding = " ".repeat(config.padding as usize);
+            format!("{padding}{text}{padding}")
+        })
+    });
+    let statusline_visible = state.statusline_enabled || custom_status_line.is_some();
     let footer_height = if onboarding_active {
         4
     } else if help_active {
         2
     } else if compact_composer {
         4
-    } else if state.statusline_enabled {
+    } else if statusline_visible {
         5
     } else {
         4
@@ -161,9 +171,10 @@ pub(crate) fn render(
                 state,
                 resources,
                 auth_store,
-                pending_submit.loading_prompt.is_some() || !pending_submit.queued_prompts.is_empty(),
+                pending_submit.loading_prompt.is_some()
+                    || !pending_submit.queued_prompts.is_empty(),
             )
-                .saturating_sub(layout[1].height.max(1))
+            .saturating_sub(layout[1].height.max(1))
         } else {
             scroll_offset
         };
@@ -176,8 +187,8 @@ pub(crate) fn render(
                 &tool_registry,
                 pending_submit,
             ))
-                .scroll((body_scroll_offset, 0))
-                .wrap(Wrap { trim: false }),
+            .scroll((body_scroll_offset, 0))
+            .wrap(Wrap { trim: false }),
             layout[1],
         );
     }
@@ -239,22 +250,30 @@ pub(crate) fn render(
             .style(Style::default().add_modifier(Modifier::DIM)),
             footer[0],
         );
-    } else if state.statusline_enabled && !onboarding_active && !simplified_surface {
-        frame.render_widget(
-            Paragraph::new(status_primary_line(
-                state,
-                resources,
-                auth_store,
-                &tool_registry,
-            ))
-            .style(Style::default().add_modifier(Modifier::DIM)),
-            footer[1],
-        );
-        frame.render_widget(
-            Paragraph::new(status_secondary_line(state, resources, &tool_registry))
+    } else if statusline_visible && !onboarding_active && !simplified_surface {
+        if let Some(custom_status_line) = custom_status_line.as_deref() {
+            frame.render_widget(
+                Paragraph::new(custom_status_line)
+                    .style(Style::default().add_modifier(Modifier::DIM)),
+                footer[1],
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(status_primary_line(
+                    state,
+                    resources,
+                    auth_store,
+                    &tool_registry,
+                ))
                 .style(Style::default().add_modifier(Modifier::DIM)),
-            footer[2],
-        );
+                footer[1],
+            );
+            frame.render_widget(
+                Paragraph::new(status_secondary_line(state, resources, &tool_registry))
+                    .style(Style::default().add_modifier(Modifier::DIM)),
+                footer[2],
+            );
+        }
     }
 
     let prompt_row = if onboarding_active {
@@ -263,7 +282,7 @@ pub(crate) fn render(
         footer[1]
     } else if compact_composer {
         footer[2]
-    } else if state.statusline_enabled {
+    } else if statusline_visible {
         footer[3]
     } else {
         footer[1]
@@ -274,19 +293,17 @@ pub(crate) fn render(
         None
     } else if compact_composer {
         Some(footer[3])
-    } else if state.statusline_enabled {
+    } else if statusline_visible {
         Some(footer[4])
     } else {
         Some(footer[2])
     };
-    let summary_row = if simplified_surface
-        || compact_composer
-        || (state.statusline_enabled && !onboarding_active)
-    {
-        None
-    } else {
-        Some(footer[3])
-    };
+    let summary_row =
+        if simplified_surface || compact_composer || (statusline_visible && !onboarding_active) {
+            None
+        } else {
+            Some(footer[3])
+        };
 
     let overlay_active = active_overlay.is_some();
     if overlay_active {
@@ -348,23 +365,14 @@ pub(crate) fn render(
         );
     }
     if let Some(overlay) = active_overlay.as_ref() {
-        if let OverlayState::Usage(usage) = overlay {
-            render_usage_overlay(frame, frame.area(), usage);
-        } else {
-            render_overlay(frame, layout[1], overlay);
+        match overlay {
+            OverlayState::Usage(usage) => render_usage_overlay(frame, frame.area(), usage),
+            OverlayState::Session(session) => render_session_overlay(frame, frame.area(), session),
+            OverlayState::Status(status) => render_status_overlay(frame, frame.area(), status),
+            OverlayState::Text(text) => render_text_overlay(frame, frame.area(), text),
+            _ => render_overlay(frame, layout[1], overlay),
         }
     }
-}
-
-fn separator_line(width: u16) -> Line<'static> {
-    Line::from("─".repeat(usize::from(width)))
-}
-
-fn help_pane_active(state: &AppState, active_overlay: &Option<OverlayState>) -> bool {
-    active_overlay.is_none()
-        && state.transcript.last().is_some_and(|message| {
-            message.role == MessageRole::System && message.text.starts_with("Supported commands:")
-        })
 }
 
 fn transcript_text(
@@ -416,9 +424,9 @@ pub(crate) fn transcript_line_count(
         &tool_registry,
         pending,
     ))
-        .wrap(Wrap { trim: false })
-        .line_count(width)
-        .min(u16::MAX as usize) as u16
+    .wrap(Wrap { trim: false })
+    .line_count(width)
+    .min(u16::MAX as usize) as u16
 }
 
 fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
@@ -679,6 +687,9 @@ fn overlay_title(overlay: &OverlayState) -> &'static str {
         OverlayState::ThemePicker { .. } => "Select Theme",
         OverlayState::CommandPicker { .. } => "Select Command",
         OverlayState::PermissionPrompt { .. } => "Permission Needed",
+        OverlayState::Session(..) => "Session",
+        OverlayState::Status(..) => "Status",
+        OverlayState::Text(..) => "Panel",
         OverlayState::OnboardingTheme { .. } => "Select Theme",
         OverlayState::OnboardingProvider { .. } => "Select Provider",
         OverlayState::OnboardingAuth { .. } => "Select Login Method",
@@ -763,7 +774,10 @@ fn overlay_rows(overlay: &OverlayState) -> Vec<OverlayRow> {
                 text: format!("key  {}", masked_secret(input)),
             },
         ],
-        OverlayState::PermissionPrompt { .. } => Vec::new(),
+        OverlayState::PermissionPrompt { .. }
+        | OverlayState::Session(..)
+        | OverlayState::Status(..)
+        | OverlayState::Text(..) => Vec::new(),
         OverlayState::Usage(..) => Vec::new(),
     }
 }

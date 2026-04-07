@@ -31,6 +31,15 @@ pub struct MascotConfig {
 pub struct UiConfig {
     pub no_alt_screen: bool,
     pub tmux_golden_mode: bool,
+    #[serde(default)]
+    pub status_line: Option<StatusLineConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatusLineConfig {
+    pub command: String,
+    #[serde(default)]
+    pub padding: u16,
 }
 
 impl Default for PufferConfig {
@@ -51,6 +60,7 @@ impl Default for PufferConfig {
             ui: UiConfig {
                 no_alt_screen: false,
                 tmux_golden_mode: false,
+                status_line: None,
             },
         }
     }
