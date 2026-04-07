@@ -108,14 +108,29 @@ impl RuntimePermissionContext {
                 reason: Some("tool metadata currently disables it".to_string()),
             };
         }
-        let policy = self
+        if let Some(policy) = self
             .permissions
             .tools
             .get(&normalize_tool_id(&definition.id))
             .map(String::as_str)
-            .or(definition.policy.approval_policy.as_deref())
-            .unwrap_or("auto");
+        {
+            return self.policy_decision(definition, input, policy);
+        }
 
+        if let Some(decision) = self.tool_specific_decision(definition, input) {
+            return decision;
+        }
+
+        let policy = definition.policy.approval_policy.as_deref().unwrap_or("auto");
+        self.policy_decision(definition, input, policy)
+    }
+
+    fn policy_decision(
+        &self,
+        definition: &ToolDefinition,
+        input: &Value,
+        policy: &str,
+    ) -> ToolPermissionDecision {
         match normalize_policy_value(policy).as_str() {
             "deny" | "disabled" => ToolPermissionDecision {
                 behavior: ToolPermissionBehavior::Deny,
@@ -142,6 +157,59 @@ impl RuntimePermissionContext {
                 behavior: ToolPermissionBehavior::Allow,
                 reason: None,
             },
+        }
+    }
+
+    fn tool_specific_decision(
+        &self,
+        definition: &ToolDefinition,
+        input: &Value,
+    ) -> Option<ToolPermissionDecision> {
+        match definition.id.as_str() {
+            "Config" => Some(if input.get("value").is_some() {
+                ToolPermissionDecision {
+                    behavior: ToolPermissionBehavior::Ask,
+                    reason: Some("config writes require approval".to_string()),
+                }
+            } else {
+                ToolPermissionDecision {
+                    behavior: ToolPermissionBehavior::Allow,
+                    reason: None,
+                }
+            }),
+            "AskUserQuestion" => Some(ToolPermissionDecision {
+                behavior: ToolPermissionBehavior::Ask,
+                reason: Some("answer questions?".to_string()),
+            }),
+            "WebSearch" => Some(ToolPermissionDecision {
+                behavior: ToolPermissionBehavior::Ask,
+                reason: Some("web search requires permission".to_string()),
+            }),
+            "SendMessage" => {
+                let target = input.get("to").and_then(Value::as_str).unwrap_or_default();
+                if target.starts_with("bridge:") {
+                    Some(ToolPermissionDecision {
+                        behavior: ToolPermissionBehavior::Ask,
+                        reason: Some(
+                            "cross-session bridge messages require explicit approval".to_string(),
+                        ),
+                    })
+                } else {
+                    Some(ToolPermissionDecision {
+                        behavior: ToolPermissionBehavior::Allow,
+                        reason: None,
+                    })
+                }
+            }
+            "TodoWrite" => Some(ToolPermissionDecision {
+                behavior: ToolPermissionBehavior::Allow,
+                reason: None,
+            }),
+            "Agent" => Some(ToolPermissionDecision {
+                behavior: ToolPermissionBehavior::Allow,
+                reason: None,
+            }),
+            _ => None,
         }
     }
 
@@ -456,6 +524,90 @@ mod tests {
             context.decision_for_tool_call(&tool_definition("Write", "on-request"), &Value::Null);
         assert_eq!(decision.behavior, ToolPermissionBehavior::Ask);
         assert!(decision.reason.unwrap_or_default().contains("ExitPlanMode"));
+    }
+
+    #[test]
+    fn config_reads_allow_but_writes_ask() {
+        let context = RuntimePermissionContext {
+            permissions: PermissionsSettings::default(),
+            sandbox: SandboxSettings::from_mode("workspace-write"),
+            plan_mode: false,
+        };
+        let config = tool_definition("Config", "auto");
+        let read = context.decision_for_tool_call(&config, &serde_json::json!({"setting":"theme"}));
+        let write = context.decision_for_tool_call(
+            &config,
+            &serde_json::json!({"setting":"theme","value":"dark"}),
+        );
+        assert_eq!(read.behavior, ToolPermissionBehavior::Allow);
+        assert_eq!(write.behavior, ToolPermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn ask_user_question_requires_approval() {
+        let context = RuntimePermissionContext {
+            permissions: PermissionsSettings::default(),
+            sandbox: SandboxSettings::from_mode("workspace-write"),
+            plan_mode: false,
+        };
+        let question = tool_definition("AskUserQuestion", "auto");
+        let decision = context.decision_for_tool_call(
+            &question,
+            &serde_json::json!({"questions":[{"question":"Pick one","header":"Choice","options":[{"label":"A","description":"A"},{"label":"B","description":"B"}]}]}),
+        );
+        assert_eq!(decision.behavior, ToolPermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn web_search_requires_permission_by_default() {
+        let context = RuntimePermissionContext {
+            permissions: PermissionsSettings::default(),
+            sandbox: SandboxSettings::from_mode("workspace-write"),
+            plan_mode: false,
+        };
+        let search = tool_definition("WebSearch", "auto");
+        let decision =
+            context.decision_for_tool_call(&search, &serde_json::json!({"query":"rust latest"}));
+        assert_eq!(decision.behavior, ToolPermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn send_message_allows_local_targets_but_asks_for_bridge_targets() {
+        let context = RuntimePermissionContext {
+            permissions: PermissionsSettings::default(),
+            sandbox: SandboxSettings::from_mode("workspace-write"),
+            plan_mode: false,
+        };
+        let send = tool_definition("SendMessage", "auto");
+        let local =
+            context.decision_for_tool_call(&send, &serde_json::json!({"to":"alice","message":"hi"}));
+        let bridge = context.decision_for_tool_call(
+            &send,
+            &serde_json::json!({"to":"bridge:session-123","message":"hi"}),
+        );
+        assert_eq!(local.behavior, ToolPermissionBehavior::Allow);
+        assert_eq!(bridge.behavior, ToolPermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn todo_write_and_agent_are_allowed_without_extra_gate() {
+        let context = RuntimePermissionContext {
+            permissions: PermissionsSettings::default(),
+            sandbox: SandboxSettings::from_mode("workspace-write"),
+            plan_mode: true,
+        };
+        let todo = tool_definition("TodoWrite", "auto");
+        let agent = tool_definition("Agent", "auto");
+        let todo_decision = context.decision_for_tool_call(
+            &todo,
+            &serde_json::json!({"todos":[{"content":"x","status":"pending","activeForm":"Doing x"}]}),
+        );
+        let agent_decision = context.decision_for_tool_call(
+            &agent,
+            &serde_json::json!({"description":"Task","prompt":"Do it"}),
+        );
+        assert_eq!(todo_decision.behavior, ToolPermissionBehavior::Allow);
+        assert_eq!(agent_decision.behavior, ToolPermissionBehavior::Allow);
     }
 
     #[test]
