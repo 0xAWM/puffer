@@ -207,11 +207,13 @@
                 </div>
               </div>
             {/if}
+          {:else if item.kind === "command"}
+            <div class="command-log">
+              <code>/{commandLabel(item.body)}</code>
+            </div>
           {:else}
             <div class="entry-meta">
-              {#if item.kind === "command"}
-                <span>Slash command</span>
-              {:else if item.kind === "system"}
+              {#if item.kind === "system"}
                 <span>System</span>
               {/if}
 
@@ -232,20 +234,13 @@
               {/if}
             </div>
 
-            {#if item.kind === "command"}
-              <div class="command-log">
-                <span class="command-prefix">/</span>
-                <code>{commandLabel(item.body)}</code>
-              </div>
-            {:else}
-              <div class="markdown">
-                {#if isCollapsed(item)}
-                  <pre class="collapsed-preview">{previewText(item)}</pre>
-                {:else}
-                  <MessageBody body={transcriptText(item)} />
-                {/if}
-              </div>
-            {/if}
+            <div class="markdown">
+              {#if isCollapsed(item)}
+                <pre class="collapsed-preview">{previewText(item)}</pre>
+              {:else}
+                <MessageBody body={transcriptText(item)} />
+              {/if}
+            </div>
           {/if}
         </article>
       {/each}
@@ -458,19 +453,11 @@
 
   .command-log {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 0.6rem;
     padding: 0.72rem 0.85rem;
     background: rgba(255, 255, 255, 0.78);
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.55) inset,
       0 0 0 1px rgba(118, 97, 72, 0.1);
-  }
-
-  .command-prefix {
-    color: var(--text-soft);
-    font-size: 0.9rem;
   }
 
   .command-log code {
