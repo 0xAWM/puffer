@@ -1,20 +1,34 @@
 use super::*;
+use std::process::Command;
 
 #[test]
 fn try_open_overlay_builds_resume_picker() {
     let tempdir = tempdir().unwrap();
+    let repo_root = tempdir.path().join("repo");
+    let current_cwd = repo_root.join("current");
+    let sibling_cwd = repo_root.join("dockyard");
+    std::fs::create_dir_all(&current_cwd).unwrap();
+    std::fs::create_dir_all(&sibling_cwd).unwrap();
+    let output = Command::new("git")
+        .arg("init")
+        .arg(&repo_root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let current = session_store
-        .create_session(tempdir.path().join("current"))
-        .unwrap();
-    session_store
-        .create_session(tempdir.path().join("dockyard"))
-        .unwrap();
+    let current = session_store.create_session(current_cwd.clone()).unwrap();
+    session_store.create_session(sibling_cwd).unwrap();
 
     let mut state = sample_state();
     state.session.id = current.id;
+    state.cwd = current_cwd;
+    state.session.cwd = state.cwd.clone();
     let resources = sample_resources();
     let mut providers = sample_providers();
     let auth_store = sample_auth_store();
@@ -74,4 +88,30 @@ fn try_open_overlay_builds_agent_picker() {
         _ => panic!("agent picker"),
     };
     assert!(entries.iter().any(|entry| entry.selector == "reviewer"));
+}
+
+#[test]
+fn try_open_overlay_builds_doctor_panel() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+
+    let state = sample_state();
+    let resources = sample_resources();
+    let mut providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let mut tui = TuiState::default();
+    let opened = try_open_overlay(
+        &state,
+        &resources,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/doctor",
+    )
+    .unwrap();
+    assert!(opened);
+    assert!(matches!(tui.overlay, Some(OverlayState::Text(_))));
 }

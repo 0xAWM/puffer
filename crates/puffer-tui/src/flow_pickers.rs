@@ -1,5 +1,5 @@
 use puffer_config::ConfigPaths;
-use puffer_core::{AppState, MessageRole};
+use puffer_core::{AppState, CommandActionEntry, MessageRole};
 
 pub(crate) fn open_command_picker(
     tui: &mut crate::TuiState,
@@ -18,6 +18,19 @@ pub(crate) fn open_command_picker(
         }),
     );
     true
+}
+
+pub(crate) fn command_picker_entries(
+    actions: impl IntoIterator<Item = CommandActionEntry>,
+) -> Vec<crate::ModelPickerEntry> {
+    actions
+        .into_iter()
+        .map(|entry| crate::ModelPickerEntry {
+            selector: entry.command.clone(),
+            description: entry.description,
+            command: Some(entry.command),
+        })
+        .collect()
 }
 
 pub(crate) fn open_tag_confirmation_picker(

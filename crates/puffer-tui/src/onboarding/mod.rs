@@ -2,7 +2,10 @@ use crate::state::{AuthPickerAction, AuthPickerEntry, ModelPickerEntry, OverlayS
 use crate::usage::UsageOverlay;
 use anyhow::Result;
 use puffer_config::ConfigPaths;
-use puffer_core::{load_agent_catalog, AppState};
+use puffer_core::{
+    default_effort_level, load_agent_catalog, normalized_effort_level, provider_preference_family,
+    resumable_sessions_for_picker, supported_effort_levels, AppState, ModelPreferenceFamily,
+};
 use puffer_provider_registry::{
     detect_import_candidates, AuthMode, AuthStore, ExternalImportCandidate, ExternalImportFamily,
     ExternalImportSource, ProviderDescriptor, ProviderRegistry,
@@ -70,11 +73,8 @@ pub(crate) fn overlay_from_command(
 
     let overlay = match name {
         "resume" | "continue" if args.is_empty() => {
-            let sessions = session_store
-                .list_sessions()?
-                .into_iter()
-                .filter(|session| session.id != state.session.id)
-                .collect::<Vec<_>>();
+            let sessions =
+                resumable_sessions_for_picker(session_store, state.session.id, &state.cwd)?;
             if sessions.is_empty() {
                 None
             } else {
@@ -128,6 +128,7 @@ pub(crate) fn overlay_from_command(
         "login" if args.is_empty() => login_provider_picker(providers),
         "login" if !args.is_empty() => auth_picker(providers, auth_store, args, false)?,
         "logout" if args.is_empty() => logout_picker(providers, auth_store),
+        "fast" if args.is_empty() => fast_mode_picker_for_current_selection(state, providers),
         "theme" if args.is_empty() => Some(theme_picker()),
         "usage" if args.is_empty() => Some(UsageOverlay::open(state, providers, auth_store)),
         _ => None,
@@ -432,35 +433,15 @@ pub(crate) fn effort_picker(
     selected_effort: &str,
     onboarding: bool,
 ) -> OverlayState {
-    let entries = match provider_picker_family(providers, provider_id) {
-        ProviderPickerFamily::Anthropic => vec![
-            picker_entry("low", "Quick, straightforward implementation"),
-            picker_entry("medium", "Balanced implementation and testing"),
-            picker_entry("high", "Comprehensive implementation"),
-            picker_entry("max", "Deepest reasoning when supported"),
-        ],
-        ProviderPickerFamily::OpenAi => vec![
-            picker_entry("minimal", "Smallest reasoning budget"),
-            picker_entry("low", "Fast response with lighter reasoning"),
-            picker_entry("medium", "Balanced reasoning depth"),
-            picker_entry("high", "Strong reasoning depth"),
-            picker_entry("xhigh", "Extra high reasoning depth"),
-        ],
-        ProviderPickerFamily::Other => vec![
-            picker_entry("low", "Quick, straightforward implementation"),
-            picker_entry("medium", "Balanced reasoning depth"),
-            picker_entry("high", "Deeper reasoning"),
-        ],
-    };
+    let family = provider_preference_family(providers, provider_id);
+    let entries = supported_effort_levels(family)
+        .iter()
+        .map(|selector| picker_entry(selector, effort_description(family, selector)))
+        .collect::<Vec<_>>();
     let selection = entries
         .iter()
         .position(|entry| entry.selector == selected_effort)
-        .unwrap_or_else(|| {
-            entries
-                .iter()
-                .position(|entry| entry.selector == "high")
-                .unwrap_or(0)
-        });
+        .unwrap_or_else(|| default_effort_selection(&entries, family));
     OverlayState::EffortPicker {
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),
@@ -475,10 +456,11 @@ pub(crate) fn fast_mode_picker(
     provider_id: &str,
     model_id: &str,
     effort: &str,
+    selected_fast_mode: bool,
     onboarding: bool,
 ) -> OverlayState {
-    let (entries, selection) = match provider_picker_family(providers, provider_id) {
-        ProviderPickerFamily::Anthropic => (
+    let (entries, default_selection) = match provider_preference_family(providers, provider_id) {
+        ModelPreferenceFamily::Anthropic => (
             vec![
                 picker_entry(
                     "off",
@@ -491,7 +473,7 @@ pub(crate) fn fast_mode_picker(
             ],
             0,
         ),
-        ProviderPickerFamily::OpenAi => (
+        ModelPreferenceFamily::OpenAi => (
             vec![
                 picker_entry(
                     "on",
@@ -501,7 +483,7 @@ pub(crate) fn fast_mode_picker(
             ],
             0,
         ),
-        ProviderPickerFamily::Other => (
+        ModelPreferenceFamily::Other => (
             vec![
                 picker_entry("off", "Keep standard inference"),
                 picker_entry("on", "Enable fast mode"),
@@ -509,6 +491,10 @@ pub(crate) fn fast_mode_picker(
             0,
         ),
     };
+    let selection = entries
+        .iter()
+        .position(|entry| entry.selector == if selected_fast_mode { "on" } else { "off" })
+        .unwrap_or(default_selection);
     OverlayState::FastModePicker {
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),
@@ -519,6 +505,27 @@ pub(crate) fn fast_mode_picker(
     }
 }
 
+/// Builds the current-session fast-mode picker used by `/fast` in the interactive TUI.
+pub(crate) fn fast_mode_picker_for_current_selection(
+    state: &AppState,
+    providers: &ProviderRegistry,
+) -> Option<OverlayState> {
+    let model_selector = state.current_model.as_deref()?;
+    let (provider_id, model_id) = model_selector.split_once('/')?;
+    let effort = normalized_effort_level(
+        provider_preference_family(providers, provider_id),
+        &state.effort_level,
+    );
+    Some(fast_mode_picker(
+        providers,
+        provider_id,
+        model_id,
+        &effort,
+        state.fast_mode,
+        false,
+    ))
+}
+
 fn picker_entry(selector: &str, description: &str) -> ModelPickerEntry {
     ModelPickerEntry {
         selector: selector.to_string(),
@@ -527,35 +534,30 @@ fn picker_entry(selector: &str, description: &str) -> ModelPickerEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderPickerFamily {
-    Anthropic,
-    OpenAi,
-    Other,
+fn effort_description(family: ModelPreferenceFamily, selector: &str) -> &'static str {
+    match (family, selector) {
+        (ModelPreferenceFamily::Anthropic, "low") => "Quick, straightforward implementation",
+        (ModelPreferenceFamily::Anthropic, "medium") => "Balanced implementation and testing",
+        (ModelPreferenceFamily::Anthropic, "high") => "Comprehensive implementation",
+        (ModelPreferenceFamily::Anthropic, "max") => "Deepest reasoning when supported",
+        (ModelPreferenceFamily::OpenAi, "minimal") => "Smallest reasoning budget",
+        (ModelPreferenceFamily::OpenAi, "low") => "Fast response with lighter reasoning",
+        (ModelPreferenceFamily::OpenAi, "medium") => "Balanced reasoning depth",
+        (ModelPreferenceFamily::OpenAi, "high") => "Strong reasoning depth",
+        (ModelPreferenceFamily::OpenAi, "xhigh") => "Extra high reasoning depth",
+        (_, "low") => "Quick, straightforward implementation",
+        (_, "medium") => "Balanced reasoning depth",
+        (_, "high") => "Deeper reasoning",
+        _ => "Model reasoning preference",
+    }
 }
 
-fn provider_picker_family(providers: &ProviderRegistry, provider_id: &str) -> ProviderPickerFamily {
-    let Some(provider) = providers.provider(provider_id) else {
-        return if provider_id.eq_ignore_ascii_case("anthropic") {
-            ProviderPickerFamily::Anthropic
-        } else if provider_id.to_ascii_lowercase().contains("openai") {
-            ProviderPickerFamily::OpenAi
-        } else {
-            ProviderPickerFamily::Other
-        };
-    };
-    if provider.id.eq_ignore_ascii_case("anthropic")
-        || provider.default_api.starts_with("anthropic")
-    {
-        ProviderPickerFamily::Anthropic
-    } else if provider.id.to_ascii_lowercase().contains("openai")
-        || provider.default_api.starts_with("openai")
-        || provider.default_api.contains("codex")
-    {
-        ProviderPickerFamily::OpenAi
-    } else {
-        ProviderPickerFamily::Other
-    }
+fn default_effort_selection(entries: &[ModelPickerEntry], family: ModelPreferenceFamily) -> usize {
+    let default = default_effort_level(family);
+    entries
+        .iter()
+        .position(|entry| entry.selector == default)
+        .unwrap_or(0)
 }
 
 fn logout_picker(providers: &ProviderRegistry, auth_store: &AuthStore) -> Option<OverlayState> {

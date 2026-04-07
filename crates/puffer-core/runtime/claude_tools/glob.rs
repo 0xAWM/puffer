@@ -1,9 +1,10 @@
+use crate::workspace_paths;
 use anyhow::{anyhow, bail, Context, Result};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_GLOB_LIMIT: usize = 100;
@@ -33,7 +34,7 @@ struct ClaudeGlobOutput {
 ///
 /// Output matches Claude Code's shape:
 /// - `durationMs`, `numFiles`, `filenames`, `truncated`
-pub fn execute_claude_glob(cwd: &Path, input: Value) -> Result<String> {
+pub fn execute_claude_glob(cwd: &Path, working_dirs: &[PathBuf], input: Value) -> Result<String> {
     let started = Instant::now();
     let input: ClaudeGlobInput = serde_json::from_value(input).context("invalid Glob input")?;
     if input.pattern.trim().is_empty() {
@@ -45,7 +46,7 @@ pub fn execute_claude_glob(cwd: &Path, input: Value) -> Result<String> {
     let root = input
         .path
         .as_deref()
-        .map(|path| resolve_workspace_path(cwd, Path::new(path)))
+        .map(|path| workspace_paths::resolve_path_in_workspaces(cwd, working_dirs, Path::new(path)))
         .transpose()?
         .unwrap_or_else(|| cwd.to_path_buf());
     if !root.exists() {
@@ -56,7 +57,7 @@ pub fn execute_claude_glob(cwd: &Path, input: Value) -> Result<String> {
     }
 
     let mut matches = Vec::new();
-    collect_glob_matches(cwd, &root, &pattern, &mut matches)?;
+    collect_glob_matches(&root, &root, &pattern, &mut matches)?;
     matches.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
 
     let truncated = matches.len() > DEFAULT_GLOB_LIMIT;
@@ -120,94 +121,6 @@ fn system_time_to_epoch_ms(time: SystemTime) -> Option<u128> {
         .map(|value| value.as_millis())
 }
 
-fn resolve_workspace_path(cwd: &Path, path: &Path) -> Result<PathBuf> {
-    let workspace_root = fs::canonicalize(cwd)
-        .with_context(|| format!("failed to resolve workspace root {}", cwd.display()))?;
-    let workspace_path = normalize_path(cwd);
-    let candidate = if path.is_absolute() {
-        normalize_path(path)
-    } else {
-        normalize_path(&cwd.join(path))
-    };
-    if !candidate.starts_with(&workspace_path) {
-        bail!(
-            "path {} escapes workspace {}",
-            path.display(),
-            cwd.display()
-        );
-    }
-
-    let ancestor = nearest_existing_ancestor(&candidate).ok_or_else(|| {
-        anyhow!(
-            "failed to resolve path {} inside workspace {}",
-            path.display(),
-            cwd.display()
-        )
-    })?;
-    let canonical_ancestor = fs::canonicalize(&ancestor)
-        .with_context(|| format!("failed to canonicalize {}", ancestor.display()))?;
-    if !canonical_ancestor.starts_with(&workspace_root) {
-        bail!(
-            "path {} resolves through symlink outside workspace {}",
-            path.display(),
-            cwd.display()
-        );
-    }
-
-    if candidate.exists() {
-        let canonical_candidate = fs::canonicalize(&candidate)
-            .with_context(|| format!("failed to canonicalize {}", candidate.display()))?;
-        if !canonical_candidate.starts_with(&workspace_root) {
-            bail!(
-                "path {} resolves outside workspace {}",
-                path.display(),
-                cwd.display()
-            );
-        }
-    }
-
-    Ok(candidate)
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(
-                    normalized.components().next_back(),
-                    Some(Component::Normal(_))
-                ) {
-                    normalized.pop();
-                } else if !normalized.has_root() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-    if normalized.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        normalized
-    }
-}
-
-fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
-    let mut current = path.to_path_buf();
-    loop {
-        if current.exists() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +136,7 @@ mod tests {
 
         let output = execute_claude_glob(
             temp.path(),
+            &[],
             json!({
                 "pattern": "src/*.rs"
             }),
@@ -244,6 +158,7 @@ mod tests {
 
         let output = execute_claude_glob(
             temp.path(),
+            &[],
             json!({
                 "pattern": "*.txt"
             }),
@@ -255,10 +170,11 @@ mod tests {
     }
 
     #[test]
-    fn glob_rejects_paths_outside_workspace() {
+    fn glob_rejects_paths_outside_working_directories() {
         let temp = tempfile::tempdir().unwrap();
         let error = execute_claude_glob(
             temp.path(),
+            &[],
             json!({
                 "pattern": "*.rs",
                 "path": "../"
@@ -266,6 +182,31 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("escapes workspace"));
+        assert!(error.contains("outside the current working directories"));
+    }
+
+    #[test]
+    fn glob_searches_added_working_directories_relative_to_selected_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("repo");
+        let extra = temp.path().join("extra");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(extra.join("src")).unwrap();
+        fs::write(extra.join("src/lib.rs"), "pub fn extra() {}\n").unwrap();
+
+        let output = execute_claude_glob(
+            &cwd,
+            &[extra.clone()],
+            json!({
+                "pattern": "src/*.rs",
+                "path": extra.display().to_string()
+            }),
+        )
+        .unwrap();
+
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        let filenames = parsed["filenames"].as_array().unwrap();
+        assert_eq!(filenames.len(), 1);
+        assert_eq!(filenames[0], json!("src/lib.rs"));
     }
 }

@@ -1,4 +1,6 @@
+use super::common::open_text_file_in_editor;
 use super::emit_system;
+use super::CommandActionEntry;
 use crate::permissions::{
     load_or_initialize_permissions, load_or_initialize_sandbox_settings, normalize_tool_id,
     write_permissions, write_sandbox_settings, PermissionsSettings, SandboxSettings,
@@ -63,9 +65,13 @@ pub(crate) fn render_config_summary(state: &AppState) -> Result<String> {
         state.config.default_model.as_deref().unwrap_or("<unset>"),
         state.config.openai_base_url.as_deref().unwrap_or("<unset>"),
         state.config.theme,
-        if state.vim_mode { "vim" } else { "default" },
-        state.fast_mode,
-        state.effort_level,
+        state.config.editor_mode.as_str(),
+        state.config.fast_mode,
+        state
+            .config
+            .effort_level
+            .as_deref()
+            .unwrap_or("auto"),
         state.prompt_color,
         state.config.ui.no_alt_screen,
         state.config.ui.tmux_golden_mode,
@@ -304,9 +310,29 @@ statusLinePadding"
                 })
                 .or_else(|| state.current_provider.clone());
         }
-        "editorMode" => state.vim_mode = matches!(value, "vim"),
-        "fastMode" => state.fast_mode = parse_bool(value)?,
-        "effortLevel" => state.effort_level = value.to_string(),
+        "editorMode" => {
+            state.vim_mode = matches!(value, "vim");
+            state.config.editor_mode = if state.vim_mode {
+                "vim".to_string()
+            } else {
+                "normal".to_string()
+            };
+        }
+        "fastMode" => {
+            let parsed = parse_bool(value)?;
+            state.fast_mode = parsed;
+            state.config.fast_mode = parsed;
+        }
+        "effortLevel" => match value {
+            "auto" | "unset" | "default" => {
+                state.effort_level = "auto".to_string();
+                state.config.effort_level = Some("auto".to_string());
+            }
+            _ => {
+                state.effort_level = value.to_string();
+                state.config.effort_level = Some(value.to_string());
+            }
+        },
         "promptColor" => state.prompt_color = value.to_string(),
         "default_provider" => state.config.default_provider = Some(value.to_string()),
         "default_model" => state.config.default_model = Some(value.to_string()),
@@ -377,16 +403,28 @@ fn normalize_config_key(key: &str) -> &str {
     }
 }
 
-/// Persists the currently selected provider and model to the user config file.
-pub(crate) fn persist_user_model_selection(state: &AppState) -> Result<()> {
+/// Persists the current user-scoped settings to `~/.puffer/config.toml`.
+pub(crate) fn persist_user_settings(state: &AppState) -> Result<()> {
     let paths = ConfigPaths::discover(&state.cwd);
     save_user_config(&paths, &state.config)
+}
+
+/// Persists the currently selected provider and model to the user config file.
+pub(crate) fn persist_user_model_selection(state: &AppState) -> Result<()> {
+    persist_user_settings(state)
 }
 
 /// Reloads the layered Puffer config from disk into the active session state.
 pub(crate) fn reload_config_from_disk(state: &mut AppState) -> Result<()> {
     let paths = ConfigPaths::discover(&state.cwd);
     state.config = load_config(&paths)?;
+    state.vim_mode = state.config.editor_mode == "vim";
+    state.fast_mode = state.config.fast_mode;
+    state.effort_level = state
+        .config
+        .effort_level
+        .clone()
+        .unwrap_or_else(|| "medium".to_string());
     Ok(())
 }
 
@@ -588,6 +626,10 @@ pub(crate) fn handle_sandbox_command(
         );
     }
 
+    if matches!(trimmed, "open" | "edit") {
+        return open_sandbox_config(state, session_store, &sandbox_path);
+    }
+
     if let Some(pattern) = trimmed.strip_prefix("exclude ") {
         let pattern = pattern.trim().trim_matches('"');
         if pattern.is_empty() {
@@ -668,11 +710,98 @@ pub(crate) fn handle_sandbox_command(
     )
 }
 
+/// Builds the interactive `/sandbox` action list used by the TUI picker.
+pub(crate) fn render_sandbox_actions(state: &AppState) -> Result<Vec<CommandActionEntry>> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let sandbox_path = paths.workspace_config_dir.join("sandbox.toml");
+    let settings = load_or_initialize_sandbox_settings(&sandbox_path, state)?;
+    let mut actions = vec![
+        CommandActionEntry {
+            command: "/sandbox workspace-write".to_string(),
+            description: sandbox_mode_description(&settings.mode, "workspace-write"),
+        },
+        CommandActionEntry {
+            command: "/sandbox read-only".to_string(),
+            description: sandbox_mode_description(&settings.mode, "read-only"),
+        },
+        CommandActionEntry {
+            command: format!(
+                "/sandbox auto-allow {}",
+                if settings.auto_allow { "false" } else { "true" }
+            ),
+            description: format!(
+                "Auto-allow tool prompts: {}",
+                if settings.auto_allow { "on" } else { "off" }
+            ),
+        },
+        CommandActionEntry {
+            command: format!(
+                "/sandbox allow-unsandboxed {}",
+                if settings.allow_unsandboxed_fallback {
+                    "false"
+                } else {
+                    "true"
+                }
+            ),
+            description: format!(
+                "Allow unsandboxed Bash fallback: {}",
+                if settings.allow_unsandboxed_fallback {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
+        },
+        CommandActionEntry {
+            command: "/sandbox open".to_string(),
+            description: format!("Open sandbox config ({})", sandbox_path.display()),
+        },
+        CommandActionEntry {
+            command: "/sandbox path".to_string(),
+            description: "Show sandbox config path".to_string(),
+        },
+    ];
+    if !settings.excluded_commands.is_empty() {
+        actions.push(CommandActionEntry {
+            command: "/sandbox clear-excludes".to_string(),
+            description: format!(
+                "Clear {} excluded command pattern{}",
+                settings.excluded_commands.len(),
+                if settings.excluded_commands.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+        });
+    }
+    Ok(actions)
+}
+
 fn parse_bool(value: &str) -> Result<bool> {
     match value {
         "true" | "on" | "1" => Ok(true),
         "false" | "off" | "0" => Ok(false),
         _ => anyhow::bail!("expected a boolean value, got `{value}`"),
+    }
+}
+
+fn open_sandbox_config(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    sandbox_path: &PathBuf,
+) -> Result<()> {
+    match open_text_file_in_editor(sandbox_path) {
+        Ok(status) => emit_system(state, session_store, status),
+        Err(error) => emit_system(
+            state,
+            session_store,
+            format!(
+                "Could not open sandbox config in an editor: {error}\nPath: {}",
+                sandbox_path.display()
+            ),
+        ),
     }
 }
 
@@ -705,6 +834,14 @@ fn render_sandbox_summary(path: &PathBuf, settings: &SandboxSettings) -> String 
         settings.allow_unsandboxed_fallback,
         exclusions
     )
+}
+
+fn sandbox_mode_description(current_mode: &str, candidate_mode: &str) -> String {
+    if current_mode == candidate_mode {
+        format!("Sandbox mode: {candidate_mode} (current)")
+    } else {
+        format!("Switch sandbox mode to {candidate_mode}")
+    }
 }
 
 #[cfg(test)]

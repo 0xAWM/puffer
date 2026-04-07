@@ -1,4 +1,5 @@
 use super::emit_system;
+use super::CommandActionEntry;
 use crate::runtime::claude_tools::workflow::{task_get, task_list, task_output, task_stop};
 use crate::{AppState, TaskStatus};
 use anyhow::{Context, Result};
@@ -12,14 +13,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Describes one interactive `/tasks` action exposed in the TUI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskActionEntry {
-    /// The slash command executed when the action is selected.
-    pub command: String,
-    /// The row description shown in the interactive picker.
-    pub description: String,
-}
+/// Backward-compatible alias for task action picker rows.
+pub type TaskActionEntry = CommandActionEntry;
 
 /// Handles `/tasks` by inspecting and managing persisted workflow task state.
 pub(crate) fn handle_tasks_command(

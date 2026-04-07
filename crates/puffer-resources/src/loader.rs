@@ -9,6 +9,7 @@ use puffer_config::ConfigPaths;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
+use serde_yaml::{Mapping, Value as YamlValue};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -295,26 +296,42 @@ fn load_skill_dir(dir: &Path, kind: SourceKind) -> Result<Vec<LoadedItem<SkillSp
         }
         let raw = fs::read_to_string(&skill_path)
             .with_context(|| format!("failed to read skill file {}", skill_path.display()))?;
-        let (frontmatter, body) = split_frontmatter(&raw);
-        let raw_name = frontmatter
-            .get("name")
-            .cloned()
+        let (frontmatter, body) = split_frontmatter(&raw).with_context(|| {
+            format!("failed to parse skill frontmatter {}", skill_path.display())
+        })?;
+        let raw_name = frontmatter_string(&frontmatter, &["name"])
             .unwrap_or_else(|| path.file_name().unwrap().to_string_lossy().to_string());
         let name = normalize_skill_name(&raw_name);
-        let description = frontmatter
-            .get("description")
-            .cloned()
+        let description = frontmatter_string(&frontmatter, &["description"])
             .unwrap_or_else(|| first_descriptive_line(&body).to_string());
-        let disable_model_invocation = frontmatter
-            .get("disable-model-invocation")
-            .map(|value| matches!(value.as_str(), "true" | "1" | "yes"))
-            .unwrap_or(false);
+        let disable_model_invocation = frontmatter_bool(
+            &frontmatter,
+            &["disable-model-invocation", "disableModelInvocation"],
+        )
+        .unwrap_or(false);
+        let allowed_tools =
+            frontmatter_string_list(&frontmatter, &["allowed-tools", "allowedTools"]);
+        let argument_hint = frontmatter_string(&frontmatter, &["argument-hint", "argumentHint"]);
+        let argument_names =
+            frontmatter_whitespace_list(&frontmatter, &["arguments", "argumentNames"]);
+        let user_invocable =
+            frontmatter_bool(&frontmatter, &["user-invocable", "userInvocable"]).unwrap_or(true);
+        let model = frontmatter_string(&frontmatter, &["model"]);
+        let effort = frontmatter_string(&frontmatter, &["effort"]);
+        let context = frontmatter_string(&frontmatter, &["context"]);
 
         items.push(LoadedItem {
             value: SkillSpec {
                 name,
                 description,
                 content: body,
+                allowed_tools,
+                argument_hint,
+                argument_names,
+                user_invocable,
+                model,
+                effort,
+                context,
                 disable_model_invocation,
             },
             source_info: SourceInfo {
@@ -355,32 +372,133 @@ fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
     Ok(entries)
 }
 
-fn split_frontmatter(raw: &str) -> (BTreeMap<String, String>, String) {
+fn split_frontmatter(raw: &str) -> Result<(Mapping, String)> {
     let normalized = raw.replace("\r\n", "\n");
     let mut lines = normalized.lines();
     if lines.next() != Some("---") {
-        return (BTreeMap::new(), normalized);
+        return Ok((Mapping::new(), normalized));
     }
 
-    let mut frontmatter = BTreeMap::new();
+    let mut frontmatter_raw = String::new();
     let mut offset = 4usize;
     for line in normalized.lines().skip(1) {
         offset += line.len() + 1;
         if line == "---" {
             break;
         }
-        if let Some((key, value)) = line.split_once(':') {
-            frontmatter.insert(key.trim().to_string(), value.trim().to_string());
-        }
+        frontmatter_raw.push_str(line);
+        frontmatter_raw.push('\n');
     }
-    (
+    let frontmatter = if frontmatter_raw.trim().is_empty() {
+        Mapping::new()
+    } else {
+        serde_yaml::from_str::<Mapping>(&frontmatter_raw)
+            .context("invalid YAML frontmatter in skill")?
+    };
+    Ok((
         frontmatter,
         normalized
             .get(offset..)
             .map(str::trim_start)
             .unwrap_or_default()
             .to_string(),
-    )
+    ))
+}
+
+fn frontmatter_string(frontmatter: &Mapping, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        frontmatter
+            .get(YamlValue::String((*key).to_string()))
+            .and_then(yaml_scalar_to_string)
+    })
+}
+
+fn frontmatter_bool(frontmatter: &Mapping, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| {
+        let value = frontmatter.get(YamlValue::String((*key).to_string()))?;
+        match value {
+            YamlValue::Bool(flag) => Some(*flag),
+            YamlValue::String(flag) => match flag.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Some(true),
+                "false" | "0" | "no" | "off" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        }
+    })
+}
+
+fn frontmatter_string_list(frontmatter: &Mapping, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| {
+            let value = frontmatter.get(YamlValue::String((*key).to_string()))?;
+            Some(match value {
+                YamlValue::Sequence(values) => values
+                    .iter()
+                    .filter_map(yaml_scalar_to_string)
+                    .flat_map(|value| {
+                        value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+                YamlValue::String(values) => values
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                other => yaml_scalar_to_string(other)
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect(),
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn frontmatter_whitespace_list(frontmatter: &Mapping, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| {
+            let value = frontmatter.get(YamlValue::String((*key).to_string()))?;
+            Some(match value {
+                YamlValue::Sequence(values) => values
+                    .iter()
+                    .filter_map(yaml_scalar_to_string)
+                    .flat_map(|value| {
+                        value
+                            .split_whitespace()
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+                YamlValue::String(values) => {
+                    values.split_whitespace().map(str::to_string).collect()
+                }
+                other => yaml_scalar_to_string(other)
+                    .into_iter()
+                    .flat_map(|value| {
+                        value
+                            .split_whitespace()
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn yaml_scalar_to_string(value: &YamlValue) -> Option<String> {
+    match value {
+        YamlValue::String(text) => Some(text.clone()),
+        YamlValue::Bool(flag) => Some(flag.to_string()),
+        YamlValue::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
 }
 
 fn first_descriptive_line(raw: &str) -> &str {
@@ -558,6 +676,38 @@ mod tests {
         assert!(skill_by_name(&loaded, "Review Helper ++").is_some());
         assert!(skill_by_name(&loaded, "review helper").is_some());
         assert!(skill_by_name(&loaded, "review-helper").is_some());
+    }
+
+    #[test]
+    fn skill_loader_parses_extended_frontmatter_fields() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let resources_dir = root.join(".puffer/resources");
+        fs::create_dir_all(resources_dir.join("skills/review-helper")).unwrap();
+        fs::write(
+            resources_dir.join("skills/review-helper/SKILL.md"),
+            "---\nname: Review Helper ++\ndescription: Review changes\nallowed-tools:\n  - Read\n  - Grep, Glob\nargument-hint: <ticket>\narguments: ticket env\nmodel: openai/gpt-5\neffort: high\nuser-invocable: false\ndisable-model-invocation: true\ncontext: fork\n---\nBody\n",
+        )
+        .unwrap();
+
+        let paths = ConfigPaths {
+            workspace_root: root.clone(),
+            workspace_config_dir: root.join(".puffer"),
+            user_config_dir: root.join(".home/.puffer"),
+            builtin_resources_dir: root.join("resources"),
+        };
+        let loaded = load_resources(&paths).unwrap();
+        let skill = &loaded.skills[0].value;
+        assert_eq!(skill.name, "review-helper");
+        assert_eq!(skill.description, "Review changes");
+        assert_eq!(skill.allowed_tools, vec!["Read", "Grep", "Glob"]);
+        assert_eq!(skill.argument_hint.as_deref(), Some("<ticket>"));
+        assert_eq!(skill.argument_names, vec!["ticket", "env"]);
+        assert_eq!(skill.model.as_deref(), Some("openai/gpt-5"));
+        assert_eq!(skill.effort.as_deref(), Some("high"));
+        assert_eq!(skill.context.as_deref(), Some("fork"));
+        assert!(!skill.user_invocable);
+        assert!(skill.disable_model_invocation);
     }
 
     #[test]

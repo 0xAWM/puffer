@@ -1,75 +1,10 @@
+use crate::workspace_paths;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Claude-compatible NotebookEdit description text.
-pub fn notebook_edit_description() -> &'static str {
-    "Replace the contents of a specific cell in a Jupyter notebook."
-}
-
-/// Returns the model-facing input schema for the Claude-compatible NotebookEdit tool.
-pub fn notebook_edit_input_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "notebook_path": {
-                "type": "string",
-                "description": "The absolute path to the Jupyter notebook file to edit (must be absolute, not relative)"
-            },
-            "cell_id": {
-                "type": "string",
-                "description": "The ID of the cell to edit. When inserting a new cell, the new cell will be inserted after the cell with this ID, or at the beginning if not specified."
-            },
-            "new_source": {
-                "type": "string",
-                "description": "The new source for the cell"
-            },
-            "cell_type": {
-                "type": "string",
-                "enum": ["code", "markdown"],
-                "description": "The type of the cell (code or markdown). If not specified, it defaults to the current cell type. If using edit_mode=insert, this is required."
-            },
-            "edit_mode": {
-                "type": "string",
-                "enum": ["replace", "insert", "delete"],
-                "description": "The type of edit to make (replace, insert, delete). Defaults to replace."
-            }
-        },
-        "required": ["notebook_path", "new_source"],
-        "additionalProperties": false
-    })
-}
-
-/// Returns the model-facing output schema for the Claude-compatible NotebookEdit tool.
-pub fn notebook_edit_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "new_source": { "type": "string", "description": "The new source code that was written to the cell" },
-            "cell_id": { "type": "string", "description": "The ID of the cell that was edited" },
-            "cell_type": { "type": "string", "description": "The type of the cell" },
-            "language": { "type": "string", "description": "The programming language of the notebook" },
-            "edit_mode": { "type": "string", "description": "The edit mode that was used" },
-            "error": { "type": "string", "description": "Error message if the operation failed" },
-            "notebook_path": { "type": "string", "description": "The path to the notebook file" },
-            "original_file": { "type": "string", "description": "The original notebook content before modification" },
-            "updated_file": { "type": "string", "description": "The updated notebook content after modification" }
-        },
-        "required": [
-            "new_source",
-            "cell_type",
-            "language",
-            "edit_mode",
-            "notebook_path",
-            "original_file",
-            "updated_file"
-        ],
-        "additionalProperties": false
-    })
-}
 
 #[derive(Debug, Deserialize)]
 struct NotebookEditInput {
@@ -99,10 +34,14 @@ pub struct NotebookEditOutput {
 }
 
 /// Executes the Claude-compatible NotebookEdit operation and returns a JSON payload string.
-pub fn execute_notebook_edit_tool(cwd: &Path, input: Value) -> Result<String> {
+pub fn execute_notebook_edit_tool(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    input: Value,
+) -> Result<String> {
     let parsed: NotebookEditInput =
         serde_json::from_value(input).context("invalid NotebookEdit input payload")?;
-    let notebook_path = resolve_notebook_path(cwd, &parsed.notebook_path)?;
+    let notebook_path = resolve_notebook_path(cwd, working_dirs, &parsed.notebook_path)?;
     let output = match execute_notebook_edit_inner(&parsed, &notebook_path) {
         Ok(output) => output,
         Err(error) => NotebookEditOutput {
@@ -238,12 +177,22 @@ fn execute_notebook_edit_inner(
     })
 }
 
-fn resolve_notebook_path(cwd: &Path, notebook_path: &str) -> Result<PathBuf> {
+fn resolve_notebook_path(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    notebook_path: &str,
+) -> Result<PathBuf> {
     let candidate = PathBuf::from(notebook_path);
-    if candidate.is_absolute() {
-        return Ok(candidate);
+    if !candidate.is_absolute()
+        && !notebook_path.trim().starts_with("~/")
+        && notebook_path.trim() != "~"
+    {
+        bail!(
+            "The notebook_path must be absolute, received `{}`",
+            candidate.display()
+        );
     }
-    Ok(cwd.join(candidate))
+    workspace_paths::resolve_path_in_workspaces(cwd, working_dirs, Path::new(notebook_path))
 }
 
 fn ensure_notebook_path(path: &Path) -> Result<()> {
@@ -442,6 +391,7 @@ mod tests {
 
         let output = execute_notebook_edit_tool(
             temp.path(),
+            &[],
             json!({
                 "notebook_path": notebook_path.display().to_string(),
                 "cell_id": "alpha",
@@ -470,6 +420,7 @@ mod tests {
 
         let output = execute_notebook_edit_tool(
             temp.path(),
+            &[],
             json!({
                 "notebook_path": notebook_path.display().to_string(),
                 "new_source": "first",
@@ -496,6 +447,7 @@ mod tests {
 
         let output = execute_notebook_edit_tool(
             temp.path(),
+            &[],
             json!({
                 "notebook_path": notebook_path.display().to_string(),
                 "new_source": "x",
@@ -518,6 +470,7 @@ mod tests {
 
         let output = execute_notebook_edit_tool(
             temp.path(),
+            &[],
             json!({
                 "notebook_path": notebook_path.display().to_string(),
                 "cell_id": "cell-1",
@@ -542,6 +495,7 @@ mod tests {
 
         let output = execute_notebook_edit_tool(
             temp.path(),
+            &[],
             json!({
                 "notebook_path": notebook_path.display().to_string(),
                 "new_source": "x",
@@ -554,5 +508,28 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("Cell type is required")));
+    }
+
+    #[test]
+    fn notebook_edit_rejects_paths_outside_working_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let notebook_path = outside.path().join("demo.ipynb");
+        write_notebook(&notebook_path, &sample_notebook());
+
+        let error = execute_notebook_edit_tool(
+            temp.path(),
+            &[],
+            json!({
+                "notebook_path": notebook_path.display().to_string(),
+                "cell_id": "alpha",
+                "new_source": "print('updated')",
+                "edit_mode": "replace"
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("outside the current working directories"));
     }
 }

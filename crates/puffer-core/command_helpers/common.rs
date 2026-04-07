@@ -1,9 +1,9 @@
+use super::append_tool_invocations;
 use crate::{AppState, MessageRole};
 use anyhow::{Context, Result};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use puffer_resources::{skill_by_name, LoadedResources, SourceKind};
+use puffer_resources::{skill_by_name, LoadedResources, SkillSpec, SourceKind};
 use puffer_session_store::{GitDiffSnapshot, SessionStore, TranscriptEvent};
-use puffer_tools::ToolRegistry;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
@@ -47,73 +47,17 @@ pub fn render_skills_panel(resources: &LoadedResources) -> String {
     text.trim_end().to_string()
 }
 
-/// Summarizes workspace health, loaded resources, and auth state.
-pub(crate) fn run_doctor(
-    state: &mut AppState,
-    resources: &LoadedResources,
-    providers: &ProviderRegistry,
-    auth_store: &AuthStore,
-    session_store: &SessionStore,
-) -> Result<()> {
-    let registry = ToolRegistry::from_resources(resources);
-    let mut text = String::from("Puffer doctor summary:\n");
-    let _ = writeln!(
-        &mut text,
-        "provider={} model={}",
-        state.current_provider.as_deref().unwrap_or("<unset>"),
-        state.current_model.as_deref().unwrap_or("<unset>")
-    );
-    let _ = writeln!(&mut text, "tool_count={}", registry.tools().count());
-    let _ = writeln!(
-        &mut text,
-        "provider_count={}",
-        providers.providers().count()
-    );
-    let discovery_count = providers
-        .provider_entries()
-        .filter(|provider| provider.descriptor.discovery.is_some())
-        .count();
-    let _ = writeln!(&mut text, "providers_with_discovery={discovery_count}");
-    let _ = writeln!(
-        &mut text,
-        "stored_auth_providers={}",
-        auth_store.provider_ids().count()
-    );
-    let _ = writeln!(&mut text, "hooks={}", resources.hooks.len());
-    let _ = writeln!(
-        &mut text,
-        "resource_diagnostics={}",
-        resources.diagnostics.len()
-    );
-    let _ = writeln!(&mut text, "recorded_tasks={}", state.tasks().len());
-    let _ = writeln!(&mut text, "working_dirs={}", state.working_dirs.len());
-    let _ = writeln!(&mut text, "transcript_messages={}", state.transcript.len());
-    if !resources.diagnostics.is_empty() {
-        let _ = writeln!(&mut text, "Diagnostics:");
-        for diagnostic in &resources.diagnostics {
-            let _ = writeln!(&mut text, "- {diagnostic}");
-        }
-    }
-    emit_system(state, session_store, text)
-}
-
 /// Prints a compact summary of transcript and loaded-resource context.
 pub(crate) fn describe_context(
     state: &mut AppState,
     resources: &LoadedResources,
+    providers: &ProviderRegistry,
     session_store: &SessionStore,
 ) -> Result<()> {
     emit_system(
         state,
         session_store,
-        format!(
-            "Context summary:\ntranscript_messages={}\nworking_dirs={}\nprompts={}\nskills={}\nplugins={}",
-            state.transcript.len(),
-            state.working_dirs.len(),
-            resources.prompts.len(),
-            resources.skills.len(),
-            resources.plugins.len()
-        ),
+        crate::runtime::render_context_usage_summary(state, resources, providers)?,
     )
 }
 
@@ -213,24 +157,100 @@ pub(crate) fn render_utf8_qr(data: &str) -> Option<String> {
     }
 }
 
-/// Expands a `/skill:<name>` command into the loaded skill contents.
+/// Executes one loaded skill command through the provider runtime.
 pub(crate) fn execute_skill_command(
     state: &mut AppState,
     resources: &LoadedResources,
+    providers: &mut ProviderRegistry,
+    auth_store: &mut AuthStore,
     session_store: &SessionStore,
     skill_name: &str,
+    args: &str,
 ) -> Result<()> {
-    if let Some(skill) = skill_by_name(resources, skill_name) {
-        emit_system(
+    let Some(skill) = skill_by_name(resources, skill_name) else {
+        return emit_system(state, session_store, format!("Unknown skill {skill_name}."));
+    };
+    if !skill.value.user_invocable {
+        return emit_system(
             state,
             session_store,
             format!(
-                "Skill {}\n{}\n\n{}",
-                skill.value.name, skill.value.description, skill.value.content
+                "This skill can only be invoked by Claude, not directly by users. Ask Claude to use the \"{}\" skill for you.",
+                skill.value.name
             ),
-        )
-    } else {
-        emit_system(state, session_store, format!("Unknown skill {skill_name}."))
+        );
+    }
+
+    let _ = providers.discover_and_merge_all(auth_store);
+    let saved_provider = state.current_provider.clone();
+    let saved_model = state.current_model.clone();
+    let saved_effort = state.effort_level.clone();
+    apply_skill_runtime_overrides(state, providers, &skill.value);
+
+    let rendered =
+        crate::skill_support::render_skill_prompt(skill, args, &state.session.id.to_string());
+    let tool_filter = crate::runtime::build_request_tool_filter(&skill.value.allowed_tools)?;
+
+    state.push_message(MessageRole::User, rendered.clone());
+    session_store.append_event(
+        state.session.id,
+        TranscriptEvent::UserMessage {
+            text: rendered.clone(),
+        },
+    )?;
+
+    let outcome = crate::runtime::execute_user_prompt_with_tool_filter(
+        state,
+        resources,
+        providers,
+        auth_store,
+        &rendered,
+        tool_filter.as_ref(),
+    );
+
+    state.current_provider = saved_provider;
+    state.current_model = saved_model;
+    state.effort_level = saved_effort;
+
+    match outcome {
+        Ok(turn) => {
+            append_tool_invocations(state, session_store, &turn.tool_invocations)?;
+            state.push_message(MessageRole::Assistant, turn.assistant_text.clone());
+            session_store.append_event(
+                state.session.id,
+                TranscriptEvent::AssistantMessage {
+                    text: turn.assistant_text,
+                },
+            )?;
+            Ok(())
+        }
+        Err(error) => emit_system(
+            state,
+            session_store,
+            format!("Skill command /skill:{} failed: {error}", skill.value.name),
+        ),
+    }
+}
+
+fn apply_skill_runtime_overrides(
+    state: &mut AppState,
+    providers: &ProviderRegistry,
+    skill: &SkillSpec,
+) {
+    if let Some(model_id) = skill.model.as_deref() {
+        if let Some(model) = providers.resolve_model(model_id) {
+            state.current_provider = Some(model.provider.clone());
+            state.current_model = Some(format!("{}/{}", model.provider, model.id));
+        } else {
+            state.current_model = Some(model_id.to_string());
+            state.current_provider = model_id
+                .split_once('/')
+                .map(|(provider, _)| provider.to_string())
+                .or_else(|| state.current_provider.clone());
+        }
+    }
+    if let Some(effort) = skill.effort.as_deref() {
+        state.effort_level = effort.to_string();
     }
 }
 
@@ -449,12 +469,29 @@ fn append_skill_group(text: &mut String, resources: &LoadedResources, kind: Sour
     let _ = writeln!(text);
     let _ = writeln!(text, "{}:", skill_source_heading(kind));
     for skill in skills {
-        let _ = writeln!(
-            text,
-            "- /skill:{}  {}",
-            skill.value.name, skill.value.description
-        );
+        let command_label = if skill.value.user_invocable {
+            format!("/{}  (alias /skill:{})", skill.value.name, skill.value.name)
+        } else {
+            skill.value.name.clone()
+        };
+        let _ = writeln!(text, "- {}  {}", command_label, skill.value.description);
         let _ = writeln!(text, "  {}", skill.source_info.path.display());
+        if let Some(argument_hint) = skill.value.argument_hint.as_deref() {
+            let _ = writeln!(text, "  args: {}", argument_hint);
+        }
+        if !skill.value.allowed_tools.is_empty() {
+            let _ = writeln!(
+                text,
+                "  allowed tools: {}",
+                skill.value.allowed_tools.join(", ")
+            );
+        }
+        if let Some(model) = skill.value.model.as_deref() {
+            let _ = writeln!(text, "  model: {model}");
+        }
+        if !skill.value.user_invocable {
+            let _ = writeln!(text, "  hidden from slash-command invocation");
+        }
         if skill.value.disable_model_invocation {
             let _ = writeln!(text, "  model invocation disabled");
         }
@@ -541,6 +578,7 @@ mod tests {
                 description: description.to_string(),
                 content: "content".to_string(),
                 disable_model_invocation: false,
+                ..SkillSpec::default()
             },
             source_info: SourceInfo {
                 path: PathBuf::from(path),
@@ -578,11 +616,16 @@ mod tests {
         let rendered = render_skills_panel(&resources);
         assert!(rendered.contains("3 skills loaded."));
         assert!(rendered.contains("Workspace skills:"));
-        assert!(rendered.contains("/skill:workspace-review  Review workspace changes"));
+        assert!(rendered.contains(
+            "/workspace-review  (alias /skill:workspace-review)  Review workspace changes"
+        ));
         assert!(rendered.contains("User skills:"));
-        assert!(rendered.contains("/skill:user-review  Review shared changes"));
+        assert!(
+            rendered.contains("/user-review  (alias /skill:user-review)  Review shared changes")
+        );
         assert!(rendered.contains("Built-in skills:"));
-        assert!(rendered.contains("/skill:builtin-review  Review builtin changes"));
+        assert!(rendered
+            .contains("/builtin-review  (alias /skill:builtin-review)  Review builtin changes"));
     }
 
     #[test]

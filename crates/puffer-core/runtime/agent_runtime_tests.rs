@@ -502,6 +502,7 @@ fn execute_agent_tool_combines_initial_prompt_skills_and_case_insensitive_model(
                 description: "Review skill".to_string(),
                 content: "Check correctness first.".to_string(),
                 disable_model_invocation: false,
+                ..puffer_resources::SkillSpec::default()
             },
             source_info: SourceInfo {
                 path: "reviewer.md".into(),

@@ -1,4 +1,5 @@
 use super::*;
+use puffer_core::supported_commands;
 
 fn picker_commands() -> Vec<CommandSpec> {
     supported_commands()
@@ -11,7 +12,7 @@ fn temp_session_store(tempdir: &tempfile::TempDir) -> SessionStore {
 }
 
 #[test]
-fn model_picker_enter_opens_effort_picker_with_high_default_for_openai() {
+fn onboarding_model_picker_enter_preserves_current_effort_selection() {
     let tempdir = tempdir().unwrap();
     let session_store = temp_session_store(&tempdir);
     let session = session_store
@@ -46,7 +47,7 @@ fn model_picker_enter_opens_effort_picker_with_high_default_for_openai() {
             },
         ],
         selection: 0,
-        onboarding: false,
+        onboarding: true,
     });
 
     handle_key(
@@ -73,12 +74,77 @@ fn model_picker_enter_opens_effort_picker_with_high_default_for_openai() {
         }) => {
             assert_eq!(provider_id, "openai");
             assert_eq!(model_id, "gpt-5");
-            assert_eq!(entries[*selection].selector, "high");
+            assert_eq!(entries[*selection].selector, "medium");
             assert!(entries.iter().any(|entry| entry.selector == "xhigh"));
             assert!(entries.iter().any(|entry| entry.selector == "minimal"));
         }
         other => panic!("expected effort picker, got {other:?}"),
     }
+}
+
+#[test]
+fn slash_command_model_picker_enter_opens_effort_picker_for_selected_model() {
+    let tempdir = tempdir().unwrap();
+    let session_store = temp_session_store(&tempdir);
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let mut resources = sample_resources();
+    let mut providers = sample_providers();
+    let mut auth_store = sample_auth_store();
+    auth_store.set_api_key("openai".to_string(), "token".to_string());
+    let auth_path = ConfigPaths::discover(tempdir.path())
+        .user_config_dir
+        .join("auth.json");
+    let commands = picker_commands();
+    let mut tui = TuiState::default();
+    tui.overlay = Some(OverlayState::ModelPicker {
+        provider_id: "openai".to_string(),
+        entries: vec![ModelPickerEntry {
+            selector: "gpt-5-mini".to_string(),
+            description: "GPT-5 Mini".to_string(),
+            command: None,
+        }],
+        selection: 0,
+        onboarding: false,
+    });
+
+    handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state,
+        &mut resources,
+        &mut providers,
+        &mut auth_store,
+        &auth_path,
+        &session_store,
+        &commands,
+        &mut tui,
+        true,
+    )
+    .unwrap();
+
+    match &tui.overlay {
+        Some(OverlayState::EffortPicker {
+            provider_id,
+            model_id,
+            entries,
+            selection,
+            onboarding,
+        }) => {
+            assert_eq!(provider_id, "openai");
+            assert_eq!(model_id, "gpt-5-mini");
+            assert_eq!(entries[*selection].selector, "medium");
+            assert!(!onboarding);
+        }
+        other => panic!("overlay={other:?}"),
+    }
+    assert_eq!(state.current_provider.as_deref(), None);
+    assert_eq!(state.current_model.as_deref(), None);
 }
 
 #[test]

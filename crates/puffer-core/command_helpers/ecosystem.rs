@@ -1,5 +1,6 @@
 use super::common::open_text_file_in_editor;
 use super::emit_system;
+use super::CommandActionEntry;
 use crate::AppState;
 use anyhow::Result;
 use puffer_config::{ensure_workspace_dirs, ConfigPaths};
@@ -10,14 +11,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-/// Describes one interactive `/mcp` action exposed in the TUI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpActionEntry {
-    /// The slash command executed when the action is selected.
-    pub command: String,
-    /// The row description shown in the interactive picker.
-    pub description: String,
-}
+/// Backward-compatible alias for MCP action picker rows.
+pub type McpActionEntry = CommandActionEntry;
 
 /// Lists loaded MCP servers from both resource packs and plugins.
 #[allow(dead_code)]
@@ -63,22 +58,11 @@ pub(crate) fn list_ides(
     resources: &LoadedResources,
     session_store: &SessionStore,
 ) -> Result<()> {
-    if resources.ides.is_empty() {
-        return emit_system(
-            state,
-            session_store,
-            "No IDE integrations are configured.".to_string(),
-        );
-    }
-    let mut text = String::from("IDE integrations:\n");
-    for ide in &resources.ides {
-        let _ = writeln!(
-            &mut text,
-            "{} - {}",
-            ide.value.display_name, ide.value.description
-        );
-    }
-    emit_system(state, session_store, text)
+    emit_system(
+        state,
+        session_store,
+        render_ide_listing(&collect_ide_entries(resources)),
+    )
 }
 
 /// Shows or materializes the workspace MCP directory.
@@ -238,49 +222,49 @@ pub(crate) fn handle_ide_command(
     ensure_workspace_dirs(&paths)?;
     let ide_dir = paths.workspace_config_dir.join("resources/ides");
     fs::create_dir_all(&ide_dir)?;
-    let ide_path = ide_dir.join("workspace.yaml");
-    if !ide_path.exists() {
-        fs::write(&ide_path, default_ide_contents())?;
-    }
-    if args.trim() == "path" {
+    let workspace_manifest = ensure_workspace_ide_manifest(&ide_dir)?;
+    let entries = collect_ide_entries(resources);
+    let trimmed = args.trim();
+
+    if trimmed == "path" {
         return emit_system(
             state,
             session_store,
-            format!("IDE directory: {}", ide_dir.display()),
+            format!(
+                "IDE directory: {}\nWorkspace IDE manifest: {}",
+                ide_dir.display(),
+                workspace_manifest.display()
+            ),
         );
     }
-    if args.trim() == "list" {
-        return list_ides(state, resources, session_store);
+    if trimmed == "list" {
+        return emit_system(state, session_store, render_ide_listing(&entries));
     }
-    if args.trim() == "open" {
-        return emit_system(
-            state,
-            session_store,
-            format!("Open your IDE integration from {}.", ide_dir.display()),
-        );
+    if matches!(trimmed, "open" | "edit") {
+        return open_ide_manifest(state, session_store, &workspace_manifest);
+    }
+    if let Some(selector) = trimmed
+        .split_once(' ')
+        .filter(|(command, _)| matches!(*command, "open" | "edit"))
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return open_named_ide_manifest(state, session_store, &entries, selector);
+    }
+    if let Some(selector) = trimmed
+        .strip_prefix("show ")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return describe_ide_entry(state, session_store, &entries, selector);
+    }
+    if entries.iter().any(|entry| entry.selector == trimmed) {
+        return describe_ide_entry(state, session_store, &entries, trimmed);
     }
     emit_system(
         state,
         session_store,
-        format!(
-            "IDE directory: {}\nloaded_ides={}\n{}{}",
-            ide_dir.display(),
-            resources.ides.len(),
-            if resources.ides.is_empty() {
-                format!("Example IDE file: {}\n", ide_path.display())
-            } else {
-                let mut summary = String::from("Loaded IDE integrations:\n");
-                for ide in &resources.ides {
-                    let _ = writeln!(
-                        &mut summary,
-                        "- {} -> {}",
-                        ide.value.id, ide.value.display_name
-                    );
-                }
-                summary
-            },
-            fs::read_to_string(&ide_path)?
-        ),
+        render_ide_summary(&ide_dir, &workspace_manifest, &entries)?,
     )
 }
 
@@ -313,6 +297,47 @@ fn default_ide_contents() -> &'static str {
     "id: workspace\n\
 display_name: Workspace IDE\n\
 description: Example IDE integration\n"
+}
+
+/// Builds the interactive `/ide` action list used by the TUI picker.
+pub(crate) fn render_ide_actions(
+    state: &AppState,
+    resources: &LoadedResources,
+) -> Result<Vec<CommandActionEntry>> {
+    let paths = ConfigPaths::discover(&state.cwd);
+    ensure_workspace_dirs(&paths)?;
+    let ide_dir = paths.workspace_config_dir.join("resources/ides");
+    fs::create_dir_all(&ide_dir)?;
+    let workspace_manifest = ensure_workspace_ide_manifest(&ide_dir)?;
+    let entries = collect_ide_entries(resources);
+    let mut actions = vec![
+        CommandActionEntry {
+            command: "/ide open".to_string(),
+            description: format!(
+                "Open workspace IDE manifest ({})",
+                workspace_manifest.display()
+            ),
+        },
+        CommandActionEntry {
+            command: "/ide path".to_string(),
+            description: "Show IDE resource paths".to_string(),
+        },
+        CommandActionEntry {
+            command: "/ide list".to_string(),
+            description: "List loaded IDE integrations".to_string(),
+        },
+    ];
+    for entry in &entries {
+        actions.push(CommandActionEntry {
+            command: format!("/ide show {}", entry.selector),
+            description: format!("{} [{}] {}", entry.label, entry.source, entry.description),
+        });
+        actions.push(CommandActionEntry {
+            command: format!("/ide open {}", entry.selector),
+            description: format!("Open manifest {}", entry.path.display()),
+        });
+    }
+    Ok(actions)
 }
 
 /// Renders the MCP summary shown by `/mcp` with no arguments.
@@ -605,6 +630,138 @@ fn render_mcp_listing(entries: &[McpEntry], enablement: &McpEnablement) -> Strin
         );
     }
     text
+}
+
+#[derive(Debug, Clone)]
+struct IdeEntry {
+    selector: String,
+    label: String,
+    description: String,
+    source: String,
+    path: PathBuf,
+}
+
+fn ensure_workspace_ide_manifest(ide_dir: &PathBuf) -> Result<PathBuf> {
+    let workspace_manifest = ide_dir.join("workspace.yaml");
+    if !workspace_manifest.exists() {
+        fs::write(&workspace_manifest, default_ide_contents())?;
+    }
+    Ok(workspace_manifest)
+}
+
+fn collect_ide_entries(resources: &LoadedResources) -> Vec<IdeEntry> {
+    let mut entries = resources
+        .ides
+        .iter()
+        .map(|ide| IdeEntry {
+            selector: ide.value.id.clone(),
+            label: ide.value.display_name.clone(),
+            description: ide.value.description.clone(),
+            source: source_kind_label(ide.source_info.kind).to_string(),
+            path: ide.source_info.path.clone(),
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.selector.cmp(&right.selector));
+    entries
+}
+
+fn render_ide_summary(
+    ide_dir: &PathBuf,
+    workspace_manifest: &PathBuf,
+    entries: &[IdeEntry],
+) -> Result<String> {
+    let listing = if entries.is_empty() {
+        "No IDE integrations are configured.".to_string()
+    } else {
+        render_ide_listing(entries)
+    };
+    Ok(format!(
+        "IDE directory: {}\nWorkspace IDE manifest: {}\n{}\n\n{}",
+        ide_dir.display(),
+        workspace_manifest.display(),
+        listing,
+        fs::read_to_string(workspace_manifest)?
+    ))
+}
+
+fn render_ide_listing(entries: &[IdeEntry]) -> String {
+    if entries.is_empty() {
+        return "No IDE integrations are configured.".to_string();
+    }
+    let mut text = String::from("IDE integrations:\n");
+    for entry in entries {
+        let _ = writeln!(
+            &mut text,
+            "- {} ({}) [{}] {}",
+            entry.selector, entry.label, entry.source, entry.description
+        );
+    }
+    text.trim_end().to_string()
+}
+
+fn describe_ide_entry(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    entries: &[IdeEntry],
+    selector: &str,
+) -> Result<()> {
+    let Some(entry) = entries.iter().find(|entry| entry.selector == selector) else {
+        return emit_system(
+            state,
+            session_store,
+            format!("Unknown IDE integration `{selector}`."),
+        );
+    };
+    emit_system(
+        state,
+        session_store,
+        format!(
+            "IDE integration {}\nname={}\nsource={}\npath={}\ndescription={}",
+            entry.selector,
+            entry.label,
+            entry.source,
+            entry.path.display(),
+            if entry.description.is_empty() {
+                "<none>"
+            } else {
+                entry.description.as_str()
+            }
+        ),
+    )
+}
+
+fn open_named_ide_manifest(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    entries: &[IdeEntry],
+    selector: &str,
+) -> Result<()> {
+    let Some(entry) = entries.iter().find(|entry| entry.selector == selector) else {
+        return emit_system(
+            state,
+            session_store,
+            format!("Unknown IDE integration `{selector}`."),
+        );
+    };
+    open_ide_manifest(state, session_store, &entry.path)
+}
+
+fn open_ide_manifest(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    path: &PathBuf,
+) -> Result<()> {
+    match open_text_file_in_editor(path) {
+        Ok(status) => emit_system(state, session_store, status),
+        Err(error) => emit_system(
+            state,
+            session_store,
+            format!(
+                "Could not open IDE manifest in an editor: {error}\nPath: {}",
+                path.display()
+            ),
+        ),
+    }
 }
 
 fn mcp_enablement_path(paths: &ConfigPaths) -> PathBuf {

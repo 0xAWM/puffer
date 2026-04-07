@@ -2,7 +2,9 @@ use super::*;
 use puffer_config::{MascotConfig, UiConfig};
 use puffer_session_store::SessionMetadata;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 #[test]
 fn command_registry_contains_review_usage_and_resume_alias() {
@@ -12,6 +14,45 @@ fn command_registry_contains_review_usage_and_resume_alias() {
     assert!(find_command(&commands, "usage").is_some());
     assert!(find_command(&commands, "continue").is_some());
     assert!(find_command(&commands, "?").is_some());
+}
+
+#[test]
+fn command_surface_includes_user_invocable_skills_and_skill_aliases() {
+    let resources = LoadedResources {
+        skills: vec![
+            LoadedItem {
+                value: puffer_resources::SkillSpec {
+                    name: "verify".to_string(),
+                    description: "Verify changes".to_string(),
+                    argument_hint: Some("<target>".to_string()),
+                    ..puffer_resources::SkillSpec::default()
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("/tmp/work/.puffer/resources/skills/verify/SKILL.md"),
+                    kind: SourceKind::Workspace,
+                },
+            },
+            LoadedItem {
+                value: puffer_resources::SkillSpec {
+                    name: "hidden".to_string(),
+                    description: "Hidden".to_string(),
+                    user_invocable: false,
+                    ..puffer_resources::SkillSpec::default()
+                },
+                source_info: SourceInfo {
+                    path: PathBuf::from("/tmp/work/.puffer/resources/skills/hidden/SKILL.md"),
+                    kind: SourceKind::Workspace,
+                },
+            },
+        ],
+        ..LoadedResources::default()
+    };
+
+    let commands = command_surface(&resources);
+    let verify = find_command(&commands, "verify").expect("verify skill command");
+    assert_eq!(verify.argument_hint.as_deref(), Some("<target>"));
+    assert!(find_command(&commands, "skill:verify").is_some());
+    assert!(find_command(&commands, "hidden").is_none());
 }
 
 #[test]
@@ -25,6 +66,9 @@ fn app_state_defaults_expose_command_state() {
             openai_headers: BTreeMap::new(),
             openai_query_params: BTreeMap::new(),
             theme: "puffer".to_string(),
+            editor_mode: "normal".to_string(),
+            fast_mode: false,
+            effort_level: None,
             mascot: MascotConfig {
                 id: "clawd".to_string(),
                 display_name: "Clawd".to_string(),
@@ -50,7 +94,7 @@ fn app_state_defaults_expose_command_state() {
         },
     );
     assert_eq!(state.prompt_color, "default");
-    assert_eq!(state.effort_level, "medium");
+    assert_eq!(state.effort_level, "auto");
     assert_eq!(state.sandbox_mode, "workspace-write");
     assert!(state.statusline_enabled);
 }
@@ -89,17 +133,99 @@ fn local_commands_append_state_snapshots() {
 }
 
 #[test]
-fn resume_switches_to_matching_session_record() {
+fn add_dir_requires_an_explicit_directory_argument() {
     let tempdir = tempdir().unwrap();
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let primary = session_store
-        .create_session(tempdir.path().join("primary"))
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
         .unwrap();
-    let secondary = session_store
-        .create_session(tempdir.path().join("secondary"))
-        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/add-dir",
+    )
+    .unwrap();
+
+    assert!(state.working_dirs.is_empty());
+    assert!(state
+        .transcript
+        .last()
+        .is_some_and(|message| message.text == "Usage: /add-dir <directory>"));
+}
+
+#[test]
+fn add_dir_validates_and_canonicalizes_new_working_directories() {
+    let tempdir = tempdir().unwrap();
+    let cwd = tempdir.path().join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(cwd.clone()).unwrap();
+    let mut state = AppState::new(PufferConfig::default(), cwd, session);
+    let extra = tempdir.path().join("extra");
+    fs::create_dir_all(&extra).unwrap();
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        &format!("/add-dir {}", extra.display()),
+    )
+    .unwrap();
+
+    assert_eq!(state.working_dirs, vec![extra.clone()]);
+    assert!(state
+        .transcript
+        .last()
+        .is_some_and(|message| message.text.contains("working directory for this session")));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        &format!("/add-dir {}", extra.display()),
+    )
+    .unwrap();
+
+    assert_eq!(state.working_dirs, vec![extra.clone()]);
+    assert!(state.transcript.last().is_some_and(|message| message
+        .text
+        .contains("already accessible within the existing working directory")));
+}
+
+#[test]
+fn resume_switches_to_matching_session_record() {
+    let tempdir = tempdir().unwrap();
+    let repo_root = tempdir.path().join("repo");
+    let primary_cwd = repo_root.join("primary");
+    let secondary_cwd = repo_root.join("secondary");
+    std::fs::create_dir_all(&primary_cwd).unwrap();
+    std::fs::create_dir_all(&secondary_cwd).unwrap();
+    init_git_repo(&repo_root);
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let primary = session_store.create_session(primary_cwd.clone()).unwrap();
+    let secondary = session_store.create_session(secondary_cwd.clone()).unwrap();
     session_store
         .rename_session(secondary.id, "dockyard".to_string())
         .unwrap();
@@ -127,11 +253,7 @@ fn resume_switches_to_matching_session_record() {
         )
         .unwrap();
 
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().join("primary"),
-        primary,
-    );
+    let mut state = AppState::new(PufferConfig::default(), primary_cwd, primary);
     dispatch_command(
         &mut state,
         &supported_commands(),
@@ -154,24 +276,22 @@ fn resume_switches_to_matching_session_record() {
 #[test]
 fn resume_matches_session_slug() {
     let tempdir = tempdir().unwrap();
+    let repo_root = tempdir.path().join("repo");
+    let primary_cwd = repo_root.join("primary");
+    let secondary_cwd = repo_root.join("secondary");
+    std::fs::create_dir_all(&primary_cwd).unwrap();
+    std::fs::create_dir_all(&secondary_cwd).unwrap();
+    init_git_repo(&repo_root);
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let primary = session_store
-        .create_session(tempdir.path().join("primary"))
-        .unwrap();
-    let secondary = session_store
-        .create_session(tempdir.path().join("secondary"))
-        .unwrap();
+    let primary = session_store.create_session(primary_cwd.clone()).unwrap();
+    let secondary = session_store.create_session(secondary_cwd).unwrap();
     session_store
         .set_slug(secondary.id, Some("dockyard-run".to_string()))
         .unwrap();
 
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().join("primary"),
-        primary,
-    );
+    let mut state = AppState::new(PufferConfig::default(), primary_cwd, primary);
     dispatch_command(
         &mut state,
         &supported_commands(),
@@ -189,18 +309,20 @@ fn resume_matches_session_slug() {
 #[test]
 fn resume_reports_ambiguous_matches_without_switching_sessions() {
     let tempdir = tempdir().unwrap();
+    let repo_root = tempdir.path().join("repo");
+    let primary_cwd = repo_root.join("primary");
+    let first_cwd = repo_root.join("dockyard-a");
+    let second_cwd = repo_root.join("dockyard-b");
+    std::fs::create_dir_all(&primary_cwd).unwrap();
+    std::fs::create_dir_all(&first_cwd).unwrap();
+    std::fs::create_dir_all(&second_cwd).unwrap();
+    init_git_repo(&repo_root);
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
-    let primary = session_store
-        .create_session(tempdir.path().join("primary"))
-        .unwrap();
-    let first = session_store
-        .create_session(tempdir.path().join("dockyard-a"))
-        .unwrap();
-    let second = session_store
-        .create_session(tempdir.path().join("dockyard-b"))
-        .unwrap();
+    let primary = session_store.create_session(primary_cwd.clone()).unwrap();
+    let first = session_store.create_session(first_cwd).unwrap();
+    let second = session_store.create_session(second_cwd).unwrap();
     session_store
         .rename_session(first.id, "Dockyard review".to_string())
         .unwrap();
@@ -208,11 +330,7 @@ fn resume_reports_ambiguous_matches_without_switching_sessions() {
         .rename_session(second.id, "Dockyard follow-up".to_string())
         .unwrap();
 
-    let mut state = AppState::new(
-        PufferConfig::default(),
-        tempdir.path().join("primary"),
-        primary.clone(),
-    );
+    let mut state = AppState::new(PufferConfig::default(), primary_cwd, primary.clone());
     dispatch_command(
         &mut state,
         &supported_commands(),
@@ -231,6 +349,85 @@ fn resume_reports_ambiguous_matches_without_switching_sessions() {
         .unwrap()
         .text
         .contains("Found 2 sessions matching `dockyard`"));
+}
+
+#[test]
+fn resume_listing_only_shows_sessions_from_same_repo_scope() {
+    let tempdir = tempdir().unwrap();
+    let repo_root = tempdir.path().join("repo");
+    let current_cwd = repo_root.join("current");
+    let sibling_cwd = repo_root.join("sibling");
+    let other_root = tempdir.path().join("other");
+    std::fs::create_dir_all(&current_cwd).unwrap();
+    std::fs::create_dir_all(&sibling_cwd).unwrap();
+    std::fs::create_dir_all(&other_root).unwrap();
+    init_git_repo(&repo_root);
+    init_git_repo(&other_root);
+
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let current = session_store.create_session(current_cwd.clone()).unwrap();
+    let sibling = session_store.create_session(sibling_cwd).unwrap();
+    let other = session_store.create_session(other_root.clone()).unwrap();
+    session_store
+        .rename_session(sibling.id, "Sibling review".to_string())
+        .unwrap();
+    session_store
+        .rename_session(other.id, "Other project".to_string())
+        .unwrap();
+
+    let mut state = AppState::new(PufferConfig::default(), current_cwd, current);
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/resume",
+    )
+    .unwrap();
+
+    let listing = &state.transcript.last().unwrap().text;
+    assert!(listing.contains("Sibling review"));
+    assert!(!listing.contains("Other project"));
+}
+
+#[test]
+fn resume_cross_project_session_prints_rerun_command_instead_of_switching() {
+    let tempdir = tempdir().unwrap();
+    let current_root = tempdir.path().join("current");
+    let other_root = tempdir.path().join("other");
+    std::fs::create_dir_all(&current_root).unwrap();
+    std::fs::create_dir_all(&other_root).unwrap();
+    init_git_repo(&current_root);
+    init_git_repo(&other_root);
+
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let current = session_store.create_session(current_root.clone()).unwrap();
+    let other = session_store.create_session(other_root.clone()).unwrap();
+
+    let mut state = AppState::new(PufferConfig::default(), current_root, current.clone());
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        format!("/resume {}", other.id).as_str(),
+    )
+    .unwrap();
+
+    assert_eq!(state.session.id, current.id);
+    let message = &state.transcript.last().unwrap().text;
+    assert!(message.contains("different directory"));
+    assert!(message.contains("puffer resume"));
+    assert!(message.contains(other.id.to_string().as_str()));
+    assert!(message.contains(other_root.display().to_string().as_str()));
 }
 
 #[test]
@@ -271,4 +468,13 @@ fn tag_toggles_session_tags() {
     )
     .unwrap();
     assert!(state.session.tags.is_empty());
+}
+
+fn init_git_repo(path: &std::path::Path) {
+    let output = Command::new("git").arg("init").arg(path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

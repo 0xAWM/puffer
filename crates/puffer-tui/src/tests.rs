@@ -2,7 +2,7 @@ use super::*;
 use crate::flow::{handle_auth_command, parse_shell_shortcut};
 use crate::state::AuthPickerEntry;
 use puffer_config::{ensure_workspace_dirs, save_user_config, ConfigPaths, PufferConfig};
-use puffer_core::MessageRole;
+use puffer_core::{supported_commands, MessageRole};
 use puffer_provider_registry::{
     AuthMode, ExternalImportCandidate, ExternalImportFamily, ExternalImportSource, ModelDescriptor,
     OAuthCredential, ProviderDescriptor, StoredCredential,
@@ -461,6 +461,35 @@ fn try_open_overlay_builds_theme_picker() {
 }
 
 #[test]
+fn try_open_overlay_builds_fast_mode_picker_for_current_model() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+
+    let state = sample_state();
+    let resources = sample_resources();
+    let mut providers = sample_providers();
+    let auth_store = sample_auth_store();
+    let mut tui = TuiState::default();
+    let opened = try_open_overlay(
+        &state,
+        &resources,
+        &mut providers,
+        &auth_store,
+        &session_store,
+        &mut tui,
+        "/fast",
+    )
+    .unwrap();
+    assert!(opened);
+    assert!(matches!(
+        tui.overlay,
+        Some(OverlayState::FastModePicker { .. })
+    ));
+}
+
+#[test]
 fn codex_import_without_base_url_clears_previous_openai_override() {
     let tempdir = tempdir().unwrap();
     let _lock = puffer_home_lock().lock().unwrap();
@@ -795,6 +824,7 @@ fn sample_resources() -> LoadedResources {
                 description: "Code review helper".to_string(),
                 content: "Review code carefully".to_string(),
                 disable_model_invocation: false,
+                ..SkillSpec::default()
             },
         )],
         mascots: vec![loaded_item(

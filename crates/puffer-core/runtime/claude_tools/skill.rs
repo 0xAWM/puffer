@@ -49,6 +49,11 @@ pub fn execute_claude_skill_tool(resources: &LoadedResources, input: Value) -> R
         );
     }
 
+    let rendered = crate::skill_support::render_skill_prompt(
+        skill,
+        parsed.args.as_deref().unwrap_or_default(),
+        "skill-tool",
+    );
     let mut output = String::new();
     let _ = writeln!(
         &mut output,
@@ -57,19 +62,18 @@ pub fn execute_claude_skill_tool(resources: &LoadedResources, input: Value) -> R
     );
     let _ = writeln!(&mut output, "Skill {}", skill.value.name);
     let _ = writeln!(&mut output, "{}", skill.value.description);
-    if let Some(args) = parsed
-        .args
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        let _ = writeln!(&mut output, "args: {args}");
+    if !skill.value.allowed_tools.is_empty() {
+        let _ = writeln!(
+            &mut output,
+            "allowed-tools: {}",
+            skill.value.allowed_tools.join(", ")
+        );
     }
     let _ = writeln!(
         &mut output,
         "\n<skill name=\"{}\">\n{}\n</skill>",
         skill.value.name,
-        skill.value.content.trim()
+        rendered.trim()
     );
     Ok(output.trim().to_string())
 }
@@ -89,6 +93,7 @@ mod tests {
                         description: "Review one pull request".to_string(),
                         content: "Review prompt body".to_string(),
                         disable_model_invocation: false,
+                        ..SkillSpec::default()
                     },
                     source_info: SourceInfo {
                         path: "skills/review-pr/SKILL.md".into(),
@@ -101,6 +106,7 @@ mod tests {
                         description: "Hidden skill".to_string(),
                         content: "Top secret".to_string(),
                         disable_model_invocation: true,
+                        ..SkillSpec::default()
                     },
                     source_info: SourceInfo {
                         path: "skills/hidden/SKILL.md".into(),
@@ -121,7 +127,7 @@ mod tests {
         .unwrap();
         assert!(output.contains("<command-name>review-pr</command-name>"));
         assert!(output.contains("<skill name=\"review-pr\">"));
-        assert!(output.contains("args: 123"));
+        assert!(output.contains("ARGUMENTS: 123"));
     }
 
     #[test]

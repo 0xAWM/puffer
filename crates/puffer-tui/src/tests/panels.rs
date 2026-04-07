@@ -27,9 +27,52 @@ fn open_panel(command: &str) -> OverlayState {
     tui.overlay.expect("panel overlay")
 }
 
+fn open_command_picker_panel(command: &str) -> (String, Vec<ModelPickerEntry>, usize) {
+    match open_panel(command) {
+        OverlayState::CommandPicker {
+            title,
+            entries,
+            selection,
+        } => (title, entries, selection),
+        other => panic!("expected command picker for {command}, got {other:?}"),
+    }
+}
+
+fn picker_entry<'a>(entries: &'a [ModelPickerEntry], selector: &str) -> &'a ModelPickerEntry {
+    entries
+        .iter()
+        .find(|entry| entry.selector == selector)
+        .unwrap_or_else(|| panic!("missing picker entry {selector}"))
+}
+
 #[test]
 fn try_open_overlay_builds_config_panel() {
     assert!(matches!(open_panel("/config"), OverlayState::Text(..)));
+}
+
+#[test]
+fn try_open_overlay_builds_context_panel() {
+    assert!(matches!(open_panel("/context"), OverlayState::Text(..)));
+}
+
+#[test]
+fn try_open_overlay_builds_fast_mode_picker() {
+    match open_panel("/fast") {
+        OverlayState::FastModePicker {
+            provider_id,
+            model_id,
+            effort,
+            selection,
+            entries,
+            ..
+        } => {
+            assert_eq!(provider_id, "anthropic");
+            assert_eq!(model_id, "claude-sonnet-4-5");
+            assert_eq!(effort, "high");
+            assert_eq!(entries[selection].selector, "on");
+        }
+        other => panic!("expected fast-mode picker, got {other:?}"),
+    }
 }
 
 #[test]
@@ -51,11 +94,118 @@ fn try_open_overlay_builds_mcp_panel() {
 }
 
 #[test]
-fn try_open_overlay_builds_plugin_panel() {
-    assert!(matches!(
-        open_panel("/plugin"),
-        OverlayState::CommandPicker { .. }
-    ));
+fn try_open_overlay_builds_plugin_picker_with_management_actions() {
+    let (title, entries, selection) = open_command_picker_panel("/plugin");
+
+    assert_eq!(title, "Plugins");
+    assert_eq!(selection, 0);
+    assert!(entries.len() >= 10);
+
+    let open = picker_entry(&entries, "/plugin open");
+    assert!(open.description.contains("workspace plugin manifest"));
+    assert!(open.description.contains("workspace.yaml"));
+
+    assert_eq!(
+        picker_entry(&entries, "/reload-plugins").description,
+        "Reload plugin changes from disk for this session"
+    );
+    assert_eq!(
+        picker_entry(&entries, "/plugin errors").description,
+        "Show plugin-specific resource diagnostics"
+    );
+    assert_eq!(
+        picker_entry(&entries, "/plugin validate").description,
+        "Validate loaded plugin manifests"
+    );
+}
+
+#[test]
+fn try_open_overlay_builds_plugin_picker_with_plugin_specific_actions() {
+    let (_, entries, _) = open_command_picker_panel("/plugin");
+
+    let disable = picker_entry(&entries, "/plugin disable git");
+    assert!(disable.description.contains("git (Git)"));
+    assert!(disable.description.contains("[enabled] builtin"));
+    assert!(disable.description.contains("commands=1"));
+    assert!(disable.description.contains("skills=1"));
+    assert!(disable.description.contains("mcp_servers=1"));
+
+    let open = picker_entry(&entries, "/plugin open git");
+    assert!(open.description.contains("plugins/git.yaml"));
+
+    assert_eq!(
+        picker_entry(&entries, "/plugin validate git").description,
+        "Validate plugin git"
+    );
+}
+
+#[test]
+fn try_open_overlay_builds_plugin_alias_pickers() {
+    for command in ["/plugins", "/marketplace"] {
+        let (title, entries, selection) = open_command_picker_panel(command);
+        assert_eq!(title, "Plugins");
+        assert_eq!(selection, 0);
+        assert!(entries.iter().any(|entry| entry.selector == "/plugin open"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.selector == "/reload-plugins"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.selector == "/plugin disable git"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.selector == "/plugin validate git"));
+    }
+}
+
+#[test]
+fn try_open_overlay_builds_ide_picker_with_manifest_actions() {
+    let (title, entries, selection) = open_command_picker_panel("/ide");
+
+    assert_eq!(title, "IDE");
+    assert_eq!(selection, 0);
+    assert_eq!(
+        picker_entry(&entries, "/ide path").description,
+        "Show IDE resource paths"
+    );
+
+    let open = picker_entry(&entries, "/ide open");
+    assert!(open.description.contains("workspace IDE manifest"));
+    assert!(open.description.contains("workspace.yaml"));
+
+    let show = picker_entry(&entries, "/ide show vscode");
+    assert!(show.description.contains("VS Code"));
+    assert!(show.description.contains("builtin"));
+
+    let open_named = picker_entry(&entries, "/ide open vscode");
+    assert!(open_named.description.contains("ides/vscode.yaml"));
+}
+
+#[test]
+fn try_open_overlay_builds_sandbox_picker_with_toggle_actions() {
+    let (title, entries, selection) = open_command_picker_panel("/sandbox");
+
+    assert_eq!(title, "Sandbox");
+    assert_eq!(selection, 0);
+    assert_eq!(
+        picker_entry(&entries, "/sandbox workspace-write").description,
+        "Sandbox mode: workspace-write (current)"
+    );
+    assert_eq!(
+        picker_entry(&entries, "/sandbox read-only").description,
+        "Switch sandbox mode to read-only"
+    );
+    assert_eq!(
+        picker_entry(&entries, "/sandbox auto-allow true").description,
+        "Auto-allow tool prompts: off"
+    );
+    assert_eq!(
+        picker_entry(&entries, "/sandbox allow-unsandboxed true").description,
+        "Allow unsandboxed Bash fallback: off"
+    );
+    assert!(picker_entry(&entries, "/sandbox open")
+        .description
+        .contains("sandbox.toml"));
 }
 
 #[test]

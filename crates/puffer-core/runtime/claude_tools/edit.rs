@@ -1,3 +1,4 @@
+use crate::workspace_paths;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -48,19 +49,31 @@ pub fn claude_edit_input_schema() -> Value {
 }
 
 /// Executes a Claude-style `Edit` operation and returns a JSON tool result payload.
-pub fn execute_claude_edit(_cwd: &Path, input: Value) -> Result<String> {
+pub fn execute_claude_edit(
+    cwd: &Path,
+    working_dirs: &[std::path::PathBuf],
+    input: Value,
+) -> Result<String> {
     let input: ClaudeEditInput = serde_json::from_value(input).context("invalid Edit input")?;
 
-    let path = Path::new(&input.file_path);
-    if !path.is_absolute() {
+    let raw_path = Path::new(&input.file_path);
+    if !raw_path.is_absolute()
+        && !input.file_path.trim().starts_with("~/")
+        && input.file_path.trim() != "~"
+    {
         bail!("Edit expects `file_path` to be an absolute path");
     }
+    let path = workspace_paths::resolve_path_in_workspaces(
+        cwd,
+        working_dirs,
+        Path::new(&input.file_path),
+    )?;
     if input.old_string == input.new_string {
         bail!("No changes to make: old_string and new_string are exactly the same.");
     }
 
     let original = if path.exists() {
-        fs::read_to_string(path)
+        fs::read_to_string(&path)
             .with_context(|| format!("failed to read file {}", path.display()))?
     } else {
         String::new()
@@ -94,10 +107,10 @@ pub fn execute_claude_edit(_cwd: &Path, input: Value) -> Result<String> {
         (updated, original.clone())
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        fs::create_dir_all(parent.to_path_buf())
             .with_context(|| format!("failed to create parent directory {}", parent.display()))?;
     }
-    fs::write(path, &updated)
+    fs::write(&path, &updated)
         .with_context(|| format!("failed to write file {}", path.display()))?;
 
     let output = json!({
@@ -183,7 +196,7 @@ mod tests {
             "new_string": "gamma"
         });
 
-        let output = execute_claude_edit(temp.path(), input).unwrap();
+        let output = execute_claude_edit(temp.path(), &[], input).unwrap();
         assert!(output.contains("\"replaceAll\": false"));
         assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\ngamma\n");
     }
@@ -200,7 +213,7 @@ mod tests {
             "replace_all": true
         });
 
-        let _ = execute_claude_edit(temp.path(), input).unwrap();
+        let _ = execute_claude_edit(temp.path(), &[], input).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "a\ny\ny\n");
     }
 
@@ -215,7 +228,7 @@ mod tests {
             "new_string": "y"
         });
 
-        let error = execute_claude_edit(temp.path(), input).unwrap_err();
+        let error = execute_claude_edit(temp.path(), &[], input).unwrap_err();
         assert!(error.to_string().contains("not unique"));
     }
 
@@ -228,7 +241,7 @@ mod tests {
             "new_string": "y"
         });
 
-        let error = execute_claude_edit(temp.path(), input).unwrap_err();
+        let error = execute_claude_edit(temp.path(), &[], input).unwrap_err();
         assert!(error.to_string().contains("absolute path"));
     }
 
@@ -242,7 +255,7 @@ mod tests {
             "new_string": "hello"
         });
 
-        let output = execute_claude_edit(temp.path(), input).unwrap();
+        let output = execute_claude_edit(temp.path(), &[], input).unwrap();
         assert!(output.contains("\"originalFile\": \"\""));
         assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
     }
@@ -256,5 +269,23 @@ mod tests {
             "old_string": "",
             "new_string": "hello"
         })));
+    }
+
+    #[test]
+    fn edit_rejects_paths_outside_working_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("sample.txt");
+        fs::write(&file, "alpha\nbeta\n").unwrap();
+        let input = json!({
+            "file_path": file.display().to_string(),
+            "old_string": "beta",
+            "new_string": "gamma"
+        });
+
+        let error = execute_claude_edit(temp.path(), &[], input).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("outside the current working directories"));
     }
 }

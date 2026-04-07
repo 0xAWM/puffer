@@ -77,13 +77,18 @@ pub(crate) fn execute_tool(
                     }
                 }
             }
-            let output = read::execute_claude_read_tool(cwd, input.clone())?;
+            let output = read::execute_claude_read_tool(cwd, &state.working_dirs, input.clone())?;
             record_read_from_input(state, &input)?;
             Ok(tool_result(definition, true, output))
         }
         "Write" => {
             let mut read_state = clone_read_state(state);
-            let output = write::execute_claude_write_tool(input.clone(), &mut read_state)?;
+            let output = write::execute_claude_write_tool(
+                cwd,
+                &state.working_dirs,
+                input.clone(),
+                &mut read_state,
+            )?;
             sync_read_state(state, read_state);
             if let Some(path) = input_file_path(&input, "file_path")? {
                 mark_fully_read(state, &path)?;
@@ -94,7 +99,7 @@ pub(crate) fn execute_tool(
             if edit::requires_prior_read(&input) {
                 enforce_read_precondition(state, input_file_path(&input, "file_path")?.as_deref())?;
             }
-            let output = edit::execute_claude_edit(cwd, input.clone())?;
+            let output = edit::execute_claude_edit(cwd, &state.working_dirs, input.clone())?;
             if let Some(path) = input_file_path(&input, "file_path")? {
                 mark_fully_read(state, &path)?;
             }
@@ -103,16 +108,22 @@ pub(crate) fn execute_tool(
         "Glob" => Ok(tool_result(
             definition,
             true,
-            glob::execute_claude_glob(cwd, input)?,
+            glob::execute_claude_glob(cwd, &state.working_dirs, input)?,
         )),
         "Grep" => Ok(tool_result(
             definition,
             true,
-            grep::execute_claude_grep(cwd, input)?,
+            grep::execute_claude_grep(cwd, &state.working_dirs, input)?,
         )),
         "NotebookEdit" => {
-            enforce_read_precondition(state, input_file_path(&input, "notebook_path")?.as_deref())?;
-            let output = notebook_edit::execute_notebook_edit_tool(cwd, input.clone())?;
+            if let Err(error) = enforce_read_precondition(
+                state,
+                input_file_path(&input, "notebook_path")?.as_deref(),
+            ) {
+                return Ok(tool_result(definition, false, error.to_string()));
+            }
+            let output =
+                notebook_edit::execute_notebook_edit_tool(cwd, &state.working_dirs, input.clone())?;
             if let Some(path) = input_file_path(&input, "notebook_path")? {
                 mark_fully_read(state, &path)?;
             }
@@ -132,7 +143,7 @@ pub(crate) fn execute_tool(
             definition,
             true,
             super::local_tools::execute_runtime_local_tool(
-                resources, registry, definition, cwd, input,
+                state, resources, registry, definition, cwd, input,
             )?,
         )),
         "WebFetch" => {
@@ -178,7 +189,7 @@ pub(crate) fn execute_tool(
             definition,
             true,
             super::local_tools::execute_runtime_local_tool(
-                resources, registry, definition, cwd, input,
+                state, resources, registry, definition, cwd, input,
             )?,
         )),
         _ => registry.execute_json(&definition.id, cwd, input),

@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 mod agent_runtime_tests;
 mod agents;
 pub(crate) mod claude_tools;
+mod context_usage;
 mod local_mcp_resources;
 mod local_tools;
 mod openai;
@@ -30,6 +31,7 @@ mod structured_output_support;
 mod system_prompt;
 mod tool_executor;
 
+pub(crate) use self::context_usage::render_context_usage_summary;
 #[cfg(test)]
 use self::openai::{
     build_codex_openai_request_body, execute_openai_tool_calls, openai_tool_definitions,

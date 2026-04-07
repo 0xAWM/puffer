@@ -80,17 +80,25 @@ pub struct AppState {
 impl AppState {
     /// Creates a new application state for the active session.
     pub fn new(config: PufferConfig, cwd: PathBuf, session: SessionMetadata) -> Self {
+        let current_model = config.default_model.clone();
+        let current_provider = config.default_provider.clone();
+        let effort_level = config
+            .effort_level
+            .clone()
+            .unwrap_or_else(|| "medium".to_string());
+        let fast_mode = config.fast_mode;
+        let vim_mode = config.editor_mode == "vim";
         Self {
-            current_model: config.default_model.clone(),
-            current_provider: config.default_provider.clone(),
+            current_model,
+            current_provider,
+            effort_level,
+            fast_mode,
             config,
             cwd,
             working_dirs: Vec::new(),
             session,
             transcript: Vec::new(),
             prompt_color: "default".to_string(),
-            effort_level: "medium".to_string(),
-            fast_mode: false,
             plan_mode: false,
             sandbox_mode: "workspace-write".to_string(),
             remote_name: None,
@@ -100,7 +108,7 @@ impl AppState {
             remote_session_status: None,
             statusline_enabled: true,
             status_line_text: None,
-            vim_mode: false,
+            vim_mode,
             should_exit: false,
             reload_resources_requested: false,
             claude_read_state: HashMap::new(),

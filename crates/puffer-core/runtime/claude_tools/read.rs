@@ -1,3 +1,4 @@
+use crate::workspace_paths;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde::Serialize;
@@ -109,10 +110,14 @@ pub fn claude_read_input_schema() -> Value {
 }
 
 /// Executes the Claude-style `Read` tool and returns a JSON-serialized result payload.
-pub fn execute_claude_read_tool(cwd: &Path, input: Value) -> Result<String> {
+pub fn execute_claude_read_tool(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    input: Value,
+) -> Result<String> {
     let input: ClaudeReadInput =
         serde_json::from_value(input).context("invalid Read tool input")?;
-    let output = execute_claude_read(cwd, input)?;
+    let output = execute_claude_read(cwd, working_dirs, input)?;
     Ok(serde_json::to_string_pretty(&output)?)
 }
 
@@ -128,7 +133,11 @@ pub fn execute_claude_file_unchanged(file_path: &str) -> Result<String> {
     )?)
 }
 
-fn execute_claude_read(cwd: &Path, input: ClaudeReadInput) -> Result<ClaudeReadOutput> {
+fn execute_claude_read(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    input: ClaudeReadInput,
+) -> Result<ClaudeReadOutput> {
     if let Some(limit) = input.limit {
         if limit == 0 {
             bail!("Read limit must be greater than 0");
@@ -139,7 +148,7 @@ fn execute_claude_read(cwd: &Path, input: ClaudeReadInput) -> Result<ClaudeReadO
         validate_pdf_pages(pages)?;
     }
 
-    let path = resolve_absolute_read_path(cwd, &input.file_path)?;
+    let path = resolve_absolute_read_path(cwd, working_dirs, &input.file_path)?;
     let ext = path
         .extension()
         .and_then(|value| value.to_str())
@@ -354,36 +363,38 @@ fn parse_pdf_range(value: &str) -> Result<(u32, u32)> {
     }
 }
 
-fn resolve_absolute_read_path(cwd: &Path, raw_path: &str) -> Result<PathBuf> {
+fn resolve_absolute_read_path(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    raw_path: &str,
+) -> Result<PathBuf> {
     let provided = PathBuf::from(raw_path);
-    if !provided.is_absolute() {
+    if !provided.is_absolute() && !raw_path.trim().starts_with("~/") && raw_path.trim() != "~" {
         bail!(
             "Read requires an absolute file_path; received `{}`",
             provided.display()
         );
     }
-    if provided.is_dir() {
+    let resolved =
+        workspace_paths::resolve_path_in_workspaces(cwd, working_dirs, Path::new(raw_path))?;
+    if resolved.is_dir() {
         bail!(
             "Read can only read files, not directories (`{}`)",
-            provided.display()
+            resolved.display()
         );
     }
-    if !provided.exists() {
-        let cwd_text = cwd.display().to_string();
-        bail!(
-            "file does not exist: {} (current working directory: {cwd_text})",
-            provided.display()
-        );
+    if !resolved.exists() {
+        bail!("file does not exist: {}", resolved.display());
     }
-    let metadata = fs::metadata(&provided)
-        .with_context(|| format!("failed to stat file {}", provided.display()))?;
+    let metadata = fs::metadata(&resolved)
+        .with_context(|| format!("failed to stat file {}", resolved.display()))?;
     if !metadata.is_file() {
         bail!(
             "Read can only read regular files (`{}`)",
-            provided.display()
+            resolved.display()
         );
     }
-    Ok(provided)
+    Ok(resolved)
 }
 
 fn image_mime_type(ext: &str) -> Option<&'static str> {
@@ -455,7 +466,7 @@ mod tests {
             "offset": 2,
             "limit": 2,
         });
-        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["type"], "text");
         assert_eq!(parsed["file"]["content"], "     2\ttwo\n     3\tthree\n");
@@ -476,7 +487,7 @@ mod tests {
         let payload = json!({
             "file_path": path.display().to_string(),
         });
-        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["type"], "text");
         assert_eq!(parsed["file"]["startLine"], 1);
@@ -493,7 +504,7 @@ mod tests {
         let payload = json!({
             "file_path": "relative.txt",
         });
-        let error = execute_claude_read_tool(temp.path(), payload).unwrap_err();
+        let error = execute_claude_read_tool(temp.path(), &[], payload).unwrap_err();
         assert!(error
             .to_string()
             .contains("Read requires an absolute file_path"));
@@ -517,7 +528,7 @@ mod tests {
         let payload = json!({
             "file_path": path.display().to_string(),
         });
-        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["type"], "notebook");
         assert_eq!(parsed["file"]["cells"].as_array().unwrap().len(), 2);
@@ -531,7 +542,7 @@ mod tests {
         let payload = json!({
             "file_path": path.display().to_string(),
         });
-        let output = execute_claude_read_tool(temp.path(), payload).unwrap();
+        let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["type"], "image");
         assert_eq!(parsed["file"]["type"], "image/png");
@@ -547,7 +558,7 @@ mod tests {
             "file_path": path.display().to_string(),
             "pages": "1-30",
         });
-        let error = execute_claude_read_tool(temp.path(), payload).unwrap_err();
+        let error = execute_claude_read_tool(temp.path(), &[], payload).unwrap_err();
         assert!(error.to_string().contains("exceeds maximum of 20 pages"));
     }
 
@@ -558,6 +569,7 @@ mod tests {
         fs::write(&path, "").unwrap();
         let output = execute_claude_read_tool(
             temp.path(),
+            &[],
             json!({ "file_path": path.display().to_string() }),
         )
         .unwrap();
@@ -574,6 +586,7 @@ mod tests {
         fs::write(&path, "one\ntwo\n").unwrap();
         let output = execute_claude_read_tool(
             temp.path(),
+            &[],
             json!({
                 "file_path": path.display().to_string(),
                 "offset": 5,
@@ -617,6 +630,7 @@ mod tests {
         fs::write(&pdf_path, "pdf").unwrap();
         let output = execute_claude_read_tool(
             temp.path(),
+            &[],
             json!({
                 "file_path": pdf_path.display().to_string(),
                 "pages": "1-2",
@@ -636,5 +650,45 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn read_allows_files_in_added_working_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let extra = temp.path().join("extra");
+        let path = extra.join("note.txt");
+        fs::create_dir_all(&extra).unwrap();
+        fs::write(&path, "hello\n").unwrap();
+
+        let output = execute_claude_read_tool(
+            temp.path(),
+            &[extra],
+            json!({ "file_path": path.display().to_string() }),
+        )
+        .unwrap();
+
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["type"], "text");
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("hello")));
+    }
+
+    #[test]
+    fn read_rejects_files_outside_working_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("secret.txt");
+        fs::write(&path, "secret\n").unwrap();
+
+        let error = execute_claude_read_tool(
+            temp.path(),
+            &[],
+            json!({ "file_path": path.display().to_string() }),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("working director"));
     }
 }

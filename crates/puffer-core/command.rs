@@ -1,25 +1,25 @@
 use crate::command_helpers::{
     append_tool_invocations, describe_context, describe_files_in_context, describe_git_diff,
     emit_system, execute_skill_command, handle_agents_command, handle_branch_command,
-    handle_config_command, handle_copy_command, handle_export_command, handle_hooks_command,
-    handle_ide_command, handle_keybindings_command, handle_mcp_command, handle_memory_command,
-    handle_model_command, handle_permissions_command, handle_plan_command, handle_plugin_command,
-    handle_remote_control_command, handle_remote_env_command, handle_resume_command,
-    handle_sandbox_command, handle_session_command, handle_tag_command, handle_tasks_command,
-    list_skills, record_command_checkpoint, reload_config_from_disk, render_login_guidance,
-    rewind_transcript, run_doctor, terminal_setup_advice,
+    handle_config_command, handle_copy_command, handle_effort_command, handle_export_command,
+    handle_fast_command, handle_hooks_command, handle_ide_command, handle_keybindings_command,
+    handle_mcp_command, handle_memory_command, handle_model_command, handle_permissions_command,
+    handle_plan_command, handle_plugin_command, handle_remote_control_command,
+    handle_remote_env_command, handle_resume_command, handle_sandbox_command,
+    handle_session_command, handle_tag_command, handle_tasks_command, list_skills,
+    persist_user_settings, record_command_checkpoint, reload_config_from_disk,
+    render_login_guidance, rewind_transcript, run_doctor, terminal_setup_advice,
 };
 use crate::{
     render_buddy_summary, render_cost_summary, render_status_summary, render_usage_summary,
-    AppState, MessageRole,
+    workspace_paths, AppState, MessageRole,
 };
 use anyhow::Result;
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
-use puffer_resources::{prompt_by_id, render_prompt_by_id, LoadedResources};
+use puffer_resources::{prompt_by_id, render_prompt_by_id, skill_by_name, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
 use serde::Serialize;
 use std::fmt::Write as _;
-use std::path::PathBuf;
 
 /// Distinguishes prompt-backed, local, and UI-oriented slash commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -32,10 +32,10 @@ pub enum CommandKind {
 /// Declares one built-in slash command supported by Puffer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommandSpec {
-    pub name: &'static str,
-    pub aliases: &'static [&'static str],
-    pub description: &'static str,
-    pub argument_hint: Option<&'static str>,
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub description: String,
+    pub argument_hint: Option<String>,
     pub kind: CommandKind,
 }
 
@@ -144,7 +144,7 @@ pub fn supported_commands() -> Vec<CommandSpec> {
             "effort",
             &[],
             "Set effort level for model usage",
-            Some("[low|medium|high|max|auto]"),
+            Some("[minimal|low|medium|high|xhigh|max|auto]"),
             CommandKind::Ui,
         ),
         cmd("exit", &["quit"], "Exit the REPL", None, CommandKind::Local),
@@ -398,11 +398,38 @@ pub fn supported_commands() -> Vec<CommandSpec> {
     ]
 }
 
+/// Returns the full slash-command surface, including loaded user-invocable skills.
+pub fn command_surface(resources: &LoadedResources) -> Vec<CommandSpec> {
+    let mut commands = supported_commands();
+    let reserved_names = commands
+        .iter()
+        .flat_map(|command| {
+            std::iter::once(command.name.as_str()).chain(command.aliases.iter().map(String::as_str))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut skills = resources
+        .skills
+        .iter()
+        .filter(|skill| skill.value.user_invocable)
+        .filter(|skill| !reserved_names.contains(skill.value.name.as_str()))
+        .map(|skill| CommandSpec {
+            name: skill.value.name.clone(),
+            aliases: vec![format!("skill:{}", skill.value.name)],
+            description: skill.value.description.clone(),
+            argument_hint: skill.value.argument_hint.clone(),
+            kind: CommandKind::Prompt,
+        })
+        .collect::<Vec<_>>();
+    skills.sort_by(|left, right| left.name.cmp(&right.name));
+    commands.extend(skills);
+    commands
+}
+
 /// Finds a command by canonical name or alias.
 pub fn find_command<'a>(commands: &'a [CommandSpec], name: &str) -> Option<&'a CommandSpec> {
     commands
         .iter()
-        .find(|command| command.name == name || command.aliases.iter().any(|alias| *alias == name))
+        .find(|command| command.name == name || command.aliases.iter().any(|alias| alias == name))
 }
 
 /// Dispatches a slash-command against the current application state.
@@ -427,13 +454,46 @@ pub fn dispatch_command(
             state.session.id,
             TranscriptEvent::CommandInvoked {
                 name: format!("skill:{skill_name}"),
-                args: String::new(),
+                args: args.to_string(),
             },
         )?;
-        return execute_skill_command(state, resources, session_store, skill_name);
+        execute_skill_command(
+            state,
+            resources,
+            providers,
+            auth_store,
+            session_store,
+            skill_name,
+            args,
+        )?;
+        return record_command_checkpoint(
+            state,
+            session_store,
+            format!("skill:{skill_name}").as_str(),
+            args,
+        );
     }
 
     let Some(command) = find_command(commands, name) else {
+        if skill_by_name(resources, name).is_some_and(|skill| skill.value.user_invocable) {
+            session_store.append_event(
+                state.session.id,
+                TranscriptEvent::CommandInvoked {
+                    name: name.to_string(),
+                    args: args.to_string(),
+                },
+            )?;
+            execute_skill_command(
+                state,
+                resources,
+                providers,
+                auth_store,
+                session_store,
+                name,
+                args,
+            )?;
+            return record_command_checkpoint(state, session_store, name, args);
+        }
         return emit_system(state, session_store, format!("Unknown command: /{name}"));
     };
 
@@ -456,7 +516,7 @@ pub fn dispatch_command(
                 command,
                 args,
             )?;
-            record_command_checkpoint(state, session_store, command.name, args)
+            record_command_checkpoint(state, session_store, &command.name, args)
         }
         CommandKind::Local | CommandKind::Ui => {
             execute_local_command(
@@ -469,7 +529,7 @@ pub fn dispatch_command(
                 command,
                 args,
             )?;
-            record_command_checkpoint(state, session_store, command.name, args)
+            record_command_checkpoint(state, session_store, &command.name, args)
         }
     }
 }
@@ -486,7 +546,7 @@ fn execute_prompt_command(
     let preparation = crate::command_helpers::prompt::prepare_prompt_command_specialization(
         state,
         session_store,
-        command.name,
+        &command.name,
         args,
     )?;
     if matches!(
@@ -526,7 +586,7 @@ fn execute_prompt_command(
         preparation,
         Some(crate::command_helpers::prompt::PromptCommandPreparation::DirectPrompt(_))
     );
-    let prompt = prompt_by_id(resources, command.name);
+    let prompt = prompt_by_id(resources, &command.name);
     let tool_filter = prompt
         .map(|prompt| crate::runtime::build_request_tool_filter(&prompt.value.allowed_tools))
         .transpose()?
@@ -579,7 +639,7 @@ fn execute_prompt_command(
             unreachable!("handled above")
         }
         Some(crate::command_helpers::prompt::PromptCommandPreparation::VariableOverrides(_))
-        | None => render_prompt_by_id(resources, command.name, &variables)
+        | None => render_prompt_by_id(resources, &command.name, &variables)
             .unwrap_or_else(|| format!("Prompt command /{} invoked with: {}", command.name, args)),
         Some(crate::command_helpers::prompt::PromptCommandPreparation::HandledLocally) => {
             unreachable!("handled above")
@@ -651,15 +711,16 @@ fn execute_local_command(
     command: &CommandSpec,
     args: &str,
 ) -> Result<()> {
-    match command.name {
+    match command.name.as_str() {
         "help" => {
+            let commands = command_surface(resources);
             let mut text = String::from("Supported commands:\n");
-            for command in commands {
+            for command in &commands {
                 let _ = writeln!(&mut text, "/{:<16} {}", command.name, command.description);
             }
             let _ = writeln!(
                 &mut text,
-                "\nRun /skills to list loaded /skill:<name> entries."
+                "\nRun /skills to inspect loaded skill commands and aliases."
             );
             let _ = writeln!(
                 &mut text,
@@ -690,19 +751,35 @@ fn execute_local_command(
             emit_system(state, session_store, "Transcript cleared.".to_string())
         }
         "add-dir" => {
-            let dir = if args.is_empty() {
-                state.cwd.clone()
-            } else {
-                PathBuf::from(args)
-            };
-            if !state.working_dirs.iter().any(|existing| existing == &dir) {
-                state.working_dirs.push(dir.clone());
+            let validation = workspace_paths::validate_directory_for_workspace(
+                &state.cwd,
+                &state.working_dirs,
+                args,
+            )?;
+            match validation {
+                workspace_paths::AddDirectoryValidation::Success { absolute_path } => {
+                    if !state
+                        .working_dirs
+                        .iter()
+                        .any(|existing| existing == &absolute_path)
+                    {
+                        state.working_dirs.push(absolute_path.clone());
+                        state.working_dirs.sort();
+                    }
+                    emit_system(
+                        state,
+                        session_store,
+                        workspace_paths::add_directory_help_message(
+                            &workspace_paths::AddDirectoryValidation::Success { absolute_path },
+                        ),
+                    )
+                }
+                other => emit_system(
+                    state,
+                    session_store,
+                    workspace_paths::add_directory_help_message(&other),
+                ),
             }
-            emit_system(
-                state,
-                session_store,
-                format!("Added working directory {}.", dir.display()),
-            )
         }
         "exit" => {
             state.should_exit = true;
@@ -724,37 +801,8 @@ fn execute_local_command(
                 )
             }
         }
-        "effort" => {
-            if args.is_empty() {
-                emit_system(
-                    state,
-                    session_store,
-                    format!("Current effort level is {}.", state.effort_level),
-                )
-            } else {
-                state.effort_level = args.to_string();
-                emit_system(
-                    state,
-                    session_store,
-                    format!("Effort level set to {}.", state.effort_level),
-                )
-            }
-        }
-        "fast" => {
-            if args.is_empty() {
-                state.fast_mode = !state.fast_mode;
-            } else {
-                state.fast_mode = matches!(args, "on" | "true" | "1");
-            }
-            emit_system(
-                state,
-                session_store,
-                format!(
-                    "Fast mode is now {}.",
-                    if state.fast_mode { "on" } else { "off" }
-                ),
-            )
-        }
+        "effort" => handle_effort_command(state, providers, session_store, args),
+        "fast" => handle_fast_command(state, session_store, args),
         "theme" => {
             if args.is_empty() {
                 emit_system(
@@ -764,6 +812,7 @@ fn execute_local_command(
                 )
             } else {
                 state.config.theme = args.to_string();
+                persist_user_settings(state)?;
                 emit_system(
                     state,
                     session_store,
@@ -773,21 +822,25 @@ fn execute_local_command(
         }
         "vim" => {
             state.vim_mode = !state.vim_mode;
-            emit_system(
-                state,
-                session_store,
-                format!(
-                    "Vim mode is now {}.",
-                    if state.vim_mode { "on" } else { "off" }
-                ),
-            )
+            state.config.editor_mode = if state.vim_mode {
+                "vim".to_string()
+            } else {
+                "normal".to_string()
+            };
+            persist_user_settings(state)?;
+            let message = if state.vim_mode {
+                "Editor mode set to vim. Use Escape key to toggle between INSERT and NORMAL modes."
+            } else {
+                "Editor mode set to normal. Using standard (readline) keyboard bindings."
+            };
+            emit_system(state, session_store, message.to_string())
         }
         "model" => handle_model_command(state, providers, auth_store, session_store, args),
         "permissions" => handle_permissions_command(state, resources, session_store, args),
         "hooks" => handle_hooks_command(state, resources, session_store, args),
         "tasks" => handle_tasks_command(state, session_store, args),
         "config" => handle_config_command(state, session_store, args),
-        "context" => describe_context(state, resources, session_store),
+        "context" => describe_context(state, resources, providers, session_store),
         "plan" => handle_plan_command(state, resources, providers, auth_store, session_store, args),
         "agents" => handle_agents_command(state, session_store, args),
         "memory" => handle_memory_command(state, session_store, args),
@@ -882,10 +935,10 @@ fn cmd(
     kind: CommandKind,
 ) -> CommandSpec {
     CommandSpec {
-        name,
-        aliases,
-        description,
-        argument_hint,
+        name: name.to_string(),
+        aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+        description: description.to_string(),
+        argument_hint: argument_hint.map(str::to_string),
         kind,
     }
 }

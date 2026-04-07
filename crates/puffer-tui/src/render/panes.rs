@@ -194,7 +194,7 @@ fn help_command_lines(commands: &[CommandSpec], width: u16, height: u16) -> Vec<
         )),
         Line::default(),
         Line::from(
-            "Core commands for common coding workflows. Use /skills for loaded /skill:<name> entries.",
+            "Core commands for common coding workflows. Use /skills for loaded skill commands and /skill:<name> aliases.",
         ),
         Line::default(),
     ];
@@ -317,7 +317,7 @@ fn format_help_entry(command: &CommandSpec, max_width: usize) -> String {
     format!(
         "{:<name_width$} {}",
         truncate(&name, name_width),
-        truncate(command.description, description_width)
+        truncate(&command.description, description_width)
     )
 }
 

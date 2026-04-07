@@ -192,7 +192,7 @@ impl TuiState {
         let Some(command) = rows.get(self.slash_selection).copied() else {
             return false;
         };
-        if command.name == trimmed || command.aliases.contains(&trimmed) {
+        if command.name == trimmed || command.aliases.iter().any(|alias| alias == trimmed) {
             return false;
         }
         self.apply_selected_command(commands)
@@ -643,12 +643,32 @@ impl OverlayState {
                 selection,
             } => {
                 if let Some(index) = sessions.iter().position(|session| {
-                    session
-                        .display_name
-                        .as_deref()
-                        .map(|name| name.to_ascii_lowercase().contains(&query))
-                        .unwrap_or(false)
-                        || session.id.to_string().to_ascii_lowercase().contains(&query)
+                    session.id.to_string().to_ascii_lowercase().contains(&query)
+                        || session
+                            .display_name
+                            .as_deref()
+                            .map(|name| name.to_ascii_lowercase().contains(&query))
+                            .unwrap_or(false)
+                        || session
+                            .slug
+                            .as_deref()
+                            .map(|slug| slug.to_ascii_lowercase().contains(&query))
+                            .unwrap_or(false)
+                        || session
+                            .note
+                            .as_deref()
+                            .map(|note| note.to_ascii_lowercase().contains(&query))
+                            .unwrap_or(false)
+                        || session
+                            .tags
+                            .iter()
+                            .any(|tag| tag.to_ascii_lowercase().contains(&query))
+                        || session
+                            .cwd
+                            .display()
+                            .to_string()
+                            .to_ascii_lowercase()
+                            .contains(&query)
                 }) {
                     *selection = index;
                 }

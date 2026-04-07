@@ -1,5 +1,6 @@
 use super::*;
 use puffer_resources::{LoadedItem, PluginSpec, SourceInfo, SourceKind};
+use std::fs;
 
 #[test]
 fn plugin_command_creates_workspace_plugin_file() {
@@ -203,4 +204,160 @@ fn plugin_errors_filters_resource_diagnostics() {
             text,
         }) if text.contains("errors=1") && text.contains("plugin `docs`") && !text.contains("prompt `review`")
     ));
+}
+
+#[test]
+fn plugin_marketplace_lists_builtin_plugins() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let mut resources = LoadedResources::default();
+    let builtin_path = paths.builtin_resources_dir.join("plugins/docs.yaml");
+    fs::create_dir_all(builtin_path.parent().unwrap()).unwrap();
+    fs::write(
+        &builtin_path,
+        "id: docs\ndisplay_name: Docs\ndescription: Builtin docs helpers\n",
+    )
+    .unwrap();
+    resources.plugins.push(LoadedItem {
+        value: PluginSpec {
+            id: "docs".to_string(),
+            display_name: "Docs".to_string(),
+            description: "Builtin docs helpers".to_string(),
+            commands: Vec::new(),
+            skills: Vec::new(),
+            agents: Vec::new(),
+            mcp_servers: Vec::new(),
+            lsp_servers: Vec::new(),
+        },
+        source_info: SourceInfo {
+            path: builtin_path,
+            kind: SourceKind::Builtin,
+        },
+    });
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/plugin marketplace",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage {
+            role: MessageRole::System,
+            text,
+        }) if text.contains("Plugin marketplace") && text.contains("docs") && text.contains("Builtin docs helpers")
+    ));
+}
+
+#[test]
+fn plugin_install_update_and_uninstall_manage_workspace_copy() {
+    let tempdir = tempdir().unwrap();
+    let paths = ConfigPaths::discover(tempdir.path());
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store
+        .create_session(tempdir.path().to_path_buf())
+        .unwrap();
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        tempdir.path().to_path_buf(),
+        session,
+    );
+    let mut resources = LoadedResources::default();
+    let builtin_path = paths.builtin_resources_dir.join("plugins/docs.yaml");
+    fs::create_dir_all(builtin_path.parent().unwrap()).unwrap();
+    fs::write(
+        &builtin_path,
+        "id: docs\ndisplay_name: Docs\ndescription: Builtin docs helpers\n",
+    )
+    .unwrap();
+    resources.plugins.push(LoadedItem {
+        value: PluginSpec {
+            id: "docs".to_string(),
+            display_name: "Docs".to_string(),
+            description: "Builtin docs helpers".to_string(),
+            commands: Vec::new(),
+            skills: Vec::new(),
+            agents: Vec::new(),
+            mcp_servers: Vec::new(),
+            lsp_servers: Vec::new(),
+        },
+        source_info: SourceInfo {
+            path: builtin_path.clone(),
+            kind: SourceKind::Builtin,
+        },
+    });
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/plugin install docs",
+    )
+    .unwrap();
+
+    let workspace_copy = paths
+        .workspace_config_dir
+        .join("resources/plugins/docs.yaml");
+    assert!(workspace_copy.exists());
+    assert!(state.reload_resources_requested);
+    assert!(fs::read_to_string(&workspace_copy)
+        .unwrap()
+        .contains("Builtin docs helpers"));
+
+    state.reload_resources_requested = false;
+    fs::write(
+        &builtin_path,
+        "id: docs\ndisplay_name: Docs\ndescription: Refreshed builtin docs helpers\n",
+    )
+    .unwrap();
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/plugin update docs",
+    )
+    .unwrap();
+
+    assert!(state.reload_resources_requested);
+    assert!(fs::read_to_string(&workspace_copy)
+        .unwrap()
+        .contains("Refreshed builtin docs helpers"));
+
+    state.reload_resources_requested = false;
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &resources,
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/plugin uninstall docs",
+    )
+    .unwrap();
+
+    assert!(!workspace_copy.exists());
+    assert!(state.reload_resources_requested);
 }

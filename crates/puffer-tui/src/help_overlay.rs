@@ -1,5 +1,5 @@
 use crate::text_overlay::TextOverlay;
-use puffer_core::{supported_commands, CommandSpec};
+use puffer_core::{command_surface, CommandSpec};
 use puffer_resources::LoadedResources;
 use std::fmt::Write as _;
 
@@ -11,7 +11,7 @@ const DOCS_URL: &str = "https://code.claude.com/docs/en/overview";
 
 /// Builds the dedicated `/help` overlay used by the interactive TUI.
 pub(crate) fn open_help_overlay(resources: &LoadedResources) -> crate::OverlayState {
-    TextOverlay::open("Help", build_help_body(&supported_commands(), resources))
+    TextOverlay::open("Help", build_help_body(&command_surface(resources), resources))
 }
 
 fn build_help_body(commands: &[CommandSpec], resources: &LoadedResources) -> String {
@@ -62,7 +62,10 @@ fn build_help_body(commands: &[CommandSpec], resources: &LoadedResources) -> Str
         resources.ides.len()
     );
     body.push('\n');
-    let _ = writeln!(&mut body, "Run /skills to list loaded /skill:<name> entries.");
+    let _ = writeln!(
+        &mut body,
+        "Run /skills to inspect loaded skill commands and their /skill:<name> aliases."
+    );
     let _ = writeln!(&mut body, "For more help: {DOCS_URL}");
     body
 }

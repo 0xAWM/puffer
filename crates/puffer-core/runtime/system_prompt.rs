@@ -193,7 +193,7 @@ fn build_session_guidance_section(
         ));
     }
     if preferred_tool_name(enabled_tools, &["Skill"]).is_some() && !resources.skills.is_empty() {
-        items.push("`/skill:<name>` is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the Skill tool to execute them. IMPORTANT: Only use Skill for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.".to_string());
+        items.push("User-invocable skills appear as slash commands like `/reviewer`; `/skill:<name>` remains a compatibility alias. When executed, the skill expands to a full prompt. Use the Skill tool only for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.".to_string());
     }
     if items.is_empty() {
         return String::new();

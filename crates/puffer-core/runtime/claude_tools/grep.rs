@@ -1,8 +1,9 @@
-use anyhow::{anyhow, bail, Context, Result};
+use crate::workspace_paths;
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,7 +57,7 @@ enum GrepMode {
 /// The output is returned as JSON with Claude-like fields:
 /// `mode`, `numFiles`, `filenames`, and optional `content`, `numLines`,
 /// `numMatches`, `appliedLimit`, and `appliedOffset`.
-pub fn execute_claude_grep(cwd: &Path, input: Value) -> Result<String> {
+pub fn execute_claude_grep(cwd: &Path, working_dirs: &[PathBuf], input: Value) -> Result<String> {
     let input: ClaudeGrepInput = serde_json::from_value(input).context("invalid Grep input")?;
     if input.pattern.trim().is_empty() {
         bail!("Grep pattern cannot be empty");
@@ -66,7 +67,7 @@ pub fn execute_claude_grep(cwd: &Path, input: Value) -> Result<String> {
     let absolute_target = input
         .path
         .as_deref()
-        .map(|path| resolve_workspace_path(cwd, Path::new(path)))
+        .map(|path| workspace_paths::resolve_path_in_workspaces(cwd, working_dirs, Path::new(path)))
         .transpose()?
         .unwrap_or_else(|| cwd.to_path_buf());
     if !absolute_target.exists() {
@@ -388,94 +389,6 @@ fn to_relative_path(cwd: &Path, path_text: &str) -> String {
     path_text.replace('\\', "/")
 }
 
-fn resolve_workspace_path(cwd: &Path, path: &Path) -> Result<PathBuf> {
-    let workspace_root = fs::canonicalize(cwd)
-        .with_context(|| format!("failed to resolve workspace root {}", cwd.display()))?;
-    let workspace_path = normalize_path(cwd);
-    let candidate = if path.is_absolute() {
-        normalize_path(path)
-    } else {
-        normalize_path(&cwd.join(path))
-    };
-    if !candidate.starts_with(&workspace_path) {
-        bail!(
-            "path {} escapes workspace {}",
-            path.display(),
-            cwd.display()
-        );
-    }
-
-    let ancestor = nearest_existing_ancestor(&candidate).ok_or_else(|| {
-        anyhow!(
-            "failed to resolve path {} inside workspace {}",
-            path.display(),
-            cwd.display()
-        )
-    })?;
-    let canonical_ancestor = fs::canonicalize(&ancestor)
-        .with_context(|| format!("failed to canonicalize {}", ancestor.display()))?;
-    if !canonical_ancestor.starts_with(&workspace_root) {
-        bail!(
-            "path {} resolves through symlink outside workspace {}",
-            path.display(),
-            cwd.display()
-        );
-    }
-
-    if candidate.exists() {
-        let canonical_candidate = fs::canonicalize(&candidate)
-            .with_context(|| format!("failed to canonicalize {}", candidate.display()))?;
-        if !canonical_candidate.starts_with(&workspace_root) {
-            bail!(
-                "path {} resolves outside workspace {}",
-                path.display(),
-                cwd.display()
-            );
-        }
-    }
-
-    Ok(candidate)
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(
-                    normalized.components().next_back(),
-                    Some(Component::Normal(_))
-                ) {
-                    normalized.pop();
-                } else if !normalized.has_root() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-    if normalized.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        normalized
-    }
-}
-
-fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
-    let mut current = path.to_path_buf();
-    loop {
-        if current.exists() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +407,7 @@ mod tests {
 
         let output = execute_claude_grep(
             temp.path(),
+            &[],
             json!({
                 "pattern": "fn",
                 "path": "src",
@@ -518,6 +432,7 @@ mod tests {
 
         let output = execute_claude_grep(
             temp.path(),
+            &[],
             json!({
                 "pattern": "abc",
                 "output_mode": "count"
@@ -530,10 +445,11 @@ mod tests {
     }
 
     #[test]
-    fn grep_rejects_workspace_escape() {
+    fn grep_rejects_working_directory_escape() {
         let temp = tempfile::tempdir().unwrap();
         let error = execute_claude_grep(
             temp.path(),
+            &[],
             json!({
                 "pattern": "abc",
                 "path": "../"
@@ -541,7 +457,38 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("escapes workspace"));
+        assert!(error.contains("outside the current working directories"));
+    }
+
+    #[test]
+    fn grep_searches_added_working_directories() {
+        if !rg_available() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("repo");
+        let extra = temp.path().join("extra");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        fs::write(extra.join("note.txt"), "abc\nabc\n").unwrap();
+
+        let output = execute_claude_grep(
+            &cwd,
+            &[extra.clone()],
+            json!({
+                "pattern": "abc",
+                "path": extra.display().to_string(),
+                "output_mode": "count"
+            }),
+        )
+        .unwrap();
+
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["mode"], "count");
+        assert!(parsed["content"]
+            .as_str()
+            .is_some_and(|text| text.contains(&extra.join("note.txt").display().to_string())));
     }
 
     #[test]

@@ -1,43 +1,8 @@
 use super::*;
 use puffer_provider_registry::AuthMode;
-use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
-
-fn puffer_home_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn lock_puffer_home() -> MutexGuard<'static, ()> {
-    puffer_home_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-struct ScopedPufferHome {
-    old_home: Option<OsString>,
-}
-
-impl ScopedPufferHome {
-    fn set(path: &std::path::Path) -> Self {
-        let old_home = std::env::var_os("PUFFER_HOME");
-        std::env::set_var("PUFFER_HOME", path);
-        Self { old_home }
-    }
-}
-
-impl Drop for ScopedPufferHome {
-    fn drop(&mut self) {
-        if let Some(value) = self.old_home.take() {
-            std::env::set_var("PUFFER_HOME", value);
-        } else {
-            std::env::remove_var("PUFFER_HOME");
-        }
-    }
-}
 
 fn provider(id: &str, models: &[&str]) -> puffer_provider_registry::ProviderDescriptor {
     puffer_provider_registry::ProviderDescriptor {
@@ -388,4 +353,286 @@ fn model_command_default_restores_configured_default_model() {
 
     assert_eq!(state.current_provider.as_deref(), Some("openai"));
     assert_eq!(state.current_model.as_deref(), Some("openai/gpt-5"));
+}
+
+#[test]
+fn effort_command_persists_openai_reasoning_levels_to_user_config() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("openai".to_string());
+    config.default_model = Some("openai/gpt-5".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider("openai", &["gpt-5"]));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &session_store,
+        "/effort xhigh",
+    )
+    .unwrap();
+
+    assert_eq!(state.effort_level, "xhigh");
+    assert_eq!(state.config.effort_level.as_deref(), Some("xhigh"));
+    let saved = std::fs::read_to_string(paths.user_config_file()).unwrap();
+    assert!(saved.contains("effort_level = \"xhigh\""));
+}
+
+#[test]
+fn effort_command_rejects_provider_incompatible_values() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("openai".to_string());
+    config.default_model = Some("openai/gpt-5".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("openai".to_string());
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider("openai", &["gpt-5"]));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &session_store,
+        "/effort max",
+    )
+    .unwrap();
+
+    assert_eq!(state.effort_level, "auto");
+    assert_eq!(state.config.effort_level, None);
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage { text, .. })
+            if text.contains("Valid options are: minimal, low, medium, high, xhigh")
+    ));
+}
+
+#[test]
+fn effort_command_auto_clears_persisted_setting() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("anthropic".to_string());
+    config.effort_level = Some("high".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("anthropic".to_string());
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider("anthropic", &["claude-sonnet-4-5"]));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &session_store,
+        "/effort auto",
+    )
+    .unwrap();
+
+    assert_eq!(state.effort_level, "auto");
+    assert_eq!(state.config.effort_level, None);
+    let saved = std::fs::read_to_string(paths.user_config_file()).unwrap();
+    assert!(!saved.contains("effort_level"));
+}
+
+#[test]
+fn fast_command_persists_preference_to_user_config() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut state = AppState::new(PufferConfig::default(), workspace, session);
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut ProviderRegistry::new(),
+        &mut AuthStore::default(),
+        &session_store,
+        "/fast on",
+    )
+    .unwrap();
+
+    assert!(state.fast_mode);
+    assert!(state.config.fast_mode);
+    let saved = std::fs::read_to_string(paths.user_config_file()).unwrap();
+    assert!(saved.contains("fast_mode = true"));
+}
+
+#[test]
+fn model_command_normalizes_effort_when_switching_provider_families() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("openai".to_string());
+    config.default_model = Some("openai/gpt-5".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+    state.effort_level = "xhigh".to_string();
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider("openai", &["gpt-5"]));
+    providers.register(provider("anthropic", &["claude-sonnet-4-5"]));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &session_store,
+        "/model anthropic/claude-sonnet-4-5",
+    )
+    .unwrap();
+
+    assert_eq!(state.current_provider.as_deref(), Some("anthropic"));
+    assert_eq!(
+        state.current_model.as_deref(),
+        Some("anthropic/claude-sonnet-4-5")
+    );
+    assert_eq!(state.effort_level, "high");
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage { text, .. })
+            if text.contains("Effort level adjusted from xhigh to high for anthropic.")
+    ));
+}
+
+#[test]
+fn effort_command_rejects_provider_specific_levels_for_anthropic() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("anthropic".to_string());
+    config.default_model = Some("anthropic/claude-sonnet-4-5".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("anthropic".to_string());
+    state.current_model = Some("anthropic/claude-sonnet-4-5".to_string());
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider("anthropic", &["claude-sonnet-4-5"]));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &session_store,
+        "/effort xhigh",
+    )
+    .unwrap();
+
+    assert_eq!(state.effort_level, "auto");
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage { text, .. })
+            if text.contains("Invalid effort level `xhigh`.")
+                && text.contains("Valid options are: low, medium, high, max")
+    ));
+}
+
+#[test]
+fn effort_command_accepts_auto_mode() {
+    let tempdir = tempdir().unwrap();
+    let _lock = lock_puffer_home();
+    let home = tempdir.path().join("home");
+    let workspace = tempdir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _home = ScopedPufferHome::set(&home);
+    let paths = ConfigPaths::discover(&workspace);
+    ensure_workspace_dirs(&paths).unwrap();
+    let session_store = SessionStore::from_paths(&paths).unwrap();
+    let session = session_store.create_session(workspace.clone()).unwrap();
+    let mut config = PufferConfig::default();
+    config.default_provider = Some("openai".to_string());
+    config.default_model = Some("openai/gpt-5".to_string());
+    let mut state = AppState::new(config, workspace, session);
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+    let mut providers = ProviderRegistry::new();
+    providers.register(provider("openai", &["gpt-5"]));
+
+    dispatch_command(
+        &mut state,
+        &supported_commands(),
+        &LoadedResources::default(),
+        &mut providers,
+        &mut AuthStore::default(),
+        &session_store,
+        "/effort auto",
+    )
+    .unwrap();
+
+    assert_eq!(state.effort_level, "auto");
+    assert!(matches!(
+        state.transcript.last(),
+        Some(RenderedMessage { text, .. })
+            if text.contains("Effort level set to auto.")
+                && text.contains("Current provider default: high")
+    ));
 }

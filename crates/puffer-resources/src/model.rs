@@ -211,8 +211,48 @@ pub struct SkillSpec {
     pub name: String,
     pub description: String,
     pub content: String,
+    #[serde(default, alias = "allowed-tools", alias = "allowedTools")]
+    pub allowed_tools: Vec<String>,
+    #[serde(default, alias = "argument-hint", alias = "argumentHint")]
+    pub argument_hint: Option<String>,
+    #[serde(default, alias = "arguments", alias = "argumentNames")]
+    pub argument_names: Vec<String>,
+    #[serde(
+        default = "default_user_invocable",
+        alias = "user-invocable",
+        alias = "userInvocable"
+    )]
+    pub user_invocable: bool,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
     #[serde(default)]
     pub disable_model_invocation: bool,
+}
+
+impl Default for SkillSpec {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            content: String::new(),
+            allowed_tools: Vec::new(),
+            argument_hint: None,
+            argument_names: Vec::new(),
+            user_invocable: true,
+            model: None,
+            effort: None,
+            context: None,
+            disable_model_invocation: false,
+        }
+    }
+}
+
+fn default_user_invocable() -> bool {
+    true
 }
 
 /// Declares a plugin command entry.

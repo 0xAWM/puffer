@@ -1,4 +1,5 @@
 use super::*;
+use puffer_core::supported_commands;
 use puffer_session_store::TranscriptEvent;
 
 #[test]

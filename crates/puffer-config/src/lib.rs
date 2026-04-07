@@ -17,6 +17,12 @@ pub struct PufferConfig {
     #[serde(default)]
     pub openai_query_params: BTreeMap<String, String>,
     pub theme: String,
+    #[serde(default = "default_editor_mode", alias = "editorMode")]
+    pub editor_mode: String,
+    #[serde(default, alias = "fastMode")]
+    pub fast_mode: bool,
+    #[serde(default, alias = "effortLevel")]
+    pub effort_level: Option<String>,
     pub mascot: MascotConfig,
     pub ui: UiConfig,
 }
@@ -53,6 +59,9 @@ impl Default for PufferConfig {
             openai_headers: BTreeMap::new(),
             openai_query_params: BTreeMap::new(),
             theme: "puffer".to_string(),
+            editor_mode: default_editor_mode(),
+            fast_mode: false,
+            effort_level: None,
             mascot: MascotConfig {
                 id: "clawd".to_string(),
                 display_name: "Clawd".to_string(),
@@ -65,6 +74,10 @@ impl Default for PufferConfig {
             },
         }
     }
+}
+
+fn default_editor_mode() -> String {
+    "normal".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -125,15 +138,23 @@ pub fn load_config(paths: &ConfigPaths) -> Result<PufferConfig> {
         user_selection = Some((
             config.default_provider.clone(),
             config.default_model.clone(),
+            config.theme.clone(),
+            config.editor_mode.clone(),
+            config.fast_mode,
+            config.effort_level.clone(),
         ));
     }
     if paths.workspace_config_file().exists() {
         merge_config_file(&mut config, &paths.workspace_config_file())?;
     }
     apply_claude_status_line_fallback(&mut config, paths);
-    if let Some((provider, model)) = user_selection {
+    if let Some((provider, model, theme, editor_mode, fast_mode, effort_level)) = user_selection {
         config.default_provider = provider;
         config.default_model = model;
+        config.theme = theme;
+        config.editor_mode = editor_mode;
+        config.fast_mode = fast_mode;
+        config.effort_level = effort_level;
     }
     Ok(config)
 }
@@ -286,6 +307,9 @@ mod tests {
         user.openai_headers = BTreeMap::from([("x-openai-test".to_string(), "user".to_string())]);
         user.openai_query_params = BTreeMap::from([("user_param".to_string(), "1".to_string())]);
         user.theme = "sunrise".to_string();
+        user.editor_mode = "vim".to_string();
+        user.fast_mode = true;
+        user.effort_level = Some("high".to_string());
         save_user_config(&paths, &user).expect("user config");
 
         let mut workspace = PufferConfig::default();
@@ -316,7 +340,10 @@ mod tests {
                 .map(String::as_str),
             Some("2")
         );
-        assert_eq!(loaded.theme, "harbor");
+        assert_eq!(loaded.theme, "sunrise");
+        assert_eq!(loaded.editor_mode, "vim");
+        assert!(loaded.fast_mode);
+        assert_eq!(loaded.effort_level.as_deref(), Some("high"));
     }
 
     #[test]
@@ -415,6 +442,44 @@ mod tests {
                 .map(|status_line| status_line.padding),
             Some(0)
         );
+    }
+
+    #[test]
+    fn load_config_reads_fast_mode_and_effort_aliases() {
+        let _guard = lock_puffer_home();
+        let tempdir = tempdir().expect("tempdir");
+        let home = tempdir.path().join("home");
+        let workspace = tempdir.path().join("workspace");
+        fs::create_dir_all(&home).expect("home");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let _home = ScopedPufferHome::set(&home);
+
+        let paths = ConfigPaths::discover(&workspace);
+        ensure_workspace_dirs(&paths).expect("dirs");
+        fs::write(
+            paths.user_config_file(),
+            r#"
+app_name = "Puffer Code"
+default_provider = "openai"
+theme = "puffer"
+fastMode = true
+effortLevel = "xhigh"
+
+[mascot]
+id = "clawd"
+display_name = "Clawd"
+enabled = true
+
+[ui]
+no_alt_screen = false
+tmux_golden_mode = false
+"#,
+        )
+        .expect("user config");
+
+        let loaded = load_config(&paths).expect("load");
+        assert!(loaded.fast_mode);
+        assert_eq!(loaded.effort_level.as_deref(), Some("xhigh"));
     }
 
     #[test]

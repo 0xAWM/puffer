@@ -29,7 +29,7 @@ fn sort_key(command: &CommandSpec, filter: &str) -> (u8, String) {
     if filter.is_empty() {
         return (0, command.name.to_string());
     }
-    if command.name == filter || command.aliases.contains(&filter) {
+    if command.name == filter || command.aliases.iter().any(|alias| alias == filter) {
         return (0, command.name.to_string());
     }
     if command.name.starts_with(filter) {
@@ -54,7 +54,7 @@ mod tests {
     fn popup_prefers_prefix_matches() {
         let commands = supported_commands();
         let rows = popup_rows("/re", &commands);
-        let names = rows.iter().map(|row| row.name).collect::<Vec<_>>();
+        let names = rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>();
         assert!(names.starts_with(&["reload-plugins", "remote-control", "remote-env"]));
         assert!(names.contains(&"review"));
     }

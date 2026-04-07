@@ -1,6 +1,22 @@
 id: NotebookEdit
 name: NotebookEdit
-description: Replace the contents of a specific cell in a Jupyter notebook.
+description: |-
+  Completely replaces the contents of a specific cell in a Jupyter notebook
+  (.ipynb file) with new source.
+
+  Jupyter notebooks combine code, text, and visualizations for data analysis
+  and scientific computing.
+
+  Usage:
+  - `notebook_path` must be an absolute path.
+  - Read the notebook with `Read` before editing it. This tool fails if the
+    notebook has not been fully read or if it changed after it was read.
+  - `cell_id` identifies the target cell. Existing cell ids and `cell-N` or
+    numeric index fallbacks are accepted.
+  - Use `edit_mode: "insert"` to add a new cell after `cell_id`, or at the
+    beginning if `cell_id` is omitted.
+  - Use `edit_mode: "delete"` to remove the target cell.
+  - `cell_type` is required when inserting and may be `code` or `markdown`.
 handler: runtime:notebook_edit
 approval_policy: on-request
 sandbox_policy: workspace-write
@@ -32,3 +48,8 @@ input_schema:
   required:
     - notebook_path
     - new_source
+  additionalProperties: false
+display:
+  group: files
+  title: NotebookEdit
+  show_in_status: true

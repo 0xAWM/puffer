@@ -1,0 +1,277 @@
+use crate::AppState;
+use anyhow::{anyhow, Context, Result};
+use std::collections::BTreeSet;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
+
+/// Describes the outcome of validating one `/add-dir` directory candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AddDirectoryValidation {
+    Success {
+        absolute_path: PathBuf,
+    },
+    EmptyPath,
+    PathNotFound {
+        directory_path: String,
+        absolute_path: PathBuf,
+    },
+    NotADirectory {
+        directory_path: String,
+        absolute_path: PathBuf,
+    },
+    AlreadyInWorkingDirectory {
+        directory_path: String,
+        working_dir: PathBuf,
+    },
+}
+
+pub(crate) type AddWorkingDirectoryResult = AddDirectoryValidation;
+
+/// Validates one user-supplied `/add-dir` path against the current workspace roots.
+pub(crate) fn validate_directory_for_workspace(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    directory_path: &str,
+) -> Result<AddDirectoryValidation> {
+    let trimmed = directory_path.trim();
+    if trimmed.is_empty() {
+        return Ok(AddDirectoryValidation::EmptyPath);
+    }
+
+    let absolute_path = normalize_user_path(cwd, trimmed);
+    match fs::metadata(&absolute_path) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Ok(AddDirectoryValidation::NotADirectory {
+                    directory_path: trimmed.to_string(),
+                    absolute_path,
+                });
+            }
+        }
+        Err(error) if is_missing_like_error(&error) => {
+            return Ok(AddDirectoryValidation::PathNotFound {
+                directory_path: trimmed.to_string(),
+                absolute_path,
+            });
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect {}", absolute_path.display()));
+        }
+    }
+
+    let canonical_candidate = fs::canonicalize(&absolute_path)
+        .with_context(|| format!("failed to canonicalize {}", absolute_path.display()))?;
+    for working_dir in workspace_roots(cwd, working_dirs) {
+        let canonical_working_dir = canonicalize_or_normalize(&working_dir)?;
+        if canonical_candidate.starts_with(&canonical_working_dir) {
+            return Ok(AddDirectoryValidation::AlreadyInWorkingDirectory {
+                directory_path: trimmed.to_string(),
+                working_dir,
+            });
+        }
+    }
+
+    Ok(AddDirectoryValidation::Success { absolute_path })
+}
+
+/// Formats one user-facing `/add-dir` validation result message.
+pub(crate) fn add_directory_help_message(result: &AddDirectoryValidation) -> String {
+    match result {
+        AddDirectoryValidation::Success { absolute_path } => format!(
+            "Added {} as a working directory for this session. /permissions to manage",
+            absolute_path.display()
+        ),
+        AddDirectoryValidation::EmptyPath => "Usage: /add-dir <directory>".to_string(),
+        AddDirectoryValidation::PathNotFound { absolute_path, .. } => {
+            format!("Path {} was not found.", absolute_path.display())
+        }
+        AddDirectoryValidation::NotADirectory {
+            directory_path,
+            absolute_path,
+        } => {
+            let parent = absolute_path
+                .parent()
+                .unwrap_or(absolute_path.as_path())
+                .display()
+                .to_string();
+            format!(
+                "{} is not a directory. Did you mean to add the parent directory {}?",
+                directory_path, parent
+            )
+        }
+        AddDirectoryValidation::AlreadyInWorkingDirectory {
+            directory_path,
+            working_dir,
+        } => format!(
+            "{} is already accessible within the existing working directory {}.",
+            directory_path,
+            working_dir.display()
+        ),
+    }
+}
+
+/// Validates one `/add-dir` directory candidate using the current application state.
+pub(crate) fn validate_additional_working_directory(
+    state: &AppState,
+    directory_path: &str,
+) -> Result<AddWorkingDirectoryResult> {
+    validate_directory_for_workspace(&state.cwd, &state.working_dirs, directory_path)
+}
+
+/// Formats one user-facing `/add-dir` validation result message.
+pub(crate) fn format_add_working_directory_result(result: &AddWorkingDirectoryResult) -> String {
+    add_directory_help_message(result)
+}
+
+/// Resolves one tool path against the primary working directory plus `/add-dir` roots.
+pub(crate) fn resolve_path_in_workspaces(
+    cwd: &Path,
+    additional_roots: &[PathBuf],
+    path: &Path,
+) -> Result<PathBuf> {
+    let candidate = normalize_user_path(cwd, path.to_string_lossy().as_ref());
+    let roots = workspace_roots(cwd, additional_roots);
+    let Some(root) = matching_workspace_root(&candidate, &roots) else {
+        anyhow::bail!(
+            "Path {} is outside the current working directories. Use `/add-dir <directory>` to add access first.",
+            candidate.display()
+        );
+    };
+
+    let canonical_root = canonicalize_or_normalize(root)?;
+    let ancestor = nearest_existing_ancestor(&candidate).ok_or_else(|| {
+        anyhow!(
+            "failed to resolve path {} inside working directory {}",
+            path.display(),
+            root.display()
+        )
+    })?;
+    let canonical_ancestor = fs::canonicalize(&ancestor)
+        .with_context(|| format!("failed to canonicalize {}", ancestor.display()))?;
+    if !canonical_ancestor.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Path {} resolves outside the current working directories. Use `/add-dir <directory>` to add access first.",
+            candidate.display()
+        );
+    }
+
+    if candidate.exists() {
+        let canonical_candidate = fs::canonicalize(&candidate)
+            .with_context(|| format!("failed to canonicalize {}", candidate.display()))?;
+        if !canonical_candidate.starts_with(&canonical_root) {
+            anyhow::bail!(
+                "Path {} resolves outside the current working directories. Use `/add-dir <directory>` to add access first.",
+                candidate.display()
+            );
+        }
+    }
+
+    Ok(candidate)
+}
+
+/// Resolves one tool path against the primary working directory plus `/add-dir` roots.
+pub(crate) fn resolve_path_in_working_dirs(
+    cwd: &Path,
+    additional_roots: &[PathBuf],
+    path: &Path,
+) -> Result<PathBuf> {
+    resolve_path_in_workspaces(cwd, additional_roots, path)
+}
+
+/// Returns the normalized primary workspace root plus any distinct additional roots.
+pub(crate) fn workspace_roots(cwd: &Path, additional_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = BTreeSet::new();
+    for root in std::iter::once(cwd).chain(additional_roots.iter().map(PathBuf::as_path)) {
+        let normalized = normalize_user_path(cwd, root.to_string_lossy().as_ref());
+        if seen.insert(normalized.clone()) {
+            roots.push(normalized);
+        }
+    }
+    roots
+}
+
+fn normalize_user_path(cwd: &Path, raw_path: &str) -> PathBuf {
+    let expanded = expand_tilde(raw_path).unwrap_or_else(|| PathBuf::from(raw_path));
+    if expanded.is_absolute() {
+        normalize_path(&expanded)
+    } else {
+        normalize_path(&cwd.join(expanded))
+    }
+}
+
+fn expand_tilde(raw_path: &str) -> Option<PathBuf> {
+    if raw_path == "~" {
+        return std::env::var_os("HOME").map(PathBuf::from);
+    }
+    let stripped = raw_path
+        .strip_prefix("~/")
+        .or_else(|| raw_path.strip_prefix("~\\"));
+    stripped
+        .and_then(|suffix| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(suffix)))
+}
+
+fn canonicalize_or_normalize(path: &Path) -> Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(canonical) => Ok(canonical),
+        Err(error) if is_missing_like_error(&error) => Ok(normalize_path(path)),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to canonicalize {}", path.display()))
+        }
+    }
+}
+
+fn matching_workspace_root<'a>(candidate: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    roots
+        .iter()
+        .filter(|root| candidate.starts_with(root))
+        .max_by_key(|root| root.components().count())
+}
+
+fn is_missing_like_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::NotFound | ErrorKind::PermissionDenied
+    ) || matches!(error.raw_os_error(), Some(20))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}

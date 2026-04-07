@@ -3,11 +3,12 @@ use crate::btw_overlay::BtwOverlay;
 use anyhow::Result;
 use puffer_config::{save_user_config, ConfigPaths};
 use puffer_core::{
-    dispatch_command, execute_user_turn, execute_user_turn_streaming_with_permissions,
-    reload_runtime_resources, render_config_summary, render_hooks_summary, render_mcp_actions,
-    render_permissions_panel, render_plugin_actions, render_skills_panel, render_task_actions,
-    run_resource_hooks, supported_commands, AppState, MessageRole, PermissionPromptAction,
-    PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
+    command_surface, dispatch_command, execute_user_turn,
+    execute_user_turn_streaming_with_permissions, reload_runtime_resources, render_config_summary,
+    render_context_panel, render_doctor_report, render_hooks_summary, render_ide_actions,
+    render_mcp_actions, render_permissions_panel, render_plugin_actions, render_sandbox_actions,
+    render_skills_panel, render_task_actions, run_resource_hooks, AppState, MessageRole,
+    PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -67,6 +68,13 @@ pub(crate) fn try_open_overlay(
         );
         return Ok(true);
     }
+    if name == "fast" && args.is_empty() {
+        if let Some(overlay) = onboarding::fast_mode_picker_for_current_selection(state, providers)
+        {
+            set_overlay_state(tui, Some(overlay));
+            return Ok(true);
+        }
+    }
     if name == "tasks" && !args.is_empty() {
         if let Some(overlay) = task_text_overlay(state, args)? {
             set_overlay_state(tui, Some(overlay));
@@ -75,6 +83,14 @@ pub(crate) fn try_open_overlay(
     }
     let text_overlay = match (name, args.is_empty()) {
         ("config", true) => Some(TextOverlay::open("Config", render_config_summary(state)?)),
+        ("context", true) => Some(TextOverlay::open(
+            "Context",
+            render_context_panel(state, resources, providers)?,
+        )),
+        ("doctor", true) => Some(TextOverlay::open(
+            "Doctor",
+            render_doctor_report(state, resources, providers, auth_store)?,
+        )),
         ("permissions", true) | ("allowed-tools", true) => Some(TextOverlay::open(
             "Permissions",
             render_permissions_panel(state, resources)?,
@@ -97,9 +113,9 @@ pub(crate) fn try_open_overlay(
         let entries = render_plugin_actions(state, resources)?
             .into_iter()
             .map(|entry| crate::ModelPickerEntry {
-                selector: entry.command,
+                selector: entry.command.clone(),
                 description: entry.description,
-                command: None,
+                command: Some(entry.command),
             })
             .collect::<Vec<_>>();
         if flow_pickers::open_command_picker(tui, "Plugins", entries) {
@@ -107,15 +123,20 @@ pub(crate) fn try_open_overlay(
         }
     }
     if matches!((name, args.is_empty()), ("mcp", true)) {
-        let entries = render_mcp_actions(state, resources)?
-            .into_iter()
-            .map(|entry| crate::ModelPickerEntry {
-                selector: entry.command,
-                description: entry.description,
-                command: None,
-            })
-            .collect::<Vec<_>>();
+        let entries = flow_pickers::command_picker_entries(render_mcp_actions(state, resources)?);
         if flow_pickers::open_command_picker(tui, "MCP", entries) {
+            return Ok(true);
+        }
+    }
+    if matches!((name, args.is_empty()), ("ide", true)) {
+        let entries = flow_pickers::command_picker_entries(render_ide_actions(state, resources)?);
+        if flow_pickers::open_command_picker(tui, "IDE", entries) {
+            return Ok(true);
+        }
+    }
+    if matches!((name, args.is_empty()), ("sandbox", true)) {
+        let entries = flow_pickers::command_picker_entries(render_sandbox_actions(state)?);
+        if flow_pickers::open_command_picker(tui, "Sandbox", entries) {
             return Ok(true);
         }
     }
@@ -142,14 +163,8 @@ pub(crate) fn try_open_overlay(
         return Ok(true);
     }
     if name == "tasks" && args.is_empty() {
-        let entries = render_task_actions(&mut state.clone())?
-            .into_iter()
-            .map(|entry| crate::ModelPickerEntry {
-                selector: entry.command,
-                description: entry.description,
-                command: None,
-            })
-            .collect::<Vec<_>>();
+        let entries =
+            flow_pickers::command_picker_entries(render_task_actions(&mut state.clone())?);
         if flow_pickers::open_command_picker(tui, "Background Tasks", entries) {
             return Ok(true);
         }
@@ -433,7 +448,7 @@ pub(crate) fn handle_submit(
             run_with_terminal_restored(no_alt_screen, || {
                 dispatch_command(
                     state,
-                    &supported_commands(),
+                    &command_surface(resources),
                     resources,
                     providers,
                     auth_store,
@@ -444,7 +459,7 @@ pub(crate) fn handle_submit(
         } else {
             dispatch_command(
                 state,
-                &supported_commands(),
+                &command_surface(resources),
                 resources,
                 providers,
                 auth_store,
@@ -842,7 +857,7 @@ pub(crate) fn parse_shell_shortcut(input: &str) -> Option<&str> {
 pub(crate) fn allow_prompt_before_onboarding(prompt: &str) -> bool {
     matches!(
         prompt.trim(),
-        "/help" | "/?" | "/theme" | "/doctor" | "/status" | "/usage"
+        "/help" | "/?" | "/theme" | "/doctor" | "/status" | "/usage" | "/context"
     )
 }
 

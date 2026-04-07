@@ -3,6 +3,8 @@ use crate::AppState;
 use anyhow::Result;
 use puffer_session_store::{SessionStore, SessionSummary};
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Handles `/resume` by listing resumable sessions or switching to a unique match.
 pub(crate) fn handle_resume_command(
@@ -10,13 +12,18 @@ pub(crate) fn handle_resume_command(
     session_store: &SessionStore,
     args: &str,
 ) -> Result<()> {
-    let sessions = resumable_sessions(session_store, state.session.id)?;
+    let sessions = resumable_sessions_for_picker(session_store, state.session.id, &state.cwd)?;
+    let all_sessions = all_resumable_sessions(session_store, state.session.id)?;
     let query = args.trim();
     if query.is_empty() {
         return emit_system(state, session_store, render_resume_listing(&sessions));
     }
 
-    let matches = search_sessions(&sessions, query);
+    let matches = if looks_like_session_id(query) {
+        search_sessions(&all_sessions, query)
+    } else {
+        search_sessions(&sessions, query)
+    };
     let Some(best_match) = matches.first() else {
         return emit_system(
             state,
@@ -31,7 +38,7 @@ pub(crate) fn handle_resume_command(
         .take_while(|candidate| candidate.rank == best_rank)
         .count();
     if matches.len() == 1 || (best_rank_count == 1 && best_rank.is_precise()) {
-        return resume_into_session(state, session_store, &best_match.session);
+        return resume_or_reroute(state, session_store, &best_match.session);
     }
 
     emit_system(
@@ -75,7 +82,20 @@ struct ResumeCandidate {
     rank: ResumeMatchRank,
 }
 
-fn resumable_sessions(
+/// Lists sessions that belong in the current `/resume` picker scope.
+pub(crate) fn resumable_sessions_for_picker(
+    session_store: &SessionStore,
+    current_session_id: uuid::Uuid,
+    current_cwd: &Path,
+) -> Result<Vec<SessionSummary>> {
+    let scope = resume_scope(current_cwd);
+    Ok(all_resumable_sessions(session_store, current_session_id)?
+        .into_iter()
+        .filter(|session| session_scope_matches(&scope, &session.cwd))
+        .collect())
+}
+
+fn all_resumable_sessions(
     session_store: &SessionStore,
     current_session_id: uuid::Uuid,
 ) -> Result<Vec<SessionSummary>> {
@@ -108,6 +128,59 @@ fn search_sessions(sessions: &[SessionSummary], query: &str) -> Vec<ResumeCandid
             .then_with(|| left.session.id.cmp(&right.session.id))
     });
     matches
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResumeScope {
+    Repo(PathBuf),
+    Directory(PathBuf),
+}
+
+fn resume_scope(path: &Path) -> ResumeScope {
+    git_toplevel(path)
+        .map(ResumeScope::Repo)
+        .unwrap_or_else(|| ResumeScope::Directory(normalize_resume_path(path)))
+}
+
+fn session_scope_matches(scope: &ResumeScope, session_cwd: &Path) -> bool {
+    match scope {
+        ResumeScope::Repo(repo_root) => git_toplevel(session_cwd).as_ref() == Some(repo_root),
+        ResumeScope::Directory(directory) => {
+            let session_path = normalize_resume_path(session_cwd);
+            session_path == *directory
+                || session_path.starts_with(directory)
+                || directory.starts_with(&session_path)
+        }
+    }
+}
+
+fn git_toplevel(path: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return None;
+    }
+    Some(normalize_resume_path(Path::new(&root)))
+}
+
+fn normalize_resume_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn looks_like_session_id(query: &str) -> bool {
+    let trimmed = query.trim();
+    trimmed.len() >= 8
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() || ch == '-')
 }
 
 fn session_match_rank(session: &SessionSummary, query: &str) -> Option<ResumeMatchRank> {
@@ -217,6 +290,34 @@ fn format_session_line(session: &SessionSummary) -> String {
     )
 }
 
+fn resume_or_reroute(
+    state: &mut AppState,
+    session_store: &SessionStore,
+    summary: &SessionSummary,
+) -> Result<()> {
+    if session_scope_matches(&resume_scope(&state.cwd), &summary.cwd) {
+        return resume_into_session(state, session_store, summary);
+    }
+    emit_system(state, session_store, render_cross_project_resume(summary))
+}
+
+fn render_cross_project_resume(summary: &SessionSummary) -> String {
+    let command = format!(
+        "cd {} && puffer resume {}",
+        shell_quote(summary.cwd.display().to_string().as_str()),
+        summary.id
+    );
+    format!("This conversation is from a different directory.\n\nTo resume, run:\n  {command}")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
 fn resume_into_session(
     state: &mut AppState,
     session_store: &SessionStore,
@@ -238,9 +339,9 @@ fn resume_into_session(
 
 #[cfg(test)]
 mod tests {
-    use super::search_sessions;
+    use super::{resume_scope, search_sessions, session_scope_matches};
     use puffer_session_store::SessionSummary;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use uuid::Uuid;
 
     fn session(
@@ -324,5 +425,17 @@ mod tests {
             search_sessions(&sessions, "dockyard")[0].session.id,
             sessions[1].id
         );
+    }
+
+    #[test]
+    fn directory_scope_matches_nested_workspace_paths() {
+        let scope = resume_scope(Path::new("/tmp/workspace"));
+
+        assert!(session_scope_matches(
+            &scope,
+            Path::new("/tmp/workspace/dockyard")
+        ));
+        assert!(session_scope_matches(&scope, Path::new("/tmp/workspace")));
+        assert!(!session_scope_matches(&scope, Path::new("/tmp/elsewhere")));
     }
 }

@@ -547,6 +547,7 @@ fn render_command_popup(
         .map(|(index, command)| {
             let argument_hint = command
                 .argument_hint
+                .as_deref()
                 .map(|value| format!("  {value}"))
                 .unwrap_or_default();
             ListItem::new(format!(

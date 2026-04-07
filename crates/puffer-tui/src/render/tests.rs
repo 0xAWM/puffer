@@ -38,8 +38,8 @@ fn header_snapshot_reports_compact_status() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                        snapshot,
-                                                                                                                                                                                                                                                                        @r"
+                                                                                                                                                                                                                                                                                                                                                                                    snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                    @r"
 Puffer Code
 Mascot    Clawd on duty
 User      anthropic via API key
@@ -51,7 +51,7 @@ Model      anthropic/claude-sonn... · tools 3/4
 Directory  puffer
 Activity   2 messages · 2 workdirs · dockyard@staging
 "
-                                                                                                                                                                                                                                                                    );
+                                                                                                                                                                                                                                                                                                                                                                                );
 }
 
 #[test]
@@ -73,13 +73,13 @@ fn footer_snapshot_reports_compact_prompt_rail() {
     .collect::<Vec<_>>()
     .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                        snapshot,
-                                                                                                                                                                                                                                                                        @r"
+                                                                                                                                                                                                                                                                                                                                                                                    snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                    @r"
 anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 3/4
 puffer · shell 1 · prompts 2 · 2 workdirs · dockyard@staging · sandbox workspace-write
 slash /re · 2 matches · best /review · Enter submits · Esc clears
 "
-                                                                                                                                                                                                                                                                    );
+                                                                                                                                                                                                                                                                                                                                                                                );
 }
 
 #[test]
@@ -96,8 +96,8 @@ fn header_snapshot_includes_oauth_identity_when_available() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                        snapshot,
-                                                                                                                                                                                                                                                                        @r"
+                                                                                                                                                                                                                                                                                                                                                                                    snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                    @r"
 Puffer Code
 Mascot    Clawd on duty
 User      dev@example.com · plan Pro · acct acct-1
@@ -109,7 +109,7 @@ Model      openai/gpt-5 · tools 3/4
 Directory  puffer
 Activity   2 messages · 2 workdirs · dockyard@staging
 "
-                                                                                                                                                                                                                                                                    );
+                                                                                                                                                                                                                                                                                                                                                                                );
 }
 
 #[test]
@@ -723,23 +723,23 @@ pub(super) fn sample_auth_store() -> AuthStore {
 pub(super) fn sample_commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
-            name: "review",
-            aliases: &[],
-            description: "Review current changes",
+            name: "review".to_string(),
+            aliases: Vec::new(),
+            description: "Review current changes".to_string(),
             argument_hint: None,
             kind: CommandKind::Prompt,
         },
         CommandSpec {
-            name: "rewind",
-            aliases: &["checkpoint"],
-            description: "Restore to a prior point",
+            name: "rewind".to_string(),
+            aliases: vec!["checkpoint".to_string()],
+            description: "Restore to a prior point".to_string(),
             argument_hint: None,
             kind: CommandKind::Ui,
         },
         CommandSpec {
-            name: "usage",
-            aliases: &[],
-            description: "Show usage limits",
+            name: "usage".to_string(),
+            aliases: Vec::new(),
+            description: "Show usage limits".to_string(),
             argument_hint: None,
             kind: CommandKind::Local,
         },
@@ -802,6 +802,7 @@ fn loaded_skill(id: &str, description: &str) -> LoadedItem<puffer_resources::Ski
             description: description.to_string(),
             content: "content".to_string(),
             disable_model_invocation: false,
+            ..puffer_resources::SkillSpec::default()
         },
         source_info: SourceInfo {
             path: PathBuf::from(format!("{id}.yaml")),

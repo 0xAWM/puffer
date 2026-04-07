@@ -3,20 +3,30 @@ mod command;
 mod command_helpers;
 mod command_summary;
 mod hooks;
+mod model_preferences;
 mod permissions;
 mod plans;
 mod runtime;
+mod skill_support;
 mod state;
 mod tool_names;
+mod workspace_paths;
 
 pub use agent_catalog::{load_agent_catalog, AgentCatalogEntry};
-pub use command::{dispatch_command, find_command, supported_commands, CommandKind, CommandSpec};
+pub use command::{
+    command_surface, dispatch_command, find_command, supported_commands, CommandKind, CommandSpec,
+};
+pub use command_helpers::CommandActionEntry;
 pub use command_helpers::McpActionEntry;
 pub use command_helpers::PluginActionEntry;
 pub use command_helpers::SessionOverlayView;
 pub use command_helpers::TaskActionEntry;
 pub(crate) use command_summary::{render_buddy_summary, render_cost_summary, render_usage_summary};
 pub use hooks::run_resource_hooks;
+pub use model_preferences::{
+    default_effort_level, effort_level_is_supported, normalized_effort_level,
+    provider_preference_family, supported_effort_levels, ModelPreferenceFamily,
+};
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::{
     execute_side_question, execute_user_prompt_streaming as execute_user_turn_streaming,
@@ -32,6 +42,8 @@ pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
 use anyhow::Result;
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
+use puffer_session_store::{SessionStore, SessionSummary};
+use std::path::Path;
 
 /// Renders the current session/provider/tool status summary used by `/status`.
 pub fn render_status_summary(
@@ -46,6 +58,25 @@ pub fn render_status_summary(
 /// Renders the current `/config` summary used by interactive overlays.
 pub fn render_config_summary(state: &AppState) -> Result<String> {
     command_helpers::render_config_summary(state)
+}
+
+/// Renders the current `/doctor` diagnostics report used by interactive overlays.
+pub fn render_doctor_report(
+    state: &AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+) -> Result<String> {
+    command_helpers::render_doctor_report(state, resources, providers, auth_store)
+}
+
+/// Renders the current `/context` summary used by interactive overlays.
+pub fn render_context_panel(
+    state: &AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+) -> Result<String> {
+    runtime::render_context_usage_summary(state, resources, providers)
 }
 
 /// Renders the current `/permissions` summary used by interactive overlays.
@@ -76,6 +107,14 @@ pub fn render_mcp_actions(
     command_helpers::render_mcp_actions(state, resources)
 }
 
+/// Builds the interactive `/ide` action list used by the TUI picker.
+pub fn render_ide_actions(
+    state: &AppState,
+    resources: &LoadedResources,
+) -> Result<Vec<CommandActionEntry>> {
+    command_helpers::render_ide_actions(state, resources)
+}
+
 /// Renders the current `/plugin` summary used by interactive overlays.
 pub fn render_plugin_summary(state: &AppState, resources: &LoadedResources) -> Result<String> {
     command_helpers::render_plugin_summary(state, resources)
@@ -87,6 +126,11 @@ pub fn render_plugin_actions(
     resources: &LoadedResources,
 ) -> Result<Vec<PluginActionEntry>> {
     command_helpers::render_plugin_actions(state, resources)
+}
+
+/// Builds the interactive `/sandbox` action list used by the TUI picker.
+pub fn render_sandbox_actions(state: &AppState) -> Result<Vec<CommandActionEntry>> {
+    command_helpers::render_sandbox_actions(state)
 }
 
 /// Builds the interactive `/tasks` action list used by the TUI picker.
@@ -112,6 +156,26 @@ pub fn render_session_panel(state: &AppState) -> String {
 /// Builds the dedicated `/session` overlay view used by the interactive TUI.
 pub fn render_session_overlay(state: &AppState) -> SessionOverlayView {
     command_helpers::render_session_overlay(state)
+}
+
+/// Applies a provider/model/effort/fast-mode selection and persists it to user config.
+pub fn apply_model_preferences(
+    state: &mut AppState,
+    provider_id: &str,
+    model_id: &str,
+    effort: &str,
+    fast_mode: bool,
+) -> Result<()> {
+    command_helpers::apply_model_preferences(state, provider_id, model_id, effort, fast_mode)
+}
+
+/// Lists the sessions that should appear in the current `/resume` picker.
+pub fn resumable_sessions_for_picker(
+    session_store: &SessionStore,
+    current_session_id: uuid::Uuid,
+    current_cwd: &Path,
+) -> Result<Vec<SessionSummary>> {
+    command_helpers::resumable_sessions_for_picker(session_store, current_session_id, current_cwd)
 }
 
 /// Reloads declarative resources and rebuilds the provider registry for the active session.

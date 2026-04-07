@@ -222,6 +222,9 @@ fn codex_reasoning_config(state: &AppState, supports_reasoning: bool) -> Option<
     }
     let mut reasoning = json!({ "summary": "auto" });
     match state.effort_level.as_str() {
+        "auto" | "unset" | "default" => {
+            reasoning["effort"] = json!("medium");
+        }
         "minimal" | "low" | "medium" | "high" | "xhigh" => {
             reasoning["effort"] = json!(state.effort_level);
         }

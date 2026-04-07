@@ -106,6 +106,7 @@ fn usage_command_reports_runtime_and_resource_counts() {
                 description: "review".to_string(),
                 content: "review".to_string(),
                 disable_model_invocation: false,
+                ..puffer_resources::SkillSpec::default()
             },
             source_info: puffer_resources::SourceInfo {
                 path: PathBuf::from("skills/reviewer/SKILL.md"),
@@ -453,6 +454,7 @@ fn sample_resources() -> LoadedResources {
                 description: "review".to_string(),
                 content: "review".to_string(),
                 disable_model_invocation: false,
+                ..puffer_resources::SkillSpec::default()
             },
             source_info: puffer_resources::SourceInfo {
                 path: PathBuf::from("skills/reviewer/SKILL.md"),
