@@ -14,6 +14,7 @@
   });
 
   let collapsedGroupIds = new Set<string>();
+  let initializedCollapseState = false;
 
   function toggleGroup(groupId: string) {
     const next = new Set(collapsedGroupIds);
@@ -56,6 +57,16 @@
       return rightLatest - leftLatest;
     });
   $: totalSessions = groups.reduce((count, group) => count + group.sessions.length, 0);
+  $: {
+    if (!initializedCollapseState && groups.length > 0) {
+      collapsedGroupIds = new Set(
+        groups
+          .filter((group) => !groupContainsActiveSession(group))
+          .map((group) => group.id)
+      );
+      initializedCollapseState = true;
+    }
+  }
   $: {
     if (activeSessionId) {
       const activeGroup = groups.find((group) => groupContainsActiveSession(group));
