@@ -427,21 +427,17 @@
           session={selectedSession}
           timeline={conversationTimeline}
           loading={sessionLoading}
+          noDiffMessage={sessionDetail?.latestDiff ? null : "No diff captured in this session yet."}
           {pendingPermissions}
           onSubmitMessage={submitMessage}
           onResolvePermission={resolvePermission}
         />
 
-        <section class="diff-pane">
-          {#if sessionDetail?.latestDiff}
+        {#if sessionDetail?.latestDiff}
+          <section class="diff-pane">
             <DiffView diff={sessionDetail.latestDiff} />
-          {:else}
-            <div class="empty-diff">
-              <strong>No diff captured</strong>
-              <span>The latest session diff will appear here in GitHub-style format.</span>
-            </div>
-          {/if}
-        </section>
+          </section>
+        {/if}
 
         {#if sessionLoading}
           <div class="loading-overlay">

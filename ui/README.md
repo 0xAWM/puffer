@@ -12,4 +12,4 @@ Dense coding session with transcript, structured tool records, compact diff chec
 
 ![No diff state](./screenshot/no-diff.png)
 
-Session with no captured diff. The transcript remains primary while the diff rail collapses into a narrow empty note.
+Session with no captured diff. The workspace collapses to a single primary transcript column with a concise inline note instead of reserving a mostly empty diff rail.

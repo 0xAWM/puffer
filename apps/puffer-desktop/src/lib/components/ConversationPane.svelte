@@ -12,6 +12,7 @@
   export let session: SessionListItem | null = null;
   export let timeline: TimelineItem[] = [];
   export let loading = false;
+  export let noDiffMessage: string | null = null;
   export let pendingPermissions: PermissionTimelineItem[] = [];
   export let onSubmitMessage: (message: string) => void = () => {};
   export let onResolvePermission: (permissionId: string, choice: string) => void = () => {};
@@ -177,6 +178,9 @@
         Choose a conversation from the workspace tree.
       {/if}
     </p>
+    {#if noDiffMessage}
+      <p class="inline-note">{noDiffMessage}</p>
+    {/if}
   </header>
 
   <div bind:this={threadElement} class="thread">
@@ -404,6 +408,12 @@
     color: var(--text-soft);
     font-size: 0.76rem;
     letter-spacing: 0.01em;
+  }
+
+  .inline-note {
+    margin: 0.45rem 0 0;
+    color: var(--text-soft);
+    font-size: 0.72rem;
   }
 
   .thread {
