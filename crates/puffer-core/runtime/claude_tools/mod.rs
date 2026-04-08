@@ -308,7 +308,7 @@ fn file_timestamp_ms(path: &Path) -> Result<u128> {
     Ok(duration.as_millis())
 }
 
-fn execute_workflow_tool(
+pub(crate) fn execute_workflow_tool(
     state: &mut AppState,
     resources: &LoadedResources,
     cwd: &Path,
