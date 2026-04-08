@@ -145,7 +145,7 @@
     return { additions, removals };
   }
 
-  function diffPreview(text: string, maxLines = 8): string {
+  function diffPreview(text: string, maxLines = 4): string {
     return text.split("\n").slice(0, maxLines).join("\n");
   }
 
@@ -249,6 +249,7 @@
                 <span>-{diffStats(item.diff.patch).removals}</span>
                 <span>{item.diff.command}</span>
               </div>
+              <p class="diff-note">Full patch stays in the right review rail.</p>
               <pre>{diffPreview(item.diff.patch)}</pre>
             </div>
           {:else}
@@ -482,7 +483,7 @@
 
   .diff-log {
     display: grid;
-    gap: 0.55rem;
+    gap: 0.42rem;
     padding: 0.72rem 0.85rem;
     background: rgba(255, 255, 255, 0.46);
     box-shadow:
@@ -512,17 +513,23 @@
     font-size: 0.72rem;
   }
 
+  .diff-note {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.74rem;
+  }
+
   .diff-log pre {
     margin: 0;
-    padding: 0.72rem 0.85rem;
+    padding: 0.62rem 0.75rem;
     background: rgba(255, 255, 255, 0.72);
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.55) inset,
       0 0 0 1px rgba(118, 97, 72, 0.1);
     white-space: pre-wrap;
     font-family: var(--font-mono);
-    font-size: 0.82rem;
-    line-height: 1.58;
+    font-size: 0.78rem;
+    line-height: 1.5;
     overflow: auto;
   }
 
