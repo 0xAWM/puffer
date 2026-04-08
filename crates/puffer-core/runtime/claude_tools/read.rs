@@ -83,6 +83,10 @@ pub fn execute_claude_read_tool(
 ) -> Result<String> {
     let input: ClaudeReadInput =
         serde_json::from_value(input).context("invalid Read tool input")?;
+    let input = ClaudeReadInput {
+        pages: normalize_optional_string(input.pages),
+        ..input
+    };
     let output = execute_claude_read(cwd, working_dirs, input)?;
     Ok(serde_json::to_string_pretty(&output)?)
 }
@@ -309,6 +313,17 @@ fn validate_pdf_pages(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 fn parse_page_number(value: &str) -> Result<u32> {
     let page = value
         .trim()
@@ -516,6 +531,25 @@ mod tests {
         });
         let error = execute_claude_read_tool(temp.path(), &[], payload).unwrap_err();
         assert!(error.to_string().contains("exceeds maximum of 20 pages"));
+    }
+
+    #[test]
+    fn blank_pages_value_is_treated_as_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("notes.txt");
+        fs::write(&path, "hello\n").unwrap();
+        let payload = serde_json::json!({
+            "file_path": path.display().to_string(),
+            "pages": "   ",
+        });
+
+        let output = execute_claude_read_tool(temp.path(), &[], payload).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["type"], "text");
+        assert!(parsed["file"]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("hello")));
     }
 
     #[test]

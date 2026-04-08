@@ -213,7 +213,9 @@ fn input_file_path(input: &Value, field: &str) -> Result<Option<PathBuf>> {
 }
 
 fn is_full_read_request(input: &Value) -> bool {
-    input.get("offset").is_none() && input.get("limit").is_none() && input.get("pages").is_none()
+    !read_field_is_present(input, "offset")
+        && !read_field_is_present(input, "limit")
+        && !read_pages_field_is_present(input)
 }
 
 fn clone_read_state(state: &AppState) -> HashMap<PathBuf, write::ClaudeReadSnapshot> {
@@ -252,9 +254,9 @@ fn record_read_from_input(state: &mut AppState, input: &Value) -> Result<()> {
         return Ok(());
     };
     let timestamp_ms = file_timestamp_ms(&path)?;
-    let is_partial_view = input.get("offset").is_some()
-        || input.get("limit").is_some()
-        || input.get("pages").is_some();
+    let is_partial_view = read_field_is_present(input, "offset")
+        || read_field_is_present(input, "limit")
+        || read_pages_field_is_present(input);
     state.claude_read_state.insert(
         path,
         ClaudeReadState {
@@ -263,6 +265,18 @@ fn record_read_from_input(state: &mut AppState, input: &Value) -> Result<()> {
         },
     );
     Ok(())
+}
+
+fn read_field_is_present(input: &Value, field: &str) -> bool {
+    !matches!(input.get(field), None | Some(Value::Null))
+}
+
+fn read_pages_field_is_present(input: &Value) -> bool {
+    match input.get("pages") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) => !value.trim().is_empty(),
+        Some(_) => true,
+    }
 }
 
 fn mark_fully_read(state: &mut AppState, path: &Path) -> Result<()> {
@@ -365,5 +379,36 @@ impl<'a> ProviderToolContext<'a> {
             } => structured_output,
             Self::None => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn blank_pages_do_not_make_read_partial() {
+        let input = json!({
+            "file_path": "/tmp/demo.txt",
+            "pages": "   ",
+        });
+
+        assert!(is_full_read_request(&input));
+        assert!(!read_pages_field_is_present(&input));
+    }
+
+    #[test]
+    fn null_optional_read_fields_are_treated_as_absent() {
+        let input = json!({
+            "file_path": "/tmp/demo.txt",
+            "offset": null,
+            "limit": null,
+            "pages": null,
+        });
+
+        assert!(is_full_read_request(&input));
+        assert!(!read_field_is_present(&input, "offset"));
+        assert!(!read_field_is_present(&input, "limit"));
     }
 }
