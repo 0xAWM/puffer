@@ -1,28 +1,19 @@
-use crate::popup::popup_rows;
-use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage};
-use puffer_provider_registry::{AuthStore, StoredCredential};
+use super::top_panel::{should_show_puffer, TOP_PANEL_IMAGE_HEIGHT};
+use puffer_core::{estimate_remaining_context_percent, AppState};
+use puffer_provider_registry::{AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 use ratatui::text::{Line, Span};
 use std::path::Path;
 
-const COMPACT_TOP_PANEL_BREAKPOINT: u16 = 84;
-
-/// Builds the two columns rendered inside the top information box.
-pub(super) fn top_panel_columns(
+/// Builds the stacked summary rows used when the viewport is narrow.
+pub(super) fn top_panel_compact_lines(
     state: &AppState,
     resources: &LoadedResources,
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
-) -> [Vec<Line<'static>>; 2] {
-    let left = FieldFormatter::from_labels(["Mascot", "User", "Provider", "Mode"]);
-    let right = FieldFormatter::from_labels(["Session", "Model", "Directory", "Activity"]);
-    let mascot = if state.config.mascot.enabled {
-        format!("{} on duty", state.config.mascot.display_name)
-    } else {
-        "Mascot disabled".to_string()
-    };
-    let user = account_header_line(state, auth_store).unwrap_or_else(|| {
+) -> Vec<Line<'static>> {
+    let account = account_header_line(state, auth_store).unwrap_or_else(|| {
         let provider = current_provider(state);
         match auth_status(state, auth_store) {
             "api-key" => format!("{provider} via API key"),
@@ -38,79 +29,49 @@ pub(super) fn top_panel_columns(
     if state.vim_mode {
         mode.push("vim".to_string());
     }
+    let tools = tool_status(tool_registry).executable;
     let remote = remote_label(state);
-    let activity = if remote == "local" {
+    let context = if remote == "local" {
         format!(
-            "{} messages · {} workdirs · sandbox {}",
+            "{} · {} msgs · {} wds · sandbox {}",
+            path_tail(&state.cwd),
             state.transcript.len(),
             state.working_dirs.len(),
-            truncate(&state.sandbox_mode, 18),
+            state.sandbox_mode,
         )
     } else {
         format!(
-            "{} messages · {} workdirs · {}",
+            "{} · {} msgs · {} wds · {}",
+            path_tail(&state.cwd),
             state.transcript.len(),
             state.working_dirs.len(),
-            truncate(&remote, 18),
+            remote,
         )
     };
-    let tools = tool_status(tool_registry).executable;
 
-    [
-        vec![
-            left.line(
-                "Mascot",
-                vec![Span::styled(
-                    truncate(&mascot, 32),
-                    ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
-                )],
+    vec![
+        top_panel_line("Account", account, false),
+        top_panel_line(
+            "Model",
+            format!(
+                "{} · tools {tools}/{}",
+                current_model(state),
+                resources.tools.len(),
             ),
-            left.line("User", vec![Span::raw(truncate(&user, 40))]),
-            left.line(
-                "Provider",
-                vec![Span::raw(format!(
-                    "{} · auth {}",
-                    truncate(current_provider(state), 20),
-                    auth_status(state, auth_store),
-                ))],
-            ),
-            left.line("Mode", vec![Span::raw(mode.join(" · "))]),
-        ],
-        vec![
-            right.line(
-                "Session",
-                vec![Span::raw(format!(
-                    "{} · {}",
-                    truncate(&session_name(state), 22),
-                    short_id(&state.session.id.to_string()),
-                ))],
-            ),
-            right.line(
-                "Model",
-                vec![Span::raw(format!(
-                    "{} · tools {tools}/{}",
-                    truncate(current_model(state), 24),
-                    resources.tools.len(),
-                ))],
-            ),
-            right.line(
-                "Directory",
-                vec![Span::raw(truncate(&path_tail(&state.cwd), 34))],
-            ),
-            right.line("Activity", vec![Span::raw(activity)]),
-        ],
+            false,
+        ),
+        top_panel_line(
+            "Session",
+            format!("{} · {}", session_name(state), state.session.id),
+            false,
+        ),
+        top_panel_line("Mode", mode.join(" · "), false),
+        top_panel_line(
+            "Context",
+            context,
+            false,
+        ),
     ]
-}
-
-/// Builds the stacked summary rows used when the viewport is narrow.
-pub(super) fn top_panel_compact_lines(
-    state: &AppState,
-    resources: &LoadedResources,
-    auth_store: &AuthStore,
-    tool_registry: &ToolRegistry,
-) -> Vec<Line<'static>> {
-    let [left, right] = top_panel_columns(state, resources, auth_store, tool_registry);
-    left.into_iter().chain(right).collect()
 }
 
 /// Returns the outer height needed for the top information box.
@@ -121,97 +82,26 @@ pub(super) fn top_panel_height(
     tool_registry: &ToolRegistry,
     width: u16,
 ) -> u16 {
-    if width < COMPACT_TOP_PANEL_BREAKPOINT {
-        top_panel_compact_lines(state, resources, auth_store, tool_registry).len() as u16 + 2
+    let box_height = top_panel_compact_lines(state, resources, auth_store, tool_registry).len()
+        as u16
+        + 2;
+    if should_show_puffer(width) {
+        (TOP_PANEL_IMAGE_HEIGHT as u16).max(box_height)
     } else {
-        let [left, right] = top_panel_columns(state, resources, auth_store, tool_registry);
-        left.len().max(right.len()) as u16 + 2
+        box_height
     }
 }
 
-/// Builds the primary footer status line shown above the composer.
-pub(super) fn status_primary_line(
-    state: &AppState,
-    resources: &LoadedResources,
-    auth_store: &AuthStore,
-    tool_registry: &ToolRegistry,
-) -> String {
+/// Builds the condensed footer status line shown below the composer.
+pub(super) fn footer_status_line(state: &AppState, providers: &ProviderRegistry) -> String {
+    let remaining = estimate_remaining_context_percent(state, providers);
     format!(
-        "{} · {} · auth {} · tools {}/{}",
-        truncate(current_provider(state), 18),
-        truncate(current_model(state), 28),
-        auth_status(state, auth_store),
-        tool_status(tool_registry).executable,
-        resources.tools.len(),
+        "{} · {}% left · {} · sandbox {}",
+        current_model(state),
+        remaining,
+        footer_path(&state.cwd),
+        state.sandbox_mode,
     )
-}
-
-/// Builds the secondary footer line shown below the composer prompt.
-pub(super) fn status_secondary_line(
-    state: &AppState,
-    resources: &LoadedResources,
-    tool_registry: &ToolRegistry,
-) -> String {
-    let mut line = format!(
-        "{} · shell {} · prompts {} · {} workdirs",
-        truncate(&path_tail(&state.cwd), 18),
-        shell_activity(&state.transcript).total_runs,
-        resources.prompts.len(),
-        state.working_dirs.len(),
-    );
-    let remote = remote_label(state);
-    if remote != "local" {
-        line.push_str(&format!(" · {}", truncate(&remote, 18)));
-    }
-    if state.statusline_enabled {
-        line.push_str(&format!(" · sandbox {}", truncate(&state.sandbox_mode, 18)));
-    }
-    if tool_status(tool_registry).executable == 0 {
-        line.push_str(" · no tools");
-    }
-    line
-}
-
-/// Builds a compact one-line session summary for medium and narrow footers.
-pub(super) fn status_compact_line(
-    state: &AppState,
-    resources: &LoadedResources,
-    auth_store: &AuthStore,
-    tool_registry: &ToolRegistry,
-) -> String {
-    format!(
-        "{} · {} · auth {} · tools {}/{} · {}",
-        truncate(current_provider(state), 14),
-        truncate(current_model(state), 22),
-        auth_status(state, auth_store),
-        tool_status(tool_registry).executable,
-        resources.tools.len(),
-        truncate(&path_tail(&state.cwd), 16),
-    )
-}
-
-/// Returns true when the top info box should stack instead of using two columns.
-pub(super) fn use_compact_top_panel(width: u16) -> bool {
-    width < COMPACT_TOP_PANEL_BREAKPOINT
-}
-
-/// Builds the contextual composer hint line.
-pub(super) fn hint_line(input: &str, commands: &[CommandSpec]) -> String {
-    if input.starts_with('/') {
-        let rows = popup_rows(input, commands);
-        let best = rows
-            .first()
-            .map(|command| format!("/{}", command.name))
-            .unwrap_or_else(|| "<none>".to_string());
-        return format!(
-            "slash {} · {} matches · best {} · Enter submits · Esc clears",
-            truncate(input, 18),
-            rows.len(),
-            best,
-        );
-    }
-
-    "? for shortcuts · /help · /review · !pwd".to_string()
 }
 
 /// Flattens the top-box summary into test-friendly lines.
@@ -222,11 +112,13 @@ pub(super) fn header_lines(
     auth_store: &AuthStore,
     tool_registry: &ToolRegistry,
 ) -> Vec<Line<'static>> {
-    let [left, right] = top_panel_columns(state, resources, auth_store, tool_registry);
     let mut lines = vec![Line::from("Puffer Code")];
-    lines.extend(left);
-    lines.push(Line::default());
-    lines.extend(right);
+    lines.extend(top_panel_compact_lines(
+        state,
+        resources,
+        auth_store,
+        tool_registry,
+    ));
     lines
 }
 
@@ -255,24 +147,8 @@ pub(super) fn session_lines(state: &AppState) -> Vec<String> {
 
 /// Builds the test-only footer summary lines.
 #[cfg(test)]
-pub(super) fn footer_lines(
-    state: &AppState,
-    resources: &LoadedResources,
-    auth_store: &AuthStore,
-    tool_registry: &ToolRegistry,
-    input: &str,
-    commands: &[CommandSpec],
-) -> Vec<Line<'static>> {
-    vec![
-        Line::from(status_primary_line(
-            state,
-            resources,
-            auth_store,
-            tool_registry,
-        )),
-        Line::from(status_secondary_line(state, resources, tool_registry)),
-        Line::from(hint_line(input, commands)),
-    ]
+pub(super) fn footer_lines(state: &AppState, providers: &ProviderRegistry) -> Vec<Line<'static>> {
+    vec![Line::from(footer_status_line(state, providers))]
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -280,31 +156,20 @@ struct ToolStatus {
     executable: usize,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ShellActivity {
-    total_runs: usize,
-    last_command: Option<String>,
-}
-
-struct FieldFormatter {
-    label_width: usize,
-}
-
-impl FieldFormatter {
-    fn from_labels<const N: usize>(labels: [&str; N]) -> Self {
-        Self {
-            label_width: labels.iter().map(|label| label.len()).max().unwrap_or(0),
-        }
-    }
-
-    fn line(&self, label: &str, value: Vec<Span<'static>>) -> Line<'static> {
-        let mut spans = vec![Span::styled(
-            format!("{label:width$}  ", width = self.label_width),
-            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::DIM),
-        )];
-        spans.extend(value);
-        Line::from(spans)
-    }
+fn top_panel_line(label: &str, value: String, emphasize: bool) -> Line<'static> {
+    let label = Span::styled(
+        format!("{label:<10}"),
+        ratatui::style::Style::reset().add_modifier(ratatui::style::Modifier::DIM),
+    );
+    let value = if emphasize {
+        Span::styled(
+            value,
+            ratatui::style::Style::reset().add_modifier(ratatui::style::Modifier::BOLD),
+        )
+    } else {
+        Span::styled(value, ratatui::style::Style::reset())
+    };
+    Line::from(vec![label, value]).patch_style(ratatui::style::Style::reset())
 }
 
 fn current_provider(state: &AppState) -> &str {
@@ -401,6 +266,25 @@ fn path_tail(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+fn footer_path(path: &Path) -> String {
+    let Some(home) = dirs::home_dir() else {
+        return path.display().to_string();
+    };
+    if path == home {
+        return "~".to_string();
+    }
+    if let Ok(relative) = path.strip_prefix(&home) {
+        let suffix = relative.display().to_string();
+        if suffix.is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{suffix}")
+        }
+    } else {
+        path.display().to_string()
+    }
+}
+
 fn short_id(value: &str) -> String {
     value.chars().take(8).collect()
 }
@@ -432,29 +316,4 @@ fn tool_status(tool_registry: &ToolRegistry) -> ToolStatus {
         status.executable += 1;
     }
     status
-}
-
-fn shell_activity(messages: &[RenderedMessage]) -> ShellActivity {
-    let mut activity = ShellActivity::default();
-    for message in messages {
-        if message.role != MessageRole::User {
-            continue;
-        }
-        let Some(command) = shell_command_from_message(&message.text) else {
-            continue;
-        };
-        activity.total_runs += 1;
-        activity.last_command = Some(command.to_string());
-    }
-    activity
-}
-
-fn shell_command_from_message(text: &str) -> Option<&str> {
-    let command = text.strip_prefix("!!").or_else(|| text.strip_prefix('!'))?;
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }

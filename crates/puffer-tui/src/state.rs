@@ -6,7 +6,8 @@ use crate::status_overlay::StatusOverlay;
 use crate::text_overlay::TextOverlay;
 use crate::usage::UsageOverlay;
 use puffer_core::{
-    CommandSpec, PermissionPromptAction, PermissionPromptRequest, ToolInvocation, TurnExecution,
+    CommandSpec, PermissionPromptAction, PermissionPromptRequest, ToolCallRequest, ToolInvocation,
+    TurnExecution,
 };
 use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
@@ -76,6 +77,7 @@ pub(crate) struct PendingSubmitResult {
 /// Carries one event emitted while a provider-backed turn is in flight.
 pub(crate) enum PendingSubmitEvent {
     TextDelta(String),
+    ToolCallsRequested(Vec<ToolCallRequest>),
     ToolInvocations(Vec<ToolInvocation>),
     PermissionRequest(PermissionPromptRequest, Sender<PermissionPromptAction>),
     Finished(PendingSubmitResult),
@@ -85,6 +87,7 @@ pub(crate) enum PendingSubmitEvent {
 pub(crate) struct PendingSubmit {
     pub(crate) prompt: String,
     pub(crate) receiver: Receiver<PendingSubmitEvent>,
+    pub(crate) pending_tool_calls: Vec<ToolCallRequest>,
     pub(crate) rendered_tool_invocations: usize,
 }
 

@@ -311,6 +311,15 @@ where
             });
         }
 
+        on_event(TurnStreamEvent::ToolCallsRequested(
+            tool_calls
+                .iter()
+                .map(|tool_call| super::ToolCallRequest {
+                    tool_id: tool_call.name.clone(),
+                    input: serde_json::to_string(&tool_call.arguments).unwrap_or_default(),
+                })
+                .collect(),
+        ));
         let cwd = state.cwd.clone();
         let tool_results = execute_openai_tool_calls(
             state,

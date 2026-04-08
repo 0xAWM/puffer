@@ -14,6 +14,7 @@ use puffer_resources::{
 use puffer_session_store::{SessionMetadata, SessionStore};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::style::Color;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -636,7 +637,7 @@ fn render_shows_status_line_when_enabled() {
         .unwrap();
     let rendered = buffer_to_string(terminal.backend().buffer());
     assert!(rendered.contains("anthropic"));
-    assert!(rendered.contains("/help · /review · !pwd"));
+    assert!(rendered.contains("sandbox workspace-write"));
 }
 
 #[test]
@@ -683,6 +684,44 @@ fn render_shows_overlay_query_in_prompt_row() {
     assert!(rendered.contains("open"));
     assert!(rendered.contains("Select Provider"));
     assert!(rendered.contains("Type") || rendered.contains("Typing jumps"));
+}
+
+#[test]
+fn composer_separator_uses_shiny_orange_border() {
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let state = sample_state();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            render::render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &supported_commands(),
+            )
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let viewport = render::current_transcript_viewport();
+    let separator_y = viewport.y + viewport.height;
+
+    assert_eq!(buffer[(0, separator_y)].symbol(), "─");
+    assert_eq!(buffer[(0, separator_y)].fg, Color::Indexed(214));
+    assert_eq!(
+        buffer[(buffer.area().width / 2, separator_y)].fg,
+        Color::Indexed(214)
+    );
 }
 
 #[test]

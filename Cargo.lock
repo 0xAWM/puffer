@@ -2242,6 +2242,7 @@ dependencies = [
  "anyhow",
  "crossterm 0.29.0",
  "dirs",
+ "image",
  "indexmap",
  "insta",
  "puffer-config",

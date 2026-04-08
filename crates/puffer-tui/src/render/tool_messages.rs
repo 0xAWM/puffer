@@ -1,30 +1,36 @@
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(super) fn render_tool_message(text: &str, expanded: bool) -> Option<Vec<Line<'static>>> {
-    if expanded {
-        return None;
-    }
+const ORANGE_ACCENT: Color = Color::Indexed(214);
+const TOOL_OUTPUT_COLOR: Color = Color::DarkGray;
+const RUNNING_PULSE_MS: u128 = 800;
+
+pub(super) fn render_tool_message(
+    text: &str,
+    expanded: bool,
+    pulse_running: bool,
+) -> Option<Vec<Line<'static>>> {
     let parsed = parse_tool_message(text)?;
-    let mut lines = vec![Line::from(vec![
-        Span::styled("⏺ ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("{} [{}]", friendly_tool_name(parsed.tool_id), parsed.status),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ])];
+    let mut lines = vec![Line::from(header_spans(&parsed, pulse_running))];
 
-    if let Some(summary) = summarize_input(parsed.tool_id, parsed.input) {
+    let preview_lines = output_display_lines(parsed.tool_id, parsed.output, expanded);
+    for (index, line) in preview_lines.into_iter().enumerate() {
+        let prefix = if index == 0 { "└ " } else { "  " };
         lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().add_modifier(Modifier::DIM)),
-            Span::raw(summary),
-        ]));
-    }
-    if let Some(preview) = output_preview(parsed.output) {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().add_modifier(Modifier::DIM)),
-            Span::styled(preview, Style::default().add_modifier(Modifier::DIM)),
+            Span::styled(
+                prefix.to_string(),
+                Style::default()
+                    .fg(TOOL_OUTPUT_COLOR)
+                    .add_modifier(Modifier::DIM),
+            ),
+            Span::styled(
+                line,
+                Style::default()
+                    .fg(TOOL_OUTPUT_COLOR)
+                    .add_modifier(Modifier::DIM),
+            ),
         ]));
     }
     Some(lines)
@@ -55,51 +61,123 @@ fn parse_tool_message(text: &str) -> Option<ParsedToolMessage<'_>> {
     })
 }
 
+fn header_spans(parsed: &ParsedToolMessage<'_>, pulse_running: bool) -> Vec<Span<'static>> {
+    let (symbol, style) = status_indicator(parsed.status, pulse_running);
+    let mut spans = vec![Span::styled(symbol.to_string(), style)];
+    spans.push(Span::styled(
+        friendly_tool_name(parsed.tool_id),
+        Style::default()
+            .fg(ORANGE_ACCENT)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if let Some(summary) = summarize_input(parsed.tool_id, parsed.input) {
+        spans.push(Span::raw(" "));
+        spans.push(Span::raw(summary));
+    }
+    spans
+}
+
+fn status_indicator(status: &str, pulse_running: bool) -> (&'static str, Style) {
+    if pulse_running {
+        if pulse_visible() {
+            return (
+                "● ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        return ("  ", Style::default());
+    }
+
+    match status {
+        "ok" => (
+            "● ",
+            Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        ),
+        _ => (
+            "● ",
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        ),
+    }
+}
+
+fn pulse_visible() -> bool {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_millis(0))
+        .as_millis();
+    elapsed % RUNNING_PULSE_MS < RUNNING_PULSE_MS / 2
+}
+
 fn friendly_tool_name(tool_id: &str) -> String {
-    match tool_id {
+    match normalized_tool_id(tool_id).as_str() {
         "bash" => "Bash".to_string(),
-        "read_file" => "Read File".to_string(),
-        "write_file" => "Write File".to_string(),
-        "replace_in_file" => "Edit File".to_string(),
-        "search_text" => "Search Text".to_string(),
+        "read" | "read_file" => "Read".to_string(),
+        "write" | "write_file" => "Write".to_string(),
+        "edit" | "replace_in_file" => "Edit".to_string(),
+        "glob" => "Glob".to_string(),
+        "search_text" | "grep" => "Grep".to_string(),
         "list_dir" => "List Directory".to_string(),
         "move_path" => "Move Path".to_string(),
         "remove_path" => "Remove Path".to_string(),
-        "WebSearch" => "Web Search".to_string(),
-        "WebFetch" => "Web Fetch".to_string(),
-        "Task" => "Task".to_string(),
-        "Agent" => "Agent".to_string(),
+        "websearch" => "Web Search".to_string(),
+        "webfetch" => "Web Fetch".to_string(),
+        "notebookedit" => "Notebook Edit".to_string(),
+        "listmcpresourcestool" => "List MCP Resources".to_string(),
+        "readmcpresourcetool" => "Read MCP Resource".to_string(),
+        "task" => "Task".to_string(),
+        "agent" => "Agent".to_string(),
         other => other.replace('_', " "),
     }
 }
 
 fn summarize_input(tool_id: &str, input: &str) -> Option<String> {
     let parsed = serde_json::from_str::<Value>(input).ok();
-    match tool_id {
+    let summary = match normalized_tool_id(tool_id).as_str() {
         "bash" => extract_string(parsed.as_ref(), &["command"])
-            .map(|command| format!("command: {command}")),
-        "read_file" | "write_file" | "replace_in_file" => {
-            extract_string(parsed.as_ref(), &["path"]).map(|path| format!("path: {path}"))
+            .map(normalize_inline_text)
+            .or_else(|| Some(normalize_inline_text(input))),
+        "read" | "read_file" | "write" | "write_file" | "edit" | "replace_in_file"
+        | "remove_path" | "list_dir" => {
+            extract_string(parsed.as_ref(), &["file_path", "path"]).map(normalize_inline_text)
         }
         "move_path" => {
             let from = extract_string(parsed.as_ref(), &["from"])?;
             let to = extract_string(parsed.as_ref(), &["to"])?;
-            Some(format!("move: {from} -> {to}"))
+            Some(format!("{from} -> {to}"))
         }
-        "remove_path" | "list_dir" => {
-            extract_string(parsed.as_ref(), &["path"]).map(|path| format!("path: {path}"))
+        "search_text" => {
+            extract_string(parsed.as_ref(), &["query", "pattern"]).map(normalize_inline_text)
         }
-        "search_text" => extract_string(parsed.as_ref(), &["query", "pattern"])
-            .map(|query| format!("query: {query}")),
-        "WebSearch" => {
-            extract_string(parsed.as_ref(), &["query"]).map(|query| format!("query: {query}"))
+        "glob" => extract_string(parsed.as_ref(), &["pattern"]).map(normalize_inline_text),
+        "websearch" => extract_string(parsed.as_ref(), &["query"]).map(normalize_inline_text),
+        "webfetch" => extract_string(parsed.as_ref(), &["url"]).map(normalize_inline_text),
+        "notebookedit" => extract_string(parsed.as_ref(), &["notebook_path"])
+            .map(normalize_inline_text)
+            .or_else(|| extract_string(parsed.as_ref(), &["cell_id"]).map(normalize_inline_text)),
+        "readmcpresourcetool" => {
+            extract_string(parsed.as_ref(), &["uri"]).map(normalize_inline_text)
         }
-        "WebFetch" => extract_string(parsed.as_ref(), &["url"]).map(|url| format!("url: {url}")),
-        "Task" | "Agent" => {
-            extract_string(parsed.as_ref(), &["prompt"]).map(|prompt| format!("prompt: {prompt}"))
+        "listmcpresourcestool" => {
+            extract_string(parsed.as_ref(), &["server"]).map(normalize_inline_text)
         }
-        _ => extract_first_string(parsed.as_ref()).map(|value| format!("input: {value}")),
-    }
+        "task" | "agent" => extract_string(parsed.as_ref(), &["prompt"]).map(normalize_inline_text),
+        _ => extract_first_string(parsed.as_ref()).map(normalize_inline_text),
+    }?;
+    Some(truncate(&summary, 140))
+}
+
+fn normalized_tool_id(tool_id: &str) -> String {
+    tool_id.to_ascii_lowercase()
+}
+
+fn normalize_inline_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn extract_string<'a>(value: Option<&'a Value>, keys: &[&str]) -> Option<&'a str> {
@@ -112,12 +190,273 @@ fn extract_first_string(value: Option<&Value>) -> Option<&str> {
     value?.as_object()?.values().find_map(Value::as_str)
 }
 
-fn output_preview(output: Option<&str>) -> Option<String> {
-    let first_line = output?
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    Some(truncate(first_line, 72))
+fn output_display_lines(tool_id: &str, output: Option<&str>, expanded: bool) -> Vec<String> {
+    let text = output.unwrap_or_default().trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let lines = display_output_lines(tool_id, text);
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    if expanded || lines.len() <= 3 {
+        return lines;
+    }
+
+    let hidden = lines.len().saturating_sub(3);
+    vec![
+        truncate(lines.first().map(String::as_str).unwrap_or_default(), 120),
+        format!("[+{hidden} lines · press Ctrl+O to expand]"),
+        truncate(
+            lines
+                .get(lines.len().saturating_sub(2))
+                .map(String::as_str)
+                .unwrap_or_default(),
+            120,
+        ),
+        truncate(lines.last().map(String::as_str).unwrap_or_default(), 120),
+    ]
+}
+
+fn display_output_lines(tool_id: &str, output: &str) -> Vec<String> {
+    match normalized_tool_id(tool_id).as_str() {
+        "bash" => {
+            if let Some(lines) = bash_output_lines(output) {
+                return lines;
+            }
+        }
+        "read" => {
+            if let Some(lines) = read_output_lines(output) {
+                return lines;
+            }
+        }
+        "write" => {
+            if let Some(lines) = write_output_lines(output) {
+                return lines;
+            }
+        }
+        "edit" | "replace_in_file" => {
+            if let Some(lines) = edit_output_lines(output) {
+                return lines;
+            }
+        }
+        "glob" => {
+            if let Some(lines) = glob_output_lines(output) {
+                return lines;
+            }
+        }
+        "webfetch" => {
+            if let Some(lines) = web_fetch_output_lines(output) {
+                return lines;
+            }
+        }
+        "notebookedit" => {
+            if let Some(lines) = notebook_edit_output_lines(output) {
+                return lines;
+            }
+        }
+        "listmcpresourcestool" => {
+            if let Some(lines) = list_mcp_resources_output_lines(output) {
+                return lines;
+            }
+        }
+        "readmcpresourcetool" => {
+            if let Some(lines) = read_mcp_resource_output_lines(output) {
+                return lines;
+            }
+        }
+        _ => {}
+    }
+    if let Some(lines) = generic_json_output_lines(output) {
+        return lines;
+    }
+    output.lines().map(str::to_string).collect()
+}
+
+fn bash_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    let stdout = parsed
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim_end();
+    let stderr = parsed
+        .get("stderr")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim_end();
+
+    let mut lines = Vec::new();
+    if !stdout.is_empty() {
+        lines.extend(stdout.lines().map(str::to_string));
+    }
+    if !stderr.is_empty() {
+        lines.extend(stderr.lines().map(str::to_string));
+    }
+    Some(lines)
+}
+
+fn read_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    let kind = parsed.get("type").and_then(Value::as_str)?;
+    let file = parsed.get("file")?;
+    match kind {
+        "text" => Some(
+            file.get("content")?
+                .as_str()?
+                .lines()
+                .map(str::to_string)
+                .collect(),
+        ),
+        "notebook" => Some(vec![format!(
+            "Notebook with {} cells",
+            file.get("cells")
+                .and_then(Value::as_array)
+                .map(|cells| cells.len())
+                .unwrap_or(0)
+        )]),
+        "image" => Some(vec![format!(
+            "Image file ({} bytes)",
+            file.get("originalSize")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        )]),
+        "pdf" => Some(vec![format!(
+            "PDF file ({} bytes)",
+            file.get("originalSize")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        )]),
+        "file_unchanged" => Some(vec!["File unchanged since last read".to_string()]),
+        _ => None,
+    }
+}
+
+fn write_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    let content = parsed.get("content").and_then(Value::as_str)?;
+    Some(content.lines().map(str::to_string).collect())
+}
+
+fn edit_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    if let Some(lines) = parsed
+        .get("structuredPatch")
+        .and_then(Value::as_array)
+        .and_then(|patches| patches.first())
+        .and_then(|patch| patch.get("lines"))
+        .and_then(Value::as_array)
+    {
+        let rendered = lines
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if !rendered.is_empty() {
+            return Some(rendered);
+        }
+    }
+    parsed
+        .get("newString")
+        .and_then(Value::as_str)
+        .map(|text| text.lines().map(str::to_string).collect())
+}
+
+fn glob_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    let filenames = parsed.get("filenames")?.as_array()?;
+    if filenames.is_empty() {
+        return Some(vec!["No matches".to_string()]);
+    }
+    Some(
+        filenames
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn web_fetch_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    parsed
+        .get("result")
+        .and_then(Value::as_str)
+        .map(|text| text.lines().map(str::to_string).collect())
+}
+
+fn notebook_edit_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    if let Some(error) = parsed.get("error").and_then(Value::as_str) {
+        return Some(vec![error.to_string()]);
+    }
+    if let Some(source) = parsed.get("new_source").and_then(Value::as_str) {
+        let lines = source.lines().map(str::to_string).collect::<Vec<_>>();
+        if !lines.is_empty() {
+            return Some(lines);
+        }
+    }
+    Some(vec![format!(
+        "Notebook {}",
+        parsed
+            .get("edit_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("updated")
+    )])
+}
+
+fn list_mcp_resources_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    let items = parsed.as_array()?;
+    Some(
+        items
+            .iter()
+            .map(|item| {
+                let name = item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("resource");
+                let server = item
+                    .get("server")
+                    .and_then(Value::as_str)
+                    .unwrap_or("server");
+                format!("{name} ({server})")
+            })
+            .collect(),
+    )
+}
+
+fn read_mcp_resource_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    let contents = parsed.get("contents")?.as_array()?;
+    let mut lines = Vec::new();
+    for content in contents {
+        if let Some(text) = content.get("text").and_then(Value::as_str) {
+            lines.extend(text.lines().map(str::to_string));
+            continue;
+        }
+        if let Some(path) = content.get("blobSavedTo").and_then(Value::as_str) {
+            lines.push(format!("Blob saved to {path}"));
+        }
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
+}
+
+fn generic_json_output_lines(output: &str) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Value>(output).ok()?;
+    if let Some(text) = parsed.get("result").and_then(Value::as_str) {
+        return Some(text.lines().map(str::to_string).collect());
+    }
+    if let Some(text) = parsed.get("content").and_then(Value::as_str) {
+        return Some(text.lines().map(str::to_string).collect());
+    }
+    None
 }
 
 fn truncate(text: &str, max_chars: usize) -> String {
@@ -136,30 +475,113 @@ fn truncate(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn collapsed_tool_message_is_human_friendly() {
-        let rendered = render_tool_message(
-            "Tool WebSearch [ok]\ninput: {\"query\":\"rust tui streaming\"}\nRust TUI streaming guide",
-            false,
-        )
-        .unwrap();
-        let text = rendered
-            .into_iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(text.contains("Web Search [ok]"));
-        assert!(text.contains("query: rust tui streaming"));
-        assert!(text.contains("Rust TUI streaming guide"));
-        assert!(!text.contains("input: {\"query\":\"rust tui streaming\"}"));
+    fn render_with_pulse(text: &str, pulse_running: bool) -> Vec<Line<'static>> {
+        render_tool_message(text, false, pulse_running).expect("tool message")
     }
 
     #[test]
-    fn expanded_tool_message_falls_back_to_raw_view() {
-        assert!(render_tool_message(
+    fn bash_tool_message_renders_claude_style_header() {
+        let rendered = render_with_pulse(
+            "Tool bash [ok]\ninput: {\"command\":\"python --version 2>/dev/null || python3 --version\"}\nPython 3.12.1",
+            false,
+        );
+        assert_eq!(
+            rendered[0].to_string(),
+            "● Bash python --version 2>/dev/null || python3 --version"
+        );
+        assert_eq!(rendered[1].to_string(), "└ Python 3.12.1");
+        assert_eq!(rendered[0].spans[0].style.fg, Some(Color::LightGreen));
+        assert_eq!(rendered[0].spans[1].style.fg, Some(ORANGE_ACCENT));
+    }
+
+    #[test]
+    fn failed_tool_message_uses_red_indicator() {
+        let rendered = render_with_pulse(
+            "Tool bash [error]\ninput: {\"command\":\"false\"}\nexit status 1",
+            false,
+        );
+        assert_eq!(rendered[0].spans[0].style.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn long_output_is_compacted_to_first_hidden_last_two_lines() {
+        let rendered = render_with_pulse(
+            "Tool bash [ok]\ninput: {\"command\":\"printf 'a\\nb\\nc\\nd'\"}\na\nb\nc\nd",
+            false,
+        );
+        let text = rendered
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "● Bash printf 'a b c d'".to_string(),
+                "└ a".to_string(),
+                "  [+1 lines · press Ctrl+O to expand]".to_string(),
+                "  c".to_string(),
+                "  d".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn read_tool_message_shows_file_content_instead_of_json() {
+        let rendered = render_with_pulse(
+            "Tool Read [ok]\ninput: {\"file_path\":\"/tmp/demo.txt\"}\n{\n  \"type\": \"text\",\n  \"file\": {\n    \"filePath\": \"/tmp/demo.txt\",\n    \"content\": \"     1\\thello\\n     2\\tworld\\n\",\n    \"numLines\": 2,\n    \"startLine\": 1,\n    \"totalLines\": 2\n  }\n}",
+            false,
+        );
+        let text = rendered
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "● Read /tmp/demo.txt".to_string(),
+                "└      1\thello".to_string(),
+                "       2\tworld".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn web_fetch_message_shows_result_instead_of_json() {
+        let rendered = render_with_pulse(
+            "Tool WebFetch [ok]\ninput: {\"url\":\"https://example.com\"}\n{\n  \"bytes\": 100,\n  \"code\": 200,\n  \"codeText\": \"OK\",\n  \"result\": \"Line one\\nLine two\",\n  \"durationMs\": 12,\n  \"url\": \"https://example.com\"\n}",
+            false,
+        );
+        let text = rendered
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "● Web Fetch https://example.com".to_string(),
+                "└ Line one".to_string(),
+                "  Line two".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn expanded_tool_message_shows_full_decoded_output() {
+        let rendered = render_tool_message(
             "Tool WebSearch [ok]\ninput: {\"query\":\"rust tui streaming\"}\nRust TUI streaming guide",
             true,
+            false,
         )
-        .is_none());
+        .expect("expanded tool message");
+        assert_eq!(
+            rendered
+                .into_iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "● Web Search rust tui streaming".to_string(),
+                "└ Rust TUI streaming guide".to_string(),
+            ]
+        );
     }
 }

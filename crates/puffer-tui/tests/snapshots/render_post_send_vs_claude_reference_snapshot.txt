@@ -14,15 +14,20 @@ Review the current worktree and call out any risks.
 ❯
 
 Puffer current:
-╭ Puffer Code ─────────────────────────────────────────────────────────────────────────────────────╮
-│Mascot    Clawd on duty                   │Session    Shipyard · 12345678                         │
-│User      anthropic via API key           │Model      anthropic/claude-sonn... · tools 3/4        │
-│Provider  anthropic · auth api-key        │Directory  puffer                                      │
-│Mode      effort high · fast · vim        │Activity   2 messages · 2 workdirs · dockyard@staging  │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+                   ██
+               ██████████    ██
+             ████████████████████
+         ████████████████████████    ╭ Puffer Code ────────────────────────────────────────────╮
+         ██████████████████████      │Account   anthropic via API key                          │
+       ████████████████████████████  │Model     anthropic/claude-sonnet-4-5 · tools 3/4        │
+   ██████████████████████████████    │Session   Shipyard · 12345678-1234-5678-1234-567812345678│
+     ████████████████████████████    │Mode      effort high · fast · vim                       │
+         ████████████████████████    │Context   puffer · 2 msgs · 2 wds · dockyard@staging     │
+       ████████████████████████      ╰─────────────────────────────────────────────────────────╯
+           ████████████████████
+           ████████████████
+               ████████
 › Review the current worktree and call out any risks.
-
 The working tree is clean.
 
 
@@ -30,18 +35,13 @@ The working tree is clean.
 
 
 
-
-
-
-
-anthropic · anthropic/claude-so... · auth api-key · tools 3/4 · puffer──────────────────────────────
-
+────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ Review changes, ask a question, or type /
-? for shortcuts · /help · /review · !pwd
+anthropic/claude-sonnet-4-5 · 99% left · /tmp/puffer · sandbox workspace-write
 
 Feature comparison:
 top_panel: claude=false puffer=true
 boxed_footer: claude=false puffer=false
 user_prefix: claude=false puffer=true
 response_connector: claude=true puffer=false
-shortcut_rail: claude=false puffer=true
+shortcut_rail: claude=false puffer=false

@@ -11,14 +11,13 @@ use self::helpers::{help_pane_active, separator_line};
 use self::overlay_content::render_model_entry;
 use self::overlay_content::{masked_secret, overlay_rows, overlay_title, OverlayRow};
 use self::overlay_list::{onboarding_fixed_line_count, overlay_selection, visible_overlay_rows};
-use self::panes::{render_empty_state, render_help_pane};
+use self::panes::render_help_pane;
 #[cfg(test)]
 use self::summary::{footer_lines, header_lines, session_lines};
-use self::summary::{
-    hint_line, status_compact_line, status_primary_line, status_secondary_line, top_panel_height,
-};
+use self::summary::{footer_status_line, top_panel_height};
 use self::tool_messages::render_tool_message;
-use self::top_panel::{render_fixed_top_panel, scrollable_top_panel_lines};
+use self::top_panel::render_fixed_top_panel;
+pub(crate) use self::top_panel::initialize_top_panel_image_state;
 use crate::approval_overlay::render_permission_overlay;
 use crate::btw_overlay::render_btw_overlay;
 use crate::markdown::render_markdown;
@@ -29,7 +28,7 @@ use crate::task_overlay::{is_task_overlay, render_task_overlay};
 use crate::text_overlay::render_text_overlay;
 use crate::usage::render_usage_overlay;
 use crate::OverlayState;
-use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage};
+use puffer_core::{AppState, CommandSpec, MessageRole, RenderedMessage, ToolCallRequest};
 use puffer_provider_registry::AuthStore;
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
@@ -40,11 +39,12 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::cell::RefCell;
-const COMPACT_COMPOSER_BREAKPOINT: u16 = 104;
+const COMPOSER_SEPARATOR_COLOR: Color = Color::Indexed(214);
 
 #[derive(Default)]
 struct PendingSubmitRenderState {
     loading_prompt: Option<String>,
+    pending_tool_calls: Vec<ToolCallRequest>,
     queued_prompts: Vec<String>,
 }
 thread_local! {
@@ -64,11 +64,13 @@ pub(crate) fn set_active_overlay(overlay: Option<OverlayState>) {
 /// Sets the pending submit render state for the current frame.
 pub(crate) fn set_pending_submit_state(
     loading_prompt: Option<String>,
+    pending_tool_calls: Vec<ToolCallRequest>,
     queued_prompts: Vec<String>,
 ) {
     ACTIVE_PENDING_SUBMIT.with(|value| {
         *value.borrow_mut() = PendingSubmitRenderState {
             loading_prompt,
+            pending_tool_calls,
             queued_prompts,
         };
     });
@@ -98,7 +100,7 @@ pub(crate) fn render(
     frame: &mut Frame<'_>,
     state: &AppState,
     resources: &LoadedResources,
-    _providers: &puffer_provider_registry::ProviderRegistry,
+    providers: &puffer_provider_registry::ProviderRegistry,
     auth_store: &AuthStore,
     input: &str,
     cursor: usize,
@@ -114,31 +116,24 @@ pub(crate) fn render(
         .map(OverlayState::is_onboarding)
         .unwrap_or(false);
     let help_active = help_pane_active(state, &active_overlay);
-    let home_active = state.transcript.is_empty() && active_overlay.is_none() && !onboarding_active;
+    let overlay_active = active_overlay.is_some();
     let simplified_surface = help_active;
-    let scrollable_top_panel = !simplified_surface && !home_active && !onboarding_active;
-    let compact_composer = frame.area().width < COMPACT_COMPOSER_BREAKPOINT;
+    let fixed_top_panel = !simplified_surface && !onboarding_active;
     let custom_status_line = state.config.ui.status_line.as_ref().and_then(|config| {
         state.status_line_text.as_ref().map(|text| {
             let padding = " ".repeat(config.padding as usize);
             format!("{padding}{text}{padding}")
         })
     });
-    let statusline_visible = state.statusline_enabled || custom_status_line.is_some();
     let footer_height = if onboarding_active {
         4
     } else if help_active {
         2
-    } else if compact_composer {
-        4
-    } else if statusline_visible {
-        5
     } else {
-        4
+        3
     };
-    let header_height = if simplified_surface || scrollable_top_panel {
-        0
-    } else {
+    let body_min_height = if fixed_top_panel { 4 } else { 8 };
+    let header_height = if fixed_top_panel {
         top_panel_height(
             state,
             resources,
@@ -146,7 +141,9 @@ pub(crate) fn render(
             &tool_registry,
             frame.area().width,
         )
-        .min(frame.area().height.saturating_sub(footer_height + 1))
+        .min(frame.area().height.saturating_sub(footer_height + body_min_height))
+    } else {
+        0
     };
     let loop_box_height =
         ACTIVE_LOOP_STATE.with(|value| loop_status::loop_status_height(&value.borrow()));
@@ -154,7 +151,7 @@ pub(crate) fn render(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height),
-            Constraint::Min(8),
+            Constraint::Min(body_min_height),
             Constraint::Length(loop_box_height),
             Constraint::Length(footer_height),
         ])
@@ -163,7 +160,7 @@ pub(crate) fn render(
         *value.borrow_mut() = Some(layout[1]);
     });
 
-    if header_height > 0 && !simplified_surface {
+    if header_height > 0 && fixed_top_panel {
         render_fixed_top_panel(
             frame,
             layout[0],
@@ -176,8 +173,6 @@ pub(crate) fn render(
 
     if help_active {
         render_help_pane(frame, layout[1], state, commands, resources);
-    } else if home_active {
-        render_empty_state(frame, layout[1], state);
     } else {
         let follow_output = ACTIVE_FOLLOW_OUTPUT.with(|value| *value.borrow());
         let pending_submit = pending_submit_state();
@@ -208,47 +203,27 @@ pub(crate) fn render(
         );
     }
 
+    let footer_constraints = if help_active {
+        vec![Constraint::Length(1), Constraint::Length(1)]
+    } else if onboarding_active {
+        vec![
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    } else {
+        vec![
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    };
     let footer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if help_active {
-            [Constraint::Length(1), Constraint::Length(1)].as_ref()
-        } else if onboarding_active {
-            [
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-            .as_ref()
-        } else if compact_composer {
-            [
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-            .as_ref()
-        } else if state.statusline_enabled {
-            [
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-            .as_ref()
-        } else {
-            [
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-            .as_ref()
-        })
+        .constraints(footer_constraints)
         .split(layout[3]);
 
-    // Render the loop status box when an active loop is present.
     if loop_box_height > 0 {
         ACTIVE_LOOP_STATE.with(|value| {
             if let Some(ref ls) = *value.borrow() {
@@ -258,56 +233,18 @@ pub(crate) fn render(
     }
 
     frame.render_widget(
-        Paragraph::new(separator_line(layout[3].width))
-            .style(Style::default().add_modifier(Modifier::DIM)),
+        Paragraph::new(separator_line(layout[3].width)).style(
+            Style::default()
+                .fg(COMPOSER_SEPARATOR_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
         footer[0],
     );
-
-    if !simplified_surface && compact_composer && !onboarding_active {
-        frame.render_widget(
-            Paragraph::new(status_compact_line(
-                state,
-                resources,
-                auth_store,
-                &tool_registry,
-            ))
-            .style(Style::default().add_modifier(Modifier::DIM)),
-            footer[0],
-        );
-    } else if statusline_visible && !onboarding_active && !simplified_surface {
-        if let Some(custom_status_line) = custom_status_line.as_deref() {
-            frame.render_widget(
-                Paragraph::new(custom_status_line)
-                    .style(Style::default().add_modifier(Modifier::DIM)),
-                footer[1],
-            );
-        } else {
-            frame.render_widget(
-                Paragraph::new(status_primary_line(
-                    state,
-                    resources,
-                    auth_store,
-                    &tool_registry,
-                ))
-                .style(Style::default().add_modifier(Modifier::DIM)),
-                footer[1],
-            );
-            frame.render_widget(
-                Paragraph::new(status_secondary_line(state, resources, &tool_registry))
-                    .style(Style::default().add_modifier(Modifier::DIM)),
-                footer[2],
-            );
-        }
-    }
 
     let prompt_row = if onboarding_active {
         footer[2]
     } else if help_active {
         footer[1]
-    } else if compact_composer {
-        footer[2]
-    } else if statusline_visible {
-        footer[3]
     } else {
         footer[1]
     };
@@ -315,21 +252,9 @@ pub(crate) fn render(
         Some(footer[3])
     } else if help_active {
         None
-    } else if compact_composer {
-        Some(footer[3])
-    } else if statusline_visible {
-        Some(footer[4])
     } else {
         Some(footer[2])
     };
-    let summary_row =
-        if simplified_surface || compact_composer || (statusline_visible && !onboarding_active) {
-            None
-        } else {
-            Some(footer[3])
-        };
-
-    let overlay_active = active_overlay.is_some();
     if overlay_active {
         frame.render_widget(Paragraph::new(overlay_prompt_line(input)), prompt_row);
         let max_cursor = usize::from(prompt_row.width.saturating_sub(3));
@@ -358,22 +283,12 @@ pub(crate) fn render(
         ));
 
         if let Some(hint_row) = hint_row {
+            let footer_line = custom_status_line
+                .clone()
+                .unwrap_or_else(|| footer_status_line(state, providers));
             frame.render_widget(
-                Paragraph::new(hint_line(input, commands))
-                    .style(Style::default().add_modifier(Modifier::DIM)),
+                Paragraph::new(footer_line).style(Style::default().add_modifier(Modifier::DIM)),
                 hint_row,
-            );
-        }
-        if let Some(summary_row) = summary_row {
-            frame.render_widget(
-                Paragraph::new(status_primary_line(
-                    state,
-                    resources,
-                    auth_store,
-                    &tool_registry,
-                ))
-                .style(Style::default().add_modifier(Modifier::DIM)),
-                summary_row,
             );
         }
     }
@@ -412,21 +327,11 @@ fn transcript_text(
     tool_registry: &ToolRegistry,
     pending_submit: PendingSubmitRenderState,
 ) -> Text<'static> {
-    if state.transcript.is_empty() {
-        return Text::default();
-    }
-    let mut lines = scrollable_top_panel_lines(width, state, resources, auth_store, tool_registry);
-    if !lines.is_empty() {
-        lines.push(Line::default());
-    }
-    for (index, message) in state.transcript.iter().enumerate() {
-        if index > 0 {
-            lines.push(Line::default());
-        }
-        lines.extend(render_transcript_message(message));
+    let mut lines = Vec::new();
+    for message in &state.transcript {
+        lines.extend(render_transcript_message(message, false));
     }
     if pending_submit.loading_prompt.is_some() || !pending_submit.queued_prompts.is_empty() {
-        lines.push(Line::default());
         lines.extend(pending_submit_lines(&pending_submit));
     }
     Text::from(lines)
@@ -458,11 +363,12 @@ pub(crate) fn transcript_line_count(
     .min(u16::MAX as usize) as u16
 }
 
-fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
+fn render_transcript_message(message: &RenderedMessage, pulse_tool: bool) -> Vec<Line<'static>> {
     if message.role == MessageRole::System {
         if let Some(lines) = render_tool_message(
             &message.text,
             ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| *value.borrow()),
+            pulse_tool,
         ) {
             return lines;
         }
@@ -495,12 +401,26 @@ fn render_transcript_message(message: &RenderedMessage) -> Vec<Line<'static>> {
 fn pending_submit_state() -> PendingSubmitRenderState {
     ACTIVE_PENDING_SUBMIT.with(|value| PendingSubmitRenderState {
         loading_prompt: value.borrow().loading_prompt.clone(),
+        pending_tool_calls: value.borrow().pending_tool_calls.clone(),
         queued_prompts: value.borrow().queued_prompts.clone(),
     })
 }
 
 fn pending_submit_lines(pending_submit: &PendingSubmitRenderState) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    for tool_call in &pending_submit.pending_tool_calls {
+        let placeholder = format!(
+            "Tool {} [running]\ninput: {}",
+            tool_call.tool_id, tool_call.input
+        );
+        if let Some(tool_lines) = render_tool_message(
+            &placeholder,
+            ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| *value.borrow()),
+            true,
+        ) {
+            lines.extend(tool_lines);
+        }
+    }
     if pending_submit.loading_prompt.is_some() {
         lines.push(Line::from(vec![
             Span::styled("  ⎿ ", Style::default().add_modifier(Modifier::DIM)),
@@ -508,7 +428,6 @@ fn pending_submit_lines(pending_submit: &PendingSubmitRenderState) -> Vec<Line<'
         ]));
     }
     for prompt in &pending_submit.queued_prompts {
-        lines.push(Line::default());
         lines.push(Line::from(format!("› {prompt}")));
         lines.push(Line::from(vec![
             Span::styled("  ⎿ ", Style::default().add_modifier(Modifier::DIM)),

@@ -3,6 +3,7 @@ use crate::usage::UsageOverlay;
 use insta::assert_snapshot;
 use puffer_config::PufferConfig;
 use puffer_core::CommandKind;
+use puffer_core::ToolCallRequest;
 use puffer_provider_openai::OpenAIUsageSummary;
 use puffer_provider_registry::{
     AuthMode, ModelDescriptor, OAuthCredential, ProviderDescriptor, ProviderRegistry,
@@ -38,48 +39,33 @@ fn header_snapshot_reports_compact_status() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                snapshot,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                @r"
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            @r"
 Puffer Code
-Mascot    Clawd on duty
-User      anthropic via API key
-Provider  anthropic · auth api-key
+Account   anthropic via API key
+Model     anthropic/claude-sonnet-4-5 · tools 3/4
+Session   Shipyard · 12345678-1234-5678-1234-567812345678
 Mode      effort high · fast · vim
-
-Session    Shipyard · 12345678
-Model      anthropic/claude-sonn... · tools 3/4
-Directory  puffer
-Activity   2 messages · 2 workdirs · dockyard@staging
+Context   puffer · 2 msgs · 2 wds · dockyard@staging
 "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            );
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        );
 }
 
 #[test]
 fn footer_snapshot_reports_compact_prompt_rail() {
     let state = sample_state();
-    let resources = sample_resources();
-    let auth_store = sample_auth_store();
-    let registry = ToolRegistry::from_resources(&resources);
-    let snapshot = footer_lines(
-        &state,
-        &resources,
-        &auth_store,
-        &registry,
-        "/re",
-        &sample_commands(),
-    )
-    .into_iter()
-    .map(|line| line.to_string())
-    .collect::<Vec<_>>()
-    .join("\n");
+    let providers = sample_providers();
+    let snapshot = footer_lines(&state, &providers)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                snapshot,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                @r"
-anthropic · anthropic/claude-sonnet-4-5 · auth api-key · tools 3/4
-puffer · shell 1 · prompts 2 · 2 workdirs · dockyard@staging · sandbox workspace-write
-slash /re · 2 matches · best /review · Enter submits · Esc clears
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            @r"
+anthropic/claude-sonnet-4-5 · 99% left · /tmp/puffer · sandbox workspace-write
 "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            );
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       );
 }
 
 #[test]
@@ -96,20 +82,16 @@ fn header_snapshot_includes_oauth_identity_when_available() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                snapshot,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                @r"
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            snapshot,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            @r"
 Puffer Code
-Mascot    Clawd on duty
-User      dev@example.com · plan Pro · acct acct-1
-Provider  openai · auth oauth
+Account   dev@example.com · plan Pro · acct acct-1
+Model     openai/gpt-5 · tools 3/4
+Session   Shipyard · 12345678-1234-5678-1234-567812345678
 Mode      effort high · fast · vim
-
-Session    Shipyard · 12345678
-Model      openai/gpt-5 · tools 3/4
-Directory  puffer
-Activity   2 messages · 2 workdirs · dockyard@staging
+Context   puffer · 2 msgs · 2 wds · dockyard@staging
 "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            );
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        );
 }
 
 #[test]
@@ -140,7 +122,7 @@ fn render_draws_sparse_transcript_and_popup() {
 
     let rendered = terminal_view(&terminal);
     assert!(rendered.contains("Puffer Code"));
-    assert!(rendered.contains("Clawd"));
+    assert!(rendered.contains("Account"));
     assert!(rendered.contains("Session"));
     assert!(rendered.contains("working tree clean"));
     assert!(rendered.contains("/review"));
@@ -174,14 +156,12 @@ fn render_layout_includes_header_body_and_composer() {
 
     let rendered = terminal_view(&terminal);
     let lines: Vec<&str> = rendered.lines().collect();
-    assert!(lines
-        .first()
-        .map_or(false, |line| line.contains("Puffer Code")));
-    assert!(lines.iter().any(|line| line.contains("Clawd")));
+    assert!(rendered.contains("Puffer Code"));
+    assert!(lines.iter().any(|line| line.contains("Account")));
     assert!(lines.iter().any(|line| line.contains("Session")));
     assert!(lines.iter().any(|line| line.contains("working tree clean")));
-    assert!(rendered.contains("/help · /review · !pwd"));
-    assert!(rendered.contains("? for shortcuts"));
+    assert!(rendered.contains("anthropic/claude-sonnet-4-5"));
+    assert!(rendered.contains("sandbox workspace-write"));
 }
 
 #[test]
@@ -213,6 +193,7 @@ fn render_pending_submit_shows_loading_below_prompt() {
             set_pending_submit_state(
                 Some("Review the current worktree and call out any risks.".to_string()),
                 Vec::new(),
+                Vec::new(),
             );
             render(
                 frame,
@@ -226,7 +207,7 @@ fn render_pending_submit_shows_loading_below_prompt() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new());
+            set_pending_submit_state(None, Vec::new(), Vec::new());
         })
         .unwrap();
 
@@ -239,6 +220,49 @@ fn render_pending_submit_shows_loading_below_prompt() {
             .unwrap()
             < rendered.find("Loading...").unwrap()
     );
+}
+
+#[test]
+fn render_pending_submit_shows_tool_call_before_output() {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.transcript.clear();
+    state.push_message(MessageRole::User, "check python");
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            set_pending_submit_state(
+                Some("check python".to_string()),
+                vec![ToolCallRequest {
+                    tool_id: "bash".to_string(),
+                    input: "{\"command\":\"python --version 2>&1; python3 --version 2>&1\"}"
+                        .to_string(),
+                }],
+                Vec::new(),
+            );
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            );
+            set_pending_submit_state(None, Vec::new(), Vec::new());
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    assert!(rendered.contains("Bash python --version 2>&1; python3 --version 2>&1"));
+    assert!(rendered.contains("Loading..."));
 }
 
 #[test]
@@ -256,6 +280,7 @@ fn render_pending_submit_shows_queued_prompts() {
         .draw(|frame| {
             set_pending_submit_state(
                 Some("first prompt".to_string()),
+                Vec::new(),
                 vec!["second prompt".to_string(), "third prompt".to_string()],
             );
             render(
@@ -270,7 +295,7 @@ fn render_pending_submit_shows_queued_prompts() {
                 0,
                 &sample_commands(),
             );
-            set_pending_submit_state(None, Vec::new());
+            set_pending_submit_state(None, Vec::new(), Vec::new());
         })
         .unwrap();
 
@@ -322,9 +347,10 @@ fn render_empty_state_shows_transcript_guidance() {
         .unwrap();
 
     let rendered = terminal_view(&terminal);
-    assert!(rendered.contains("Welcome to Puffer Code"));
-    assert!(rendered.contains("Clawd on duty"));
-    assert!(rendered.contains("Tips to get started"));
+    assert!(rendered.contains("Puffer Code"));
+    assert!(rendered.contains("Account"));
+    assert!(!rendered.contains("Welcome to Puffer Code"));
+    assert!(!rendered.contains("Tips to get started"));
 }
 
 #[test]
@@ -355,9 +381,44 @@ fn render_empty_state_compacts_on_narrow_width() {
         .unwrap();
 
     let rendered = terminal_view(&terminal);
-    assert!(rendered.contains("Welcome to Puffer Code"));
-    assert!(rendered.contains("? for shortcuts"));
-    assert!(rendered.contains("/help"));
+    assert!(rendered.contains("Puffer Code"));
+    assert!(!rendered.contains("Welcome to Puffer Code"));
+    assert!(!rendered.contains("██"));
+    assert!(rendered.contains("100% left"));
+    assert!(rendered.contains("Review changes, ask a question, or type /"));
+}
+
+#[test]
+fn render_very_narrow_header_hides_puffer_and_truncates_text() {
+    let backend = TestBackend::new(50, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = sample_state();
+    state.transcript.clear();
+    let resources = sample_resources();
+    let providers = sample_providers();
+    let auth_store = sample_auth_store();
+
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &state,
+                &resources,
+                &providers,
+                &auth_store,
+                "",
+                0,
+                0,
+                0,
+                &sample_commands(),
+            )
+        })
+        .unwrap();
+
+    let rendered = terminal_view(&terminal);
+    assert!(rendered.contains("Puffer Code"));
+    assert!(!rendered.contains("██"));
+    assert!(rendered.lines().any(|line| line.contains("Session") && line.contains("...")));
 }
 
 #[test]

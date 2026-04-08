@@ -26,6 +26,7 @@ use crate::flow::{
     set_overlay_state, submit_next_queued_prompt, submit_queued_prompt_if_ready, try_open_overlay,
 };
 use crate::permission_prompt_flow::handle_permission_prompt_key;
+use crate::render::initialize_top_panel_image_state;
 use crate::statusline::refresh_status_line;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -97,6 +98,7 @@ pub fn run_app(
         Terminal::new(CrosstermBackend::new(io::stdout()))?
     };
     let mut tui = TuiState::default();
+    initialize_top_panel_image_state();
     tui.defer_prompt(
         initial_prompt
             .clone()
@@ -183,6 +185,10 @@ pub fn run_app(
                 tui.pending_submit
                     .as_ref()
                     .map(|pending| pending.prompt.clone()),
+                tui.pending_submit
+                    .as_ref()
+                    .map(|pending| pending.pending_tool_calls.clone())
+                    .unwrap_or_default(),
                 tui.queued_prompts.iter().cloned().collect(),
             );
             render::set_tool_details_expanded(tui.tool_details_expanded);

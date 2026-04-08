@@ -1,64 +1,16 @@
 use super::prompt_border_style;
 use puffer_core::{AppState, CommandSpec};
 use puffer_resources::LoadedResources;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-const HOME_WIDE_BREAKPOINT: u16 = 84;
 const HELP_WIDE_BREAKPOINT: u16 = 120;
 const FEATURED_HELP_COMMANDS: [&str; 10] = [
     "help", "review", "resume", "login", "model", "agents", "usage", "doctor", "config", "skills",
 ];
-
-/// Renders the empty-session welcome body with width-aware cards.
-pub(super) fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let wide = area.width >= HOME_WIDE_BREAKPOINT && area.height >= 12;
-    if wide {
-        let content_width = area.width.saturating_sub(6).clamp(38, 104);
-        let content_area = Rect {
-            x: area.x + area.width.saturating_sub(content_width) / 2,
-            y: area.y,
-            width: content_width,
-            height: area.height,
-        };
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(58),
-                Constraint::Length(1),
-                Constraint::Percentage(42),
-            ])
-            .split(content_area);
-        frame.render_widget(
-            Paragraph::new(Text::from(welcome_left_lines(state))).wrap(Wrap { trim: false }),
-            columns[0],
-        );
-        frame.render_widget(
-            Paragraph::new(Text::from(vertical_separator(columns[1].height))),
-            columns[1],
-        );
-        frame.render_widget(
-            Paragraph::new(Text::from(welcome_right_lines(state))).wrap(Wrap { trim: false }),
-            columns[2],
-        );
-    } else {
-        let content_area = Rect {
-            x: area.x.saturating_add(1),
-            y: area.y,
-            width: area.width.saturating_sub(2),
-            height: area.height,
-        };
-        frame.render_widget(
-            Paragraph::new(Text::from(welcome_compact_lines(state)))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: false }),
-            content_area,
-        );
-    }
-}
 
 /// Renders the help pane using a responsive command summary layout.
 pub(super) fn render_help_pane(
@@ -120,71 +72,6 @@ pub(super) fn render_help_pane(
     }
 }
 
-fn welcome_left_lines(state: &AppState) -> Vec<Line<'static>> {
-    vec![
-        Line::from(Span::styled(
-            "Welcome to Puffer Code",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::default(),
-        Line::from(mascot_status(state)),
-        Line::from(Span::styled(
-            current_model_label(state),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        Line::from(Span::styled(
-            path_tail(&state.cwd.display().to_string(), 48),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-    ]
-}
-
-fn welcome_right_lines(state: &AppState) -> Vec<Line<'static>> {
-    let recent = if state.transcript.is_empty() {
-        "No recent activity yet.".to_string()
-    } else {
-        format!("{} messages in this session.", state.transcript.len())
-    };
-    vec![
-        Line::from(Span::styled(
-            "Tips to get started",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::default(),
-        Line::from("/help   Browse common commands"),
-        Line::from("/review Review the current worktree"),
-        Line::from("/login  Switch provider auth"),
-        Line::default(),
-        Line::from(Span::styled(
-            "Recent activity",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            recent,
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-    ]
-}
-
-fn welcome_compact_lines(state: &AppState) -> Vec<Line<'static>> {
-    vec![
-        Line::from(Span::styled(
-            "Welcome to Puffer Code",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::default(),
-        Line::from(mascot_status(state)),
-        Line::from(Span::styled(
-            current_model_label(state),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        Line::from(Span::styled(
-            path_tail(&state.cwd.display().to_string(), 38),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-    ]
-}
-
 fn help_command_lines(commands: &[CommandSpec], width: u16, height: u16) -> Vec<Line<'static>> {
     let row_width = usize::from(width.saturating_sub(1));
     let mut lines = vec![
@@ -192,7 +79,6 @@ fn help_command_lines(commands: &[CommandSpec], width: u16, height: u16) -> Vec<
             format!("Puffer Code v{}  Supported commands", env!("CARGO_PKG_VERSION")),
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::default(),
         Line::from(
             "Core commands for common coding workflows. Use /skills for loaded skill commands and /skill:<name> aliases.",
         ),
@@ -229,12 +115,10 @@ fn help_side_lines(resources: &LoadedResources) -> Vec<Line<'static>> {
             "Tips to get started",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::default(),
         Line::from("Review changes, ask a question, or type /."),
         Line::from("/review inspects the current worktree."),
         Line::from("/resume opens the saved-session picker."),
         Line::from("/login changes provider auth."),
-        Line::default(),
         Line::from(Span::styled(
             "Resources",
             Style::default().add_modifier(Modifier::BOLD),
@@ -251,7 +135,6 @@ fn help_side_lines(resources: &LoadedResources) -> Vec<Line<'static>> {
             resources.mcp_servers.len(),
             resources.ides.len(),
         )),
-        Line::default(),
         Line::from(Span::styled(
             "? for shortcuts",
             Style::default().add_modifier(Modifier::DIM),
@@ -330,14 +213,6 @@ fn format_help_entry(command: &CommandSpec, max_width: usize) -> String {
     )
 }
 
-fn mascot_status(state: &AppState) -> String {
-    if state.config.mascot.enabled {
-        format!("{} on duty", state.config.mascot.display_name)
-    } else {
-        "Mascot disabled".to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::featured_help_commands;
@@ -370,13 +245,6 @@ mod tests {
     }
 }
 
-fn current_model_label(state: &AppState) -> String {
-    state
-        .current_model
-        .clone()
-        .unwrap_or_else(|| "/model to choose a model".to_string())
-}
-
 fn vertical_separator(height: u16) -> Vec<Line<'static>> {
     (0..height)
         .map(|_| {
@@ -386,10 +254,6 @@ fn vertical_separator(height: u16) -> Vec<Line<'static>> {
             ))
         })
         .collect()
-}
-
-fn path_tail(path: &str, max_chars: usize) -> String {
-    truncate(path.rsplit('/').next().unwrap_or(path), max_chars)
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {

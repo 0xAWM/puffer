@@ -281,6 +281,9 @@ pub(crate) fn handle_prompt_submit(
                 TurnStreamEvent::TextDelta(delta) => {
                     let _ = event_sender.send(PendingSubmitEvent::TextDelta(delta));
                 }
+                TurnStreamEvent::ToolCallsRequested(requests) => {
+                    let _ = event_sender.send(PendingSubmitEvent::ToolCallsRequested(requests));
+                }
                 TurnStreamEvent::ToolInvocations(invocations) => {
                     let _ = event_sender.send(PendingSubmitEvent::ToolInvocations(invocations));
                 }
@@ -301,6 +304,7 @@ pub(crate) fn handle_prompt_submit(
     tui.pending_submit = Some(PendingSubmit {
         prompt: submitted,
         receiver,
+        pending_tool_calls: Vec::new(),
         rendered_tool_invocations: 0,
     });
     Ok(())
@@ -375,7 +379,13 @@ pub(crate) fn poll_pending_submit(
         };
         match event {
             PendingSubmitEvent::TextDelta(delta) => append_assistant_delta(state, &delta),
+            PendingSubmitEvent::ToolCallsRequested(requests) => {
+                pending.pending_tool_calls.extend(requests);
+                break;
+            }
             PendingSubmitEvent::ToolInvocations(invocations) => {
+                let completed = invocations.len().min(pending.pending_tool_calls.len());
+                pending.pending_tool_calls.drain(0..completed);
                 pending.rendered_tool_invocations += invocations.len();
                 append_tool_messages(state, session_store, &invocations)?;
             }

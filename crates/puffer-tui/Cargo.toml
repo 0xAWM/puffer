@@ -9,6 +9,7 @@ anyhow.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
 indexmap.workspace = true
+image = { version = "0.25.8", default-features = false, features = ["png"] }
 pulldown-cmark = "0.13.0"
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 regex-lite = "0.1.6"

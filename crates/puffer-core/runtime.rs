@@ -80,6 +80,13 @@ pub struct ToolInvocation {
     pub output: String,
     pub success: bool,
 }
+
+/// Describes one tool call requested by the model before execution finishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallRequest {
+    pub tool_id: String,
+    pub input: String,
+}
 /// Stores the visible result of one executed model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnExecution {
@@ -91,6 +98,7 @@ pub struct TurnExecution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnStreamEvent {
     TextDelta(String),
+    ToolCallsRequested(Vec<ToolCallRequest>),
     ToolInvocations(Vec<ToolInvocation>),
 }
 

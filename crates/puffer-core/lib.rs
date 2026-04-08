@@ -38,8 +38,8 @@ pub use runtime::{
     execute_user_prompt_streaming_with_structured_output as execute_user_turn_streaming_with_structured_output,
     execute_user_prompt_with_structured_output as execute_user_turn_with_structured_output,
     shutdown_runtime_services, with_permission_prompt_handler, PermissionPromptAction,
-    PermissionPromptRequest, StructuredOutputConfig, ToolInvocation, TurnExecution,
-    TurnStreamEvent,
+    PermissionPromptRequest, StructuredOutputConfig, ToolCallRequest, ToolInvocation,
+    TurnExecution, TurnStreamEvent,
 };
 pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
 
@@ -81,6 +81,27 @@ pub fn render_context_panel(
     providers: &ProviderRegistry,
 ) -> Result<String> {
     runtime::render_context_usage_summary(state, resources, providers)
+}
+
+/// Estimates the remaining context-window percentage for the active model.
+pub fn estimate_remaining_context_percent(state: &AppState, providers: &ProviderRegistry) -> u32 {
+    let context_window = state
+        .current_model
+        .as_deref()
+        .and_then(|selector| providers.resolve_model(selector))
+        .map(|model| model.context_window)
+        .unwrap_or(0);
+    if context_window == 0 {
+        return 0;
+    }
+
+    let used_tokens = state
+        .transcript
+        .iter()
+        .map(|message| estimate_footer_tokens(&message.text).saturating_add(4))
+        .sum::<u32>();
+    let remaining_tokens = context_window.saturating_sub(used_tokens);
+    remaining_tokens.saturating_mul(100) / context_window
 }
 
 /// Renders the current `/permissions` summary used by interactive overlays.
@@ -173,6 +194,15 @@ pub fn render_session_panel(state: &AppState) -> String {
 /// Builds the dedicated `/session` overlay view used by the interactive TUI.
 pub fn render_session_overlay(state: &AppState) -> SessionOverlayView {
     command_helpers::render_session_overlay(state)
+}
+
+fn estimate_footer_tokens(text: &str) -> u32 {
+    let chars = text.chars().count() as u32;
+    if chars == 0 {
+        0
+    } else {
+        (chars + 3) / 4
+    }
 }
 
 /// Applies a provider/model/effort/fast-mode selection and persists it to user config.
