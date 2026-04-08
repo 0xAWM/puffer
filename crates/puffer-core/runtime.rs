@@ -147,6 +147,19 @@ pub fn execute_side_question(
 
 /// Shuts down long-lived runtime services such as cached LSP sessions.
 pub fn shutdown_runtime_services() -> Result<()> {
+    // Shut down any active in-process teammates.
+    {
+        let registry = teammate_loop::teammate_registry().lock().unwrap();
+        for (agent_id, tx) in registry.iter() {
+            let _ = tx.send(teammate_loop::TeammateMessage::Shutdown {
+                request_id: format!("session-exit-{agent_id}"),
+            });
+        }
+    }
+    // Brief grace period for teammates to exit.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Clear the registry.
+    teammate_loop::teammate_registry().lock().unwrap().clear();
     claude_tools::workflow::lsp::shutdown_lsp_services()
 }
 

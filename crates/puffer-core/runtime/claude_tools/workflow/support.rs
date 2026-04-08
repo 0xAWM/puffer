@@ -483,6 +483,13 @@ pub(super) fn execute_team_create(
     let task_dir = workflow.join("team_tasks").join(&team_name);
     fs::create_dir_all(&team_dir)?;
     fs::create_dir_all(&task_dir)?;
+    // Reset the team task list on create to avoid stale tasks from previous teams.
+    save_store(
+        &task_dir.join("tasks.json"),
+        &TaskStore {
+            tasks: Vec::new(),
+        },
+    )?;
     let lead_agent_id = team_lead_agent_id(&team_name);
     let lead_agent_type = parsed
         .agent_type

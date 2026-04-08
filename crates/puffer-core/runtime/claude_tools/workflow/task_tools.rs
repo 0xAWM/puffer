@@ -1,8 +1,8 @@
 use super::store::{
     agents_path, append_agent_message, load_store, next_task_id, now_ms, process_is_running,
     save_store, shell_output_path, tasks_path, terminate_process, wait_for_process_exit,
-    AgentStore, StoredTask, TaskCreateInput, TaskIdInput, TaskOutputInput, TaskStopInput,
-    TaskStore, TaskUpdateInput,
+    team_lead_agent_id, AgentStore, StoredTask, TaskCreateInput, TaskIdInput, TaskOutputInput,
+    TaskStopInput, TaskStore, TaskUpdateInput,
 };
 use super::task_runtime::{
     read_runtime_agent_output, read_task_output, refresh_stored_task, runtime_agent_output_path,
@@ -204,6 +204,15 @@ pub(super) fn execute_task_update(
             "to": task.status,
         }));
         updated_fields.push("status");
+    }
+    // Auto-set owner when transitioning to in_progress without an explicit owner.
+    if task.status == "in_progress" && task.owner.is_none() {
+        if let Some(ref team_name) = state.active_team_name {
+            task.owner = Some(team_lead_agent_id(team_name));
+            if !updated_fields.contains(&"owner") {
+                updated_fields.push("owner");
+            }
+        }
     }
     let mut added_blocks = false;
     for block in parsed.add_blocks {
