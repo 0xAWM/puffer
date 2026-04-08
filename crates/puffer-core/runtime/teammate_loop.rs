@@ -17,7 +17,7 @@ use std::time::Duration;
 
 /// Message sent to a running teammate via its mpsc channel.
 #[derive(Debug, Clone)]
-pub(crate) enum TeammateMessage {
+pub enum TeammateMessage {
     /// A regular incoming message from another agent or the leader.
     Incoming(IncomingMessage),
     /// A shutdown signal requesting the teammate to exit.
@@ -26,22 +26,22 @@ pub(crate) enum TeammateMessage {
 
 /// A simplified incoming message for the channel (avoids store visibility).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct IncomingMessage {
+pub struct IncomingMessage {
     pub from: String,
     pub text: String,
 }
 
 /// Handle to a running in-process teammate.
-pub(crate) struct TeammateHandle {
+pub struct TeammateHandle {
     pub agent_id: String,
     pub message_tx: mpsc::Sender<TeammateMessage>,
 }
 
 /// Thread-safe registry of active in-process teammates.
-pub(crate) type TeammateRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<TeammateMessage>>>>;
+pub type TeammateRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<TeammateMessage>>>>;
 
 /// Creates a new empty teammate registry.
-pub(crate) fn new_teammate_registry() -> TeammateRegistry {
+pub fn new_teammate_registry() -> TeammateRegistry {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
@@ -49,12 +49,12 @@ pub(crate) fn new_teammate_registry() -> TeammateRegistry {
 static REGISTRY: OnceLock<TeammateRegistry> = OnceLock::new();
 
 /// Returns the global teammate registry, initializing it on first access.
-pub(crate) fn teammate_registry() -> &'static TeammateRegistry {
+pub fn teammate_registry() -> &'static TeammateRegistry {
     REGISTRY.get_or_init(new_teammate_registry)
 }
 
 /// Configuration for spawning a teammate loop.
-pub(crate) struct TeammateLoopConfig {
+pub struct TeammateLoopConfig {
     pub agent_id: String,
     pub agent_name: String,
     pub team_name: String,
@@ -68,7 +68,7 @@ pub(crate) struct TeammateLoopConfig {
 }
 
 /// Spawns a teammate in a background thread with an mpsc channel for messages.
-pub(crate) fn spawn_teammate(
+pub fn spawn_teammate(
     config: TeammateLoopConfig,
     registry: &TeammateRegistry,
 ) -> TeammateHandle {
