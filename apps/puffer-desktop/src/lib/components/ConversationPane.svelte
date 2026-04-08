@@ -429,8 +429,8 @@
     display: grid;
     gap: 0.32rem;
     max-width: 50rem;
-    padding-left: 0.95rem;
-    border-left: 2px solid transparent;
+    padding-left: 0.65rem;
+    border-left: 1px solid transparent;
   }
 
   .entry.user {
@@ -442,20 +442,20 @@
   }
 
   .entry.assistant {
-    border-left-color: rgba(36, 105, 81, 0.2);
+    border-left-color: rgba(36, 105, 81, 0.14);
   }
 
   .entry.tool {
-    border-left-color: rgba(118, 97, 72, 0.2);
+    border-left-color: rgba(118, 97, 72, 0.14);
   }
 
   .entry.diff {
-    border-left-color: rgba(36, 105, 81, 0.12);
+    border-left-color: rgba(36, 105, 81, 0.1);
   }
 
   .entry.command,
   .entry.system {
-    border-left-color: rgba(118, 97, 72, 0.12);
+    border-left-color: rgba(118, 97, 72, 0.08);
   }
 
   .entry-meta {
@@ -484,21 +484,31 @@
     gap: 0.8rem;
     color: var(--text);
     font-size: 1rem;
+    padding: 0.55rem 0.7rem;
+    background: rgba(255, 255, 255, 0.28);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.4) inset,
+      0 0 0 1px rgba(118, 97, 72, 0.05);
   }
 
   .tool-log {
     display: grid;
     gap: 0.7rem;
+    padding: 0.6rem 0.7rem;
+    background: rgba(255, 255, 255, 0.34);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.42) inset,
+      0 0 0 1px rgba(118, 97, 72, 0.06);
   }
 
   .diff-log {
     display: grid;
     gap: 0.42rem;
-    padding: 0.72rem 0.85rem;
-    background: rgba(255, 255, 255, 0.46);
+    padding: 0.62rem 0.7rem;
+    background: rgba(255, 255, 255, 0.34);
     box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.45) inset,
-      0 0 0 1px rgba(36, 105, 81, 0.08);
+      0 1px 0 rgba(255, 255, 255, 0.42) inset,
+      0 0 0 1px rgba(36, 105, 81, 0.06);
   }
 
   .diff-title,
@@ -568,7 +578,7 @@
 
   .tool-section pre {
     margin: 0;
-    padding: 0.8rem 0.9rem;
+    padding: 0.72rem 0.8rem;
     background: rgba(255, 255, 255, 0.78);
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.55) inset,
@@ -582,8 +592,8 @@
 
   .command-log {
     display: grid;
-    padding: 0.72rem 0.85rem;
-    background: rgba(255, 255, 255, 0.78);
+    padding: 0.62rem 0.72rem;
+    background: rgba(255, 255, 255, 0.52);
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.55) inset,
       0 0 0 1px rgba(118, 97, 72, 0.1);
