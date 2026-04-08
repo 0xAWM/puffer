@@ -609,19 +609,19 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.9rem;
-    padding: 0.85rem 1.7rem 0.95rem;
-    background: rgba(244, 236, 226, 0.78);
-    box-shadow: 0 -1px 0 rgba(120, 99, 72, 0.05) inset;
+    padding: 0.55rem 1.7rem 0.75rem;
+    background: transparent;
+    box-shadow: none;
   }
 
   textarea {
     resize: vertical;
     min-height: 4rem;
     max-height: 12rem;
-    padding: 0.9rem 0.95rem;
+    padding: 0.8rem 0.95rem;
     border: 0;
     border-radius: 0;
-    background: rgba(255, 255, 255, 0.68);
+    background: rgba(255, 255, 255, 0.58);
     color: var(--text);
     font: inherit;
     box-shadow: 0 1px 0 rgba(255, 255, 255, 0.55) inset;
@@ -663,7 +663,7 @@
     content: "Ctrl/Command + Enter to send";
     grid-column: 1 / -1;
     color: var(--text-soft);
-    font-size: 0.68rem;
+    font-size: 0.64rem;
     line-height: 1;
   }
 
