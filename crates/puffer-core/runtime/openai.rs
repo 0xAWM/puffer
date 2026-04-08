@@ -546,7 +546,7 @@ pub(super) fn execute_openai_tool_calls(
     let mut outputs = Vec::new();
     let mut invocations = Vec::new();
     for tool_call in tool_calls {
-        let execution = execute_tool_call(
+        let (output, success) = match execute_tool_call(
             state,
             resources,
             providers,
@@ -561,13 +561,18 @@ pub(super) fn execute_openai_tool_calls(
             tool_filter,
             &tool_call.name,
             tool_call.arguments.clone(),
-        )?;
-        let output = if execution.output.stderr.is_empty() {
-            execution.output.stdout
-        } else if execution.output.stdout.is_empty() {
-            execution.output.stderr
-        } else {
-            format!("{}\n{}", execution.output.stdout, execution.output.stderr)
+        ) {
+            Ok(execution) => {
+                let output = if execution.output.stderr.is_empty() {
+                    execution.output.stdout
+                } else if execution.output.stdout.is_empty() {
+                    execution.output.stderr
+                } else {
+                    format!("{}\n{}", execution.output.stdout, execution.output.stderr)
+                };
+                (output, execution.success)
+            }
+            Err(error) => (format!("Tool execution failed: {error}"), false),
         };
         outputs.push(OpenAIResponsesFunctionCallOutput {
             kind: "function_call_output".to_string(),
@@ -578,7 +583,7 @@ pub(super) fn execute_openai_tool_calls(
             tool_id: tool_call.name.clone(),
             input: serde_json::to_string(&tool_call.arguments)?,
             output,
-            success: execution.success,
+            success,
         });
     }
     Ok(OpenAIToolResults {
