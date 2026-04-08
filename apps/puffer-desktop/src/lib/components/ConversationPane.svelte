@@ -159,22 +159,43 @@
     return text.split("\n").slice(0, maxLines).join("\n");
   }
 
+  function firstNonEmptyLine(text: string): string {
+    return text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? "";
+  }
+
+  function truncateInline(text: string, maxLength = 80): string {
+    return text.length > maxLength ? `${text.slice(0, maxLength).trimEnd()}...` : text;
+  }
+
   function toolPreview(item: ToolTimelineItem): string {
-    const outputLines = item.output.split("\n").filter(Boolean);
+    const outputLines = item.output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
     return [
+      `${item.toolName} · ${item.status}`,
       item.summary,
       "",
-      `input: ${item.input}`,
-      outputLines.length > 0 ? `output: ${outputLines[0]}` : "output: <empty>"
+      `input  ${truncateInline(firstNonEmptyLine(item.input), 72) || "<empty>"}`,
+      outputLines.length > 0
+        ? `output ${truncateInline(outputLines.slice(0, 2).join(" / "), 96)}`
+        : "output <empty>"
     ].join("\n");
   }
 
   function diffCardPreview(item: DiffTimelineItem): string {
     const stats = diffStats(item.diff.patch);
+    const preview = item.diff.patch
+      .split("\n")
+      .find((line) => line.startsWith("@@") || line.startsWith("+") || line.startsWith("-") || line.startsWith(" "))
+      ?? "";
     return [
       item.diff.title,
       `${item.diff.command}  +${stats.additions}  -${stats.removals}`,
-      diffPreview(item.diff.patch, 2)
+      truncateInline(preview, 96)
     ].join("\n");
   }
 
