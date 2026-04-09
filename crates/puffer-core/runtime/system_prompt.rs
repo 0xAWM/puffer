@@ -91,7 +91,13 @@ pub(super) fn render_runtime_system_prompt(
     ]);
     let rendered = render_prompt_by_id(resources, SYSTEM_PROMPT_ID, &variables)
         .unwrap_or_else(|| render_fallback_prompt(&variables));
-    Ok(normalize_prompt_whitespace(&rendered))
+    let mut prompt = normalize_prompt_whitespace(&rendered);
+    // Inject CLAUDE.md / memory contents if present (matches CC's memory section).
+    if let Some(memory) = load_memory_prompt(&state.cwd) {
+        prompt.push_str("\n\n# Project Context (CLAUDE.md)\n");
+        prompt.push_str(&memory);
+    }
+    Ok(prompt)
 }
 
 fn render_fallback_prompt(variables: &BTreeMap<String, String>) -> String {
@@ -269,6 +275,36 @@ fn prepend_bullets(items: Vec<String>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Loads CLAUDE.md from the working directory and user home, concatenating both if present.
+fn load_memory_prompt(cwd: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    // Project-level CLAUDE.md
+    let project_path = cwd.join("CLAUDE.md");
+    if let Ok(content) = std::fs::read_to_string(&project_path) {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+    }
+    // User-level CLAUDE.md (in ~/.claude/ or ~/.puffer/)
+    if let Some(home) = env::var_os("HOME") {
+        for dir in &[".claude", ".puffer"] {
+            let user_path = Path::new(&home).join(dir).join("CLAUDE.md");
+            if let Ok(content) = std::fs::read_to_string(&user_path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 fn is_git_repository(cwd: &Path) -> bool {
