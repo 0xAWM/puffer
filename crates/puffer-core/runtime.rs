@@ -510,6 +510,10 @@ fn execute_anthropic(
             // Temperature is only sent when thinking is disabled (CC behavior).
             body["temperature"] = json!(1);
         }
+        // Fast mode: send speed='fast' when the user has toggled /fast on.
+        if state.fast_mode {
+            body["speed"] = json!("fast");
+        }
         // Metadata for request attribution (matches CC's metadata.user_id).
         body["metadata"] = json!({
             "user_id": format!(
