@@ -461,6 +461,10 @@ fn execute_anthropic(
             .collect::<std::collections::BTreeSet<_>>(),
     )?;
 
+    // History snipping: truncate old tool outputs in messages to save context.
+    // CC does this via applyToolResultBudget / applyHistorySnip.
+    snip_old_tool_outputs(&mut messages);
+
     // Auto-compact: if estimated token usage exceeds 80% of context window,
     // truncate older messages to stay within budget (matching CC's threshold).
     let context_window = provider
@@ -1018,6 +1022,38 @@ struct AnthropicToolResults {
 /// This matches CC's auto-compact behavior (triggered at ~80% context usage).
 /// Maximum characters per individual tool result (matches CC's DEFAULT_MAX_RESULT_SIZE_CHARS).
 const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+
+/// Number of recent messages whose tool outputs are preserved in full.
+const SNIP_KEEP_RECENT: usize = 6;
+/// Maximum chars for a snipped tool output (older messages).
+const SNIP_MAX_CHARS: usize = 500;
+
+/// Truncates tool outputs in older messages to free context space.
+/// Keeps the most recent SNIP_KEEP_RECENT messages intact.
+/// This matches CC's history snipping / tool result budget.
+fn snip_old_tool_outputs(messages: &mut [Value]) {
+    let total = messages.len();
+    if total <= SNIP_KEEP_RECENT {
+        return;
+    }
+    let cutoff = total - SNIP_KEEP_RECENT;
+    for msg in &mut messages[..cutoff] {
+        let role = msg["role"].as_str().unwrap_or("");
+        if role != "user" {
+            continue;
+        }
+        // Check if this is a system-tagged tool output message.
+        let content = msg["content"].as_str().unwrap_or("");
+        if !content.starts_with("[system]\nTool ") {
+            continue;
+        }
+        if content.chars().count() <= SNIP_MAX_CHARS {
+            continue;
+        }
+        let snipped: String = content.chars().take(SNIP_MAX_CHARS).collect();
+        msg["content"] = json!(format!("{snipped}\n[...output snipped...]"));
+    }
+}
 
 fn truncate_tool_result(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
