@@ -1104,35 +1104,27 @@ fn auto_compact_messages(messages: &mut Vec<Value>, threshold_tokens: u32) {
     while messages.len() > 2 && estimate(messages) > threshold_tokens {
         messages.remove(0);
     }
-    // Ensure valid alternating structure: first message must be "user".
-    // If compaction left an assistant message at the front, insert a marker.
-    let needs_marker = messages
+    // Ensure the first message is "user" for valid API alternation.
+    let first_is_user = messages
         .first()
         .and_then(|m| m["role"].as_str())
-        .is_some_and(|role| role != "user");
-    if needs_marker || messages.first().and_then(|m| m["role"].as_str()) == Some("user") {
-        // Always insert a user marker; if the first message is already user,
-        // merge the note into it to avoid consecutive user messages.
-        if messages
-            .first()
-            .and_then(|m| m["role"].as_str())
-            == Some("user")
-        {
-            if let Some(first) = messages.first_mut() {
-                let existing = first["content"].as_str().unwrap_or("").to_string();
-                first["content"] = json!(format!(
-                    "[Earlier messages compacted]\n\n{existing}"
-                ));
-            }
-        } else {
-            messages.insert(
-                0,
-                json!({
-                    "role": "user",
-                    "content": "[Earlier conversation messages were automatically compacted to fit context window]"
-                }),
-            );
+        == Some("user");
+    if first_is_user {
+        // Merge compaction note into existing first user message.
+        if let Some(first) = messages.first_mut() {
+            let existing = first["content"].as_str().unwrap_or("").to_string();
+            first["content"] =
+                json!(format!("[Earlier messages compacted]\n\n{existing}"));
         }
+    } else {
+        // Insert a user message before the assistant message.
+        messages.insert(
+            0,
+            json!({
+                "role": "user",
+                "content": "[Earlier conversation messages were automatically compacted to fit context window]"
+            }),
+        );
     }
 }
 
