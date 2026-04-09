@@ -496,8 +496,11 @@ fn execute_anthropic(
             body["tools"] = Value::Array(tools.clone());
             body["tool_choice"] = json!({"type": "auto"});
         }
-        // Add thinking/reasoning when the model supports it and effort is not "low".
-        if model_supports_thinking && state.effort_level != "low" {
+        // Add thinking/reasoning when the model supports it, effort is not "low",
+        // and the provider actually supports the Anthropic thinking API format.
+        let provider_supports_thinking_api = provider.id == "anthropic"
+            || provider.base_url.contains("anthropic.com");
+        if model_supports_thinking && provider_supports_thinking_api && state.effort_level != "low" {
             let thinking_budget = match state.effort_level.as_str() {
                 "high" | "max" => max_output.saturating_sub(1).min(16_384),
                 _ => max_output.saturating_sub(1).min(8_192), // medium default
