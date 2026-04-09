@@ -494,6 +494,7 @@ fn execute_anthropic(
         });
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.clone());
+            body["tool_choice"] = json!({"type": "auto"});
         }
         // Add thinking/reasoning when the model supports it and effort is not "low".
         if model_supports_thinking && state.effort_level != "low" {
@@ -505,7 +506,17 @@ fn execute_anthropic(
                 "type": "enabled",
                 "budget_tokens": thinking_budget
             });
+        } else {
+            // Temperature is only sent when thinking is disabled (CC behavior).
+            body["temperature"] = json!(1);
         }
+        // Metadata for request attribution (matches CC's metadata.user_id).
+        body["metadata"] = json!({
+            "user_id": format!(
+                "{{\"session_id\":\"{}\",\"device_id\":\"puffer-cli\"}}",
+                state.session.id
+            )
+        });
 
         let response = match send_http_request(&request.url, &request.headers, &body.to_string(), true) {
             Ok(response) => response,
