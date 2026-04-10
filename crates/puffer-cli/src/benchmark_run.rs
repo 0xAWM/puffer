@@ -28,7 +28,6 @@ Read only the files you need, make only the changes the task requires, and run t
 Do not repeat the same search or reread the same unchanged file unless the earlier result was incomplete.
 When the task names a file, read or write that exact path directly instead of searching for it.
 Ignore benchmark harness files under /app/.puffer unless the task explicitly mentions them.
-CRITICAL: This is a fresh container. Common tools may be missing. When a command fails with "not found", you MUST install it immediately: `apt-get update -qq && apt-get install -y -qq <package>`. Common mappings: python3→python3, 7z→p7zip-full, gcc→gcc, g++→g++, make→make, curl→curl, jq→jq, git→git. Do NOT keep retrying a missing command without installing it first.
 When the task names a required output file, start a draft as soon as you have enough information to make progress and iterate from there.
 If the required output file does not exist, create a minimal valid draft immediately after your first relevant read or verifier inspection, then iterate on that file instead of continuing to explore.
 When the task already names both the verifier file and the required output file, do not use Glob or Grep before writing the first draft.
