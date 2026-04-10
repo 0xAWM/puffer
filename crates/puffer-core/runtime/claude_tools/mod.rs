@@ -254,9 +254,20 @@ fn record_read_from_input(state: &mut AppState, input: &Value) -> Result<()> {
         return Ok(());
     };
     let timestamp_ms = file_timestamp_ms(&path)?;
-    let is_partial_view = read_field_is_present(input, "offset")
-        || read_field_is_present(input, "limit")
-        || read_pages_field_is_present(input);
+    // Mark as partial only if offset > 0 or limit is smaller than actual file lines.
+    // A limit that covers the whole file is effectively a full read.
+    let has_nonzero_offset = input
+        .get("offset")
+        .and_then(Value::as_u64)
+        .is_some_and(|v| v > 0);
+    let has_restrictive_limit = input.get("limit").and_then(Value::as_u64).is_some_and(|limit| {
+        let line_count = std::fs::read_to_string(&path)
+            .map(|content| content.lines().count() as u64)
+            .unwrap_or(u64::MAX);
+        limit < line_count
+    });
+    let is_partial_view =
+        has_nonzero_offset || has_restrictive_limit || read_pages_field_is_present(input);
     state.claude_read_state.insert(
         path,
         ClaudeReadState {
