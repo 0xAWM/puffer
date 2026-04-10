@@ -473,8 +473,7 @@ fn execute_anthropic(
     // CC does this via applyToolResultBudget / applyHistorySnip.
     snip_old_tool_outputs(&mut messages);
 
-    // Auto-compact: if estimated token usage exceeds 80% of context window,
-    // truncate older messages to stay within budget (matching CC's threshold).
+    // Auto-compact before turn: generate summary if over threshold.
     let context_window = provider
         .models
         .iter()
@@ -482,7 +481,14 @@ fn execute_anthropic(
         .map(|m| m.context_window as u32)
         .unwrap_or(200_000);
     let auto_compact_threshold = context_window.saturating_mul(80) / 100;
-    auto_compact_messages(&mut messages, auto_compact_threshold);
+    auto_compact_messages(
+        &mut messages,
+        auto_compact_threshold,
+        &request.url,
+        &request.headers,
+        &model_id,
+        resolve_max_output_tokens(provider, &model_id),
+    );
 
     // Resolve thinking/reasoning support from model capabilities + effort level.
     let model_supports_thinking = provider
@@ -613,7 +619,14 @@ fn execute_anthropic(
             }));
             // Context management between tool iterations (CC parity).
             snip_old_tool_outputs(&mut messages);
-            auto_compact_messages(&mut messages, auto_compact_threshold);
+            auto_compact_messages(
+                &mut messages,
+                auto_compact_threshold,
+                &request.url,
+                &request.headers,
+                &model_id,
+                max_output,
+            );
             continue;
         }
 
@@ -788,7 +801,14 @@ where
                 .models.iter().find(|m| m.id == model_id)
                 .map(|m| m.context_window as u32).unwrap_or(200_000)
                 .saturating_mul(80) / 100;
-            auto_compact_messages(&mut messages, ctx_threshold);
+            auto_compact_messages(
+                &mut messages,
+                ctx_threshold,
+                &request.url,
+                &request.headers,
+                &model_id,
+                max_output,
+            );
             continue;
         }
 
@@ -1349,45 +1369,92 @@ fn truncate_tool_result(text: &str, max_chars: usize) -> String {
     format!("{truncated}\n\n[Output truncated — {max_chars} char limit reached]")
 }
 
-fn auto_compact_messages(messages: &mut Vec<Value>, threshold_tokens: u32) {
-    let estimate = |msgs: &[Value]| -> u32 {
-        msgs.iter()
-            .map(|m| {
-                let text = m["content"].as_str().unwrap_or("");
-                (text.chars().count() as u32 + 3) / 4
-            })
-            .sum()
-    };
-    let total = estimate(messages);
-    if total <= threshold_tokens || messages.len() <= 2 {
+/// Estimates token count for a message array (~4 chars per token).
+fn estimate_message_tokens(messages: &[Value]) -> u32 {
+    messages
+        .iter()
+        .map(|m| {
+            let text = m["content"].as_str().unwrap_or("");
+            (text.chars().count() as u32 + 3) / 4
+        })
+        .sum()
+}
+
+/// Auto-compact: if token estimate exceeds threshold, generate an AI summary
+/// of old messages and replace them. Falls back to simple drop on API failure.
+///
+/// CC calls this before every API request in the query loop. Codex does the
+/// same at pre-sampling and post-sampling points.
+fn auto_compact_messages(
+    messages: &mut Vec<Value>,
+    threshold_tokens: u32,
+    url: &str,
+    headers: &[(String, String)],
+    model_id: &str,
+    max_output: u32,
+) {
+    if estimate_message_tokens(messages) <= threshold_tokens || messages.len() <= 2 {
         return;
     }
-    // Drop oldest messages (keeping at least the last 2) until under budget.
-    while messages.len() > 2 && estimate(messages) > threshold_tokens {
-        messages.remove(0);
+
+    // Build a compact prompt from the messages we're about to drop.
+    // Keep the most recent 4 messages intact, summarize the rest.
+    let keep_count = 4.min(messages.len());
+    let to_summarize = &messages[..messages.len() - keep_count];
+    if to_summarize.is_empty() {
+        return;
     }
-    // Ensure the first message is "user" for valid API alternation.
-    let first_is_user = messages
-        .first()
-        .and_then(|m| m["role"].as_str())
-        == Some("user");
-    if first_is_user {
-        // Merge compaction note into existing first user message.
-        if let Some(first) = messages.first_mut() {
-            let existing = first["content"].as_str().unwrap_or("").to_string();
-            first["content"] =
-                json!(format!("[Earlier messages compacted]\n\n{existing}"));
-        }
-    } else {
-        // Insert a user message before the assistant message.
-        messages.insert(
-            0,
-            json!({
-                "role": "user",
-                "content": "[Earlier conversation messages were automatically compacted to fit context window]"
-            }),
-        );
+
+    // Build summary request: ask the model to summarize the old messages.
+    let mut summary_content = String::new();
+    for msg in to_summarize {
+        let role = msg["role"].as_str().unwrap_or("?");
+        let text = msg["content"].as_str().unwrap_or("");
+        let preview: String = text.chars().take(500).collect();
+        summary_content.push_str(&format!("[{role}]: {preview}\n\n"));
     }
+
+    let compact_prompt = format!(
+        "Summarize this conversation fragment into a compact context block. \
+         Preserve file paths, function names, errors, and key decisions verbatim. \
+         Structure: 1) Intent 2) Key Concepts 3) Files & Code 4) Errors & Fixes \
+         5) Pending Tasks 6) Current State. Be thorough but concise.\n\n---\n\n{summary_content}"
+    );
+
+    let body = json!({
+        "model": model_id,
+        "max_tokens": max_output.min(4096),
+        "messages": [
+            {"role": "user", "content": compact_prompt}
+        ],
+    });
+
+    // Try to generate summary via API. On failure, fall back to simple drop.
+    let summary = match send_http_request(url, headers, &body.to_string(), true) {
+        Ok(response) => parse_anthropic_text(&response).ok(),
+        Err(_) => None,
+    };
+
+    // Replace old messages with summary.
+    let kept: Vec<Value> = messages.split_off(messages.len() - keep_count);
+    messages.clear();
+
+    let summary_text = summary.unwrap_or_else(|| {
+        "[Earlier conversation automatically compacted to fit context window]".to_string()
+    });
+
+    messages.push(json!({
+        "role": "user",
+        "content": format!(
+            "[Conversation compacted — prior context summarized below]\n\n{summary_text}"
+        )
+    }));
+    // Need an assistant ack to maintain alternation before the kept messages.
+    messages.push(json!({
+        "role": "assistant",
+        "content": "Understood. I have the summarized context and will continue from here."
+    }));
+    messages.extend(kept);
 }
 
 /// Resolves the max output tokens for the given model, falling back to a
