@@ -149,11 +149,15 @@ fn is_retryable_openai_transport_error(error: &Error) -> bool {
     }) {
         return true;
     }
-    let text = error.to_string().to_ascii_lowercase();
-    text.contains("operation timed out")
-        || text.contains("error decoding response body")
-        || text.contains("connection reset")
-        || text.contains("unexpected eof")
+    error.chain().any(|cause| {
+        let text = cause.to_string().to_ascii_lowercase();
+        text.contains("operation timed out")
+            || text.contains("error decoding response body")
+            || text.contains("connection reset")
+            || text.contains("unexpected eof")
+            || text.contains("stream closed before response.completed")
+            || text.contains("idle timeout waiting for sse")
+    })
 }
 
 pub(super) fn openai_registry_credential(
@@ -195,17 +199,7 @@ pub(super) fn next_openai_input(
     if previous_response_id.is_none() {
         return extend_input_with_continuation(input, continuation);
     }
-    let mut items = openai_input_items(input)
-        .into_iter()
-        .filter(|item| {
-            !matches!(
-                item.get("type").and_then(Value::as_str),
-                Some("function_call" | "function_call_output")
-            )
-        })
-        .collect::<Vec<_>>();
-    items.extend(openai_input_items(continuation));
-    Value::Array(items)
+    continuation
 }
 
 pub(super) fn openai_responses_path(base_url: &str) -> &'static str {
@@ -371,8 +365,39 @@ fn openai_input_items(input: Value) -> Vec<Value> {
     }
 }
 
+fn assistant_output_items(response: &Value) -> Vec<Value> {
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| {
+            item.get("type").and_then(Value::as_str) == Some("message")
+                && item.get("role").and_then(Value::as_str) == Some("assistant")
+        })
+        .cloned()
+        .collect()
+}
+
+pub(super) fn extend_input_with_response_items(
+    input: Value,
+    response: &Value,
+    continuation: Value,
+) -> Value {
+    let mut items = openai_input_items(input);
+    items.extend(assistant_output_items(response));
+    items.extend(openai_input_items(continuation));
+    Value::Array(items)
+}
+
 fn codex_reasoning_config(state: &AppState, supports_reasoning: bool) -> Option<Value> {
     if !supports_reasoning {
+        return None;
+    }
+    if std::env::var("PUFFER_OPENAI_DISABLE_REASONING")
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    {
         return None;
     }
     let mut reasoning = json!({ "summary": "auto" });
@@ -389,4 +414,83 @@ fn codex_reasoning_config(state: &AppState, supports_reasoning: bool) -> Option<
         _ => {}
     }
     Some(reasoning)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extend_input_with_response_items, is_retryable_openai_transport_error};
+    use anyhow::anyhow;
+    use serde_json::json;
+
+    #[test]
+    fn retries_stream_closed_before_completed_errors() {
+        let error = anyhow!("stream closed before response.completed");
+        assert!(is_retryable_openai_transport_error(&error));
+    }
+
+    #[test]
+    fn retries_idle_timeout_waiting_for_sse_errors() {
+        let error = anyhow!("idle timeout waiting for SSE");
+        assert!(is_retryable_openai_transport_error(&error));
+    }
+
+    #[test]
+    fn retries_wrapped_stream_closed_before_completed_errors() {
+        let error = anyhow!("stream closed before response.completed")
+            .context("failed to parse SSE response from http://example.test/v1/responses");
+        assert!(is_retryable_openai_transport_error(&error));
+    }
+
+    #[test]
+    fn extends_stateless_input_with_assistant_message_output_items() {
+        let input = json!([{
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "solve task" }],
+        }]);
+        let response = json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{ "type": "output_text", "text": "working" }],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "Read",
+                    "arguments": "{}",
+                }
+            ]
+        });
+        let continuation = json!([{
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "done",
+        }]);
+
+        let combined = extend_input_with_response_items(input, &response, continuation);
+        assert_eq!(
+            combined,
+            json!([
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "solve task" }],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{ "type": "output_text", "text": "working" }],
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "done",
+                }
+            ])
+        );
+    }
 }
