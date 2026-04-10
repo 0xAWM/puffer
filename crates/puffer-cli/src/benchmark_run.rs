@@ -146,13 +146,50 @@ pub(crate) fn run_benchmark_command(
     state.sandbox_mode = "danger-full-access".to_string();
     state.working_dirs = benchmark_working_dirs(&state.cwd);
 
+    // Write streaming events to trajectory file incrementally so progress
+    // is observable and partial results survive crashes.
+    let trajectory_path = args.trajectory_json.as_deref().map(PathBuf::from);
+    let incremental_path = trajectory_path
+        .as_ref()
+        .map(|p| p.with_extension("incremental.jsonl"));
+    let incremental_file = incremental_path
+        .as_ref()
+        .and_then(|p| fs::File::create(p).ok())
+        .map(std::sync::Mutex::new);
+    let incremental_ref = &incremental_file;
+
     match execute_user_turn_streaming(
         &mut state,
         &benchmark_resources,
         providers,
         auth_store,
         &prompt,
-        |_| {},
+        |event| {
+            use std::io::Write;
+            match &event {
+                puffer_core::TurnStreamEvent::TextDelta(delta) => {
+                    print!("{delta}");
+                    let _ = std::io::stdout().flush();
+                }
+                puffer_core::TurnStreamEvent::ToolInvocations(invocations) => {
+                    if let Some(lock) = incremental_ref {
+                        if let Ok(mut f) = lock.lock() {
+                            for inv in invocations {
+                                let line = serde_json::json!({
+                                    "type": "tool_invocation",
+                                    "tool_id": inv.tool_id,
+                                    "success": inv.success,
+                                    "timestamp": unix_time_ms(),
+                                });
+                                let _ = writeln!(f, "{}", line);
+                            }
+                            let _ = f.flush();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        },
     ) {
         Ok(turn) => {
             let tool_invocations = turn
@@ -181,7 +218,7 @@ pub(crate) fn run_benchmark_command(
                 args.result_json.as_deref(),
                 args.trajectory_json.as_deref(),
             )?;
-            println!("{}", turn.assistant_text);
+            println!("\n{}", turn.assistant_text);
             Ok(())
         }
         Err(error) => {
