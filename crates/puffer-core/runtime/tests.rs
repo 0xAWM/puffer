@@ -610,7 +610,7 @@ fn build_codex_openai_request_body_uses_priority_tier_for_fast_mode() {
     );
 
     assert_eq!(body["service_tier"], json!("priority"));
-    assert_eq!(body["parallel_tool_calls"], json!(false));
+    assert_eq!(body["parallel_tool_calls"], json!(true));
 }
 
 #[test]
