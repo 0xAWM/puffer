@@ -24,6 +24,7 @@ mod context_usage;
 mod hook_support;
 mod local_mcp_resources;
 mod local_tools;
+mod anthropic_sse;
 mod openai;
 mod openai_sse;
 mod permission_prompt;
@@ -331,6 +332,9 @@ where
                 on_event,
             )
         }
+        "anthropic-messages" => execute_anthropic_streaming(
+            state, resources, providers, auth_store, input, options, on_event,
+        ),
         _ => execute_user_prompt_with_options(
             state, resources, providers, auth_store, input, options,
         ),
@@ -620,6 +624,199 @@ fn execute_anthropic(
 
     bail!("anthropic tool loop exceeded iteration limit")
 }
+
+/// Streaming variant of execute_anthropic — sends `stream: true` and parses
+/// SSE events, emitting TextDelta in real-time.
+fn execute_anthropic_streaming<F>(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    input: &str,
+    options: TurnRequestOptions<'_>,
+    on_event: &mut F,
+) -> Result<TurnExecution>
+where
+    F: FnMut(TurnStreamEvent),
+{
+    let (provider, model_id) = resolve_provider_and_model(state, providers)?;
+    let structured_output = options.structured_output;
+    let auth = anthropic_auth_for_provider(auth_store, provider)?;
+    let registry = ToolRegistry::from_resources(resources);
+    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
+    let mut messages = transcript_to_anthropic_messages(state, input);
+    let mut invocations = Vec::new();
+    let plan_mode_context = crate::command_helpers::prompt::plan_mode_context_message(state)?;
+
+    let request_config = build_anthropic_request_config(state, provider, &auth);
+    let request = build_messages_request(
+        &request_config,
+        &AnthropicModelRequest {
+            model: model_id.clone(),
+            max_tokens: resolve_max_output_tokens(provider, &model_id),
+            messages: transcript_to_anthropic_request_messages(state, input),
+        },
+    )?;
+    let tools = anthropic_tool_definitions_for_request(
+        &registry,
+        structured_output,
+        Some(&permission_context),
+        options.tool_filter,
+    )?;
+    let system_prompt = render_runtime_system_prompt(
+        state,
+        resources,
+        &model_id,
+        &tools
+            .iter()
+            .filter_map(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<std::collections::BTreeSet<_>>(),
+    )?;
+
+    prepend_system_reminder(&mut messages);
+    snip_old_tool_outputs(&mut messages);
+
+    let model_supports_thinking = provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.supports_reasoning)
+        .unwrap_or(false);
+    let provider_supports_thinking_api =
+        provider.id == "anthropic" || provider.base_url.contains("anthropic.com");
+    let max_output = resolve_max_output_tokens(provider, &model_id);
+
+    for _ in 0..8 {
+        let mut body = json!({
+            "model": model_id,
+            "max_tokens": max_output,
+            "messages": messages,
+            "stream": true,
+            "system": anthropic_system_blocks(
+                &request.attribution_prefix_block,
+                Some(system_prompt.as_str()),
+                plan_mode_context.as_deref(),
+            )
+        });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools.clone());
+            body["tool_choice"] = json!({"type": "auto"});
+        }
+        if model_supports_thinking && provider_supports_thinking_api && state.effort_level != "low"
+        {
+            let thinking_budget = match state.effort_level.as_str() {
+                "high" | "max" => max_output.saturating_sub(1).min(16_384),
+                _ => max_output.saturating_sub(1).min(8_192),
+            };
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": thinking_budget
+            });
+        } else {
+            body["temperature"] = json!(1);
+        }
+
+        // Send streaming request — use raw reqwest response for true SSE streaming.
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        let mut http_request = client.post(&request.url);
+        for (key, value) in &request.headers {
+            http_request = http_request.header(key, value);
+        }
+        http_request = http_request
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream");
+        let http_response = http_request
+            .body(body.to_string())
+            .send()
+            .with_context(|| format!("failed to send streaming request to {}", request.url))?;
+
+        if !http_response.status().is_success() {
+            let status = http_response.status();
+            let text = http_response.text().unwrap_or_default();
+            bail!("request failed with status {status}: {text}");
+        }
+
+        // Parse SSE stream — reqwest::blocking::Response implements Read,
+        // so the parser reads events as they arrive from the network.
+        let response =
+            anthropic_sse::parse_anthropic_sse(http_response, on_event)?;
+
+        let cwd = state.cwd.clone();
+        if let Some(tool_results) = execute_anthropic_tool_calls(
+            state,
+            resources,
+            providers,
+            auth_store,
+            &response,
+            &registry,
+            &cwd,
+            &request_config,
+            &model_id,
+            structured_output,
+            options.tool_filter,
+        )? {
+            if !tool_results.invocations.is_empty() {
+                on_event(TurnStreamEvent::ToolInvocations(
+                    tool_results.invocations.clone(),
+                ));
+            }
+            invocations.extend(tool_results.invocations);
+            messages.push(json!({
+                "role": "assistant",
+                "content": response
+                    .get("content")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
+            }));
+            messages.push(json!({
+                "role": "user",
+                "content": tool_results.results,
+            }));
+            continue;
+        }
+
+        let assistant_text = parse_anthropic_text(&response)?;
+        run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
+        return Ok(TurnExecution {
+            assistant_text,
+            tool_invocations: invocations,
+        });
+    }
+
+    bail!("anthropic streaming tool loop exceeded iteration limit")
+}
+
+fn build_anthropic_request_config(
+    state: &AppState,
+    provider: &ProviderDescriptor,
+    auth: &AnthropicAuth,
+) -> AnthropicRequestConfig {
+    AnthropicRequestConfig {
+        base_url: provider.base_url.clone(),
+        session_id: state.session.id.to_string(),
+        custom_headers: provider.headers.clone(),
+        remote_container_id: None,
+        remote_session_id: None,
+        client_app: None,
+        entrypoint: "cli".to_string(),
+        user_type: "external".to_string(),
+        version: APP_VERSION.to_string(),
+        workload: None,
+        additional_protection: false,
+        cch_enabled: true,
+        auth: auth.clone(),
+        beta_header: None,
+        client_request_id: None,
+    }
+}
+
 fn send_http_request(
     url: &str,
     headers: &[(String, String)],
