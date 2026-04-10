@@ -7,7 +7,7 @@ use puffer_provider_registry::{
     StoredCredential,
 };
 use puffer_resources::{LoadedItem, LoadedResources, PromptTemplate, SourceInfo, SourceKind};
-use puffer_session_store::SessionMetadata;
+use puffer_session_store::{SessionMetadata, SessionStore, TranscriptEvent};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -146,6 +146,25 @@ pub(crate) fn run_benchmark_command(
     state.sandbox_mode = "danger-full-access".to_string();
     state.working_dirs = benchmark_working_dirs(&state.cwd);
 
+    // Create a session store under ~/.puffer/sessions (not project dir).
+    let home_puffer = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".puffer"))
+        .unwrap_or_else(|_| cwd.join(".puffer"));
+    let session_paths = ConfigPaths {
+        workspace_root: cwd.to_path_buf(),
+        workspace_config_dir: home_puffer.clone(),
+        user_config_dir: home_puffer,
+        builtin_resources_dir: paths.builtin_resources_dir.clone(),
+    };
+    let session_store = SessionStore::from_paths(&session_paths)
+        .expect("failed to create session store");
+    let _ = session_store.append_event(
+        session_id,
+        TranscriptEvent::UserMessage {
+            text: prompt.clone(),
+        },
+    );
+
     // Write streaming events to trajectory file incrementally so progress
     // is observable and partial results survive crashes.
     let trajectory_path = args.trajectory_json.as_deref().map(PathBuf::from);
@@ -172,6 +191,20 @@ pub(crate) fn run_benchmark_command(
                     let _ = std::io::stdout().flush();
                 }
                 puffer_core::TurnStreamEvent::ToolInvocations(invocations) => {
+                    // Write to session store (same format as TUI)
+                    for inv in invocations {
+                        let status = if inv.success { "ok" } else { "error" };
+                        let rendered = if inv.output.is_empty() {
+                            format!("Tool {} [{}]\ninput: {}", inv.tool_id, status, inv.input)
+                        } else {
+                            format!("Tool {} [{}]\ninput: {}\n{}", inv.tool_id, status, inv.input, inv.output)
+                        };
+                        let _ = session_store.append_event(
+                            session_id,
+                            TranscriptEvent::SystemMessage { text: rendered },
+                        );
+                    }
+                    // Write to incremental trajectory
                     if let Some(lock) = incremental_ref {
                         if let Ok(mut f) = lock.lock() {
                             for inv in invocations {
@@ -218,6 +251,12 @@ pub(crate) fn run_benchmark_command(
                 tool_invocations,
                 error: None,
             };
+            let _ = session_store.append_event(
+                session_id,
+                TranscriptEvent::AssistantMessage {
+                    text: turn.assistant_text.clone(),
+                },
+            );
             write_benchmark_artifacts(
                 &result,
                 args.result_json.as_deref(),
