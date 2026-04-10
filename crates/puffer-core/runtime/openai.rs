@@ -8,12 +8,11 @@ mod support;
 pub(super) use self::support::build_codex_openai_request_body;
 use self::support::{
     append_default_openai_headers, apply_previous_response_id, is_codex_openai_provider,
-    is_openai_structured_output_error, next_openai_input, openai_base_url_for_auth,
-    openai_model_supports_reasoning, openai_registry_credential, openai_responses_path,
-    openai_stream_read_timeout, prefer_native_structured_output, retry_openai_transport,
-    structured_output_endpoint_id, trace_openai_http_request,
-    trace_openai_http_response_headers,
-    OPENAI_STRUCTURED_OUTPUT_FAMILY,
+    extend_input_with_response_items, is_openai_structured_output_error, next_openai_input,
+    openai_base_url_for_auth, openai_model_supports_reasoning, openai_registry_credential,
+    openai_responses_path, openai_stream_read_timeout, prefer_native_structured_output,
+    retry_openai_transport, structured_output_endpoint_id, trace_openai_http_request,
+    trace_openai_http_response_headers, OPENAI_STRUCTURED_OUTPUT_FAMILY,
 };
 use super::structured_output_support::{
     openai_chat_completion_tools_for_request, openai_chat_response_format,
@@ -187,8 +186,11 @@ fn execute_openai_once(
             options.tool_filter,
         )?;
         invocations.extend(tool_results.invocations);
-        next_input =
-            next_openai_input(previous_response_id.as_deref(), next_input, continuation_input(&tool_calls, &tool_results.outputs));
+        next_input = next_openai_input(
+            previous_response_id.as_deref(),
+            next_input,
+            continuation_input(&tool_calls, &tool_results.outputs),
+        );
     }
 }
 
@@ -278,7 +280,6 @@ where
     let mut next_input = transcript_to_openai_input(state, input)?;
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
-    let mut previous_response_id = None;
 
     loop {
         let response = retry_openai_transport(|| {
@@ -286,7 +287,7 @@ where
                 auth_store,
                 &mut execution,
                 |request_config| {
-                    let mut body = build_codex_openai_request_body(
+                    let body = build_codex_openai_request_body(
                         state,
                         &model_id,
                         &instructions,
@@ -296,7 +297,6 @@ where
                         text.clone(),
                         true,
                     );
-                    apply_previous_response_id(&mut body, previous_response_id.as_deref());
                     build_json_post_request(
                         request_config,
                         openai_responses_path(&request_config.base_url),
@@ -308,7 +308,6 @@ where
         })?;
 
         let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
-        previous_response_id = parsed.id.clone();
         let tool_calls = extract_responses_tool_calls(&parsed)?;
         if tool_calls.is_empty() {
             let assistant_text = parse_openai_assistant_text(&parsed, &response, state)?;
@@ -343,11 +342,16 @@ where
             options.tool_filter,
         )?;
         if !tool_results.invocations.is_empty() {
-            on_event(TurnStreamEvent::ToolInvocations(tool_results.invocations.clone()));
+            on_event(TurnStreamEvent::ToolInvocations(
+                tool_results.invocations.clone(),
+            ));
         }
         invocations.extend(tool_results.invocations);
-        next_input =
-            next_openai_input(previous_response_id.as_deref(), next_input, continuation_input(&tool_calls, &tool_results.outputs));
+        next_input = extend_input_with_response_items(
+            next_input,
+            &response,
+            continuation_input(&tool_calls, &tool_results.outputs),
+        );
     }
 }
 
@@ -941,12 +945,17 @@ where
     auth_store.set_oauth(execution.provider_id.clone(), stored);
 
     let retry = build_request(&execution.request_config)?;
-    let retry_response =
-        retry_openai_transport(|| send_openai_request_stream_raw(&retry.url, &retry.headers, &retry.body))?;
+    let retry_response = retry_openai_transport(|| {
+        send_openai_request_stream_raw(&retry.url, &retry.headers, &retry.body)
+    })?;
     parse_openai_stream_response(&retry.url, retry_response, on_event)
 }
 
-fn send_openai_request_stream_raw(url: &str, headers: &[(String, String)], body: &str) -> Result<Response> {
+fn send_openai_request_stream_raw(
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+) -> Result<Response> {
     trace_openai_http_request(url, headers, body);
     let client = Client::builder()
         .timeout(openai_stream_read_timeout())
