@@ -281,9 +281,10 @@ fn hydrate_openai_auth(
     auth_store: &mut AuthStore,
     provider_id: &str,
 ) -> Result<()> {
-    if provider_id != "openai" || auth_store.has_auth("openai") {
+    if provider_id != "openai" {
         return Ok(());
     }
+    // Env var takes priority over imported codex credentials.
     if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
         let trimmed = api_key.trim();
         if !trimmed.is_empty() {
@@ -292,6 +293,9 @@ fn hydrate_openai_auth(
         }
     }
 
+    if auth_store.has_auth("openai") {
+        return Ok(());
+    }
     let candidates = detect_import_candidates(ExternalImportFamily::OpenAi)?;
     let Some(candidate) = candidates.into_iter().next() else {
         return Ok(());
