@@ -175,9 +175,14 @@ pub(crate) fn run_benchmark_command(
                     if let Some(lock) = incremental_ref {
                         if let Ok(mut f) = lock.lock() {
                             for inv in invocations {
+                                let output_preview: String = inv.output.chars().take(2000).collect();
+                                let truncated = inv.output.chars().count() > 2000;
                                 let line = serde_json::json!({
                                     "type": "tool_invocation",
                                     "tool_id": inv.tool_id,
+                                    "input": inv.input,
+                                    "output": output_preview,
+                                    "output_truncated": truncated,
                                     "success": inv.success,
                                     "timestamp": unix_time_ms(),
                                 });

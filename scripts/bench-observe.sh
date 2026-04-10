@@ -126,23 +126,64 @@ for k, v in d.items():
             tool_count=$(wc -l < "$incr")
             echo -e "  Tool invocations: ${BOLD}$tool_count${NC}"
 
-            # Show tool timeline
+            # Show tool timeline with details
             python3 -c "
-import json, sys
+import json, sys, textwrap
+
 with open('$incr') as f:
     lines = f.readlines()
 if not lines:
     sys.exit()
+
 first_ts = None
-for line in lines:
+prev_ts = None
+for i, line in enumerate(lines):
     d = json.loads(line.strip())
     ts = d.get('timestamp', 0)
     if first_ts is None:
         first_ts = ts
     elapsed = (ts - first_ts) / 1000
+    gap = (ts - prev_ts) / 1000 if prev_ts else 0
+    prev_ts = ts
+
     tool = d.get('tool_id', '?')
-    ok = '✓' if d.get('success') else '✗'
-    print(f'    {elapsed:6.1f}s  {ok} {tool}')
+    ok = '\033[0;32m✓\033[0m' if d.get('success') else '\033[0;31m✗\033[0m'
+    gap_str = f'(+{gap:.0f}s)' if gap > 2 else ''
+
+    # Parse input for context
+    inp = d.get('input', '')
+    detail = ''
+    try:
+        inp_obj = json.loads(inp) if inp.startswith('{') else {}
+        if tool == 'Read':
+            detail = inp_obj.get('file_path', inp_obj.get('path', ''))
+        elif tool == 'Write':
+            detail = inp_obj.get('file_path', '')
+        elif tool == 'Edit':
+            detail = inp_obj.get('file_path', '')
+        elif tool == 'Bash':
+            cmd = inp_obj.get('command', '')
+            detail = cmd[:60] + ('...' if len(cmd) > 60 else '')
+        elif tool == 'Grep':
+            detail = inp_obj.get('pattern', '')[:40]
+        elif tool == 'Glob':
+            detail = inp_obj.get('pattern', '')[:40]
+        else:
+            detail = inp[:50]
+    except:
+        detail = inp[:50] if inp else ''
+
+    # Output preview for failures
+    out_info = ''
+    if not d.get('success'):
+        out = d.get('output', '')[:100]
+        if out:
+            out_info = f' \033[0;31m{out}\033[0m'
+
+    # Truncation indicator
+    trunc = ' [truncated]' if d.get('output_truncated') else ''
+
+    print(f'    {elapsed:7.1f}s  {ok} {tool:<6} {detail}{gap_str}{trunc}{out_info}')
 " 2>/dev/null
         fi
 
