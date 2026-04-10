@@ -1385,6 +1385,9 @@ fn estimate_message_tokens(messages: &[Value]) -> u32 {
 ///
 /// CC calls this before every API request in the query loop. Codex does the
 /// same at pre-sampling and post-sampling points.
+/// Maximum auto-compact cycles per turn to prevent infinite loops.
+const MAX_AUTO_COMPACT_CYCLES: u32 = 10;
+
 fn auto_compact_messages(
     messages: &mut Vec<Value>,
     threshold_tokens: u32,
@@ -1393,7 +1396,21 @@ fn auto_compact_messages(
     model_id: &str,
     max_output: u32,
 ) {
+    // Circuit breaker: track consecutive compactions per turn.
+    thread_local! {
+        static COMPACT_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    let count = COMPACT_COUNT.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
+    if count >= MAX_AUTO_COMPACT_CYCLES {
+        return; // Stop compacting to prevent infinite loops.
+    }
+
     if estimate_message_tokens(messages) <= threshold_tokens || messages.len() <= 2 {
+        COMPACT_COUNT.with(|c| c.set(0)); // Reset on no-op.
         return;
     }
 

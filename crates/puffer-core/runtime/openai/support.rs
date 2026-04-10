@@ -390,9 +390,13 @@ pub(super) fn extend_input_with_response_items(
     Value::Array(items)
 }
 
-/// Compact the OpenAI input array by truncating old function_call_output
-/// items when the total size exceeds ~80% of the model's context window.
-/// This mirrors CC's snip + autocompact running inside the tool loop.
+/// Maximum number of consecutive auto-compact cycles before giving up.
+const MAX_COMPACT_CYCLES: usize = 10;
+
+/// Compact the OpenAI input array when total size exceeds ~80% of context.
+/// Phase 1: Snip old function_call_output items.
+/// Phase 2: Generate AI summary of old items via the Responses API.
+/// Phase 3 (fallback): Drop oldest items if summary fails.
 pub(super) fn compact_openai_input(
     input: &mut Value,
     provider: &ProviderDescriptor,
@@ -414,7 +418,6 @@ pub(super) fn compact_openai_input(
         .unwrap_or(200_000);
     let threshold = context_window * 80 / 100;
 
-    // Estimate total chars (rough: ~4 chars/token).
     let estimate = |arr: &[Value]| -> usize {
         arr.iter()
             .map(|item| {
@@ -440,11 +443,7 @@ pub(super) fn compact_openai_input(
     if items.len() > keep_recent {
         let cutoff = items.len() - keep_recent;
         for item in &mut items[..cutoff] {
-            let item_type = item
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if item_type == "function_call_output" {
+            if item.get("type").and_then(Value::as_str) == Some("function_call_output") {
                 if let Some(output) = item.get("output").and_then(Value::as_str) {
                     if output.len() > 500 {
                         let snipped: String = output.chars().take(500).collect();
@@ -456,12 +455,72 @@ pub(super) fn compact_openai_input(
         }
     }
 
-    // Phase 2: Drop oldest items if still over budget.
-    while items.len() > 3 && estimate(items) > threshold {
-        items.remove(0);
+    if estimate(items) <= threshold {
+        return;
     }
 
-    // Insert a compaction marker if we dropped items.
+    // Phase 2: Generate AI summary of old items, keep last 4 intact.
+    let keep_count = 4.min(items.len());
+    let to_summarize = &items[..items.len() - keep_count];
+    if !to_summarize.is_empty() {
+        // Build a text representation of old items for summarization.
+        let mut old_context = String::new();
+        for item in to_summarize {
+            let item_type = item.get("type").and_then(Value::as_str).unwrap_or("?");
+            match item_type {
+                "message" => {
+                    let role = item.get("role").and_then(Value::as_str).unwrap_or("?");
+                    let text = item
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|b| b.get("text"))
+                        .and_then(Value::as_str)
+                        .or_else(|| item.get("content").and_then(Value::as_str))
+                        .unwrap_or("");
+                    let preview: String = text.chars().take(500).collect();
+                    old_context.push_str(&format!("[{role}]: {preview}\n\n"));
+                }
+                "function_call" => {
+                    let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
+                    let args = item.get("arguments").and_then(Value::as_str).unwrap_or("");
+                    let preview: String = args.chars().take(200).collect();
+                    old_context.push_str(&format!("[tool_call {name}]: {preview}\n\n"));
+                }
+                "function_call_output" => {
+                    let out = item.get("output").and_then(Value::as_str).unwrap_or("");
+                    let preview: String = out.chars().take(300).collect();
+                    old_context.push_str(&format!("[tool_result]: {preview}\n\n"));
+                }
+                _ => {}
+            }
+        }
+
+        // Try to generate summary (best effort — if API unavailable, fall through to Phase 3).
+        let summary = generate_openai_summary(&old_context, model_id, provider);
+
+        if let Some(summary_text) = summary {
+            let kept: Vec<Value> = items.split_off(items.len() - keep_count);
+            items.clear();
+            items.push(serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text":
+                    format!("[Conversation compacted — prior context summarized]\n\n{summary_text}")
+                }]
+            }));
+            items.extend(kept);
+            return;
+        }
+    }
+
+    // Phase 3 (fallback): Drop oldest items with circuit breaker.
+    let mut cycles = 0;
+    while items.len() > 3 && estimate(items) > threshold && cycles < MAX_COMPACT_CYCLES {
+        items.remove(0);
+        cycles += 1;
+    }
+
     if items
         .first()
         .and_then(|i| i.get("type").and_then(Value::as_str))
@@ -476,6 +535,63 @@ pub(super) fn compact_openai_input(
             }),
         );
     }
+}
+
+/// Try to generate a summary of old context via the OpenAI Responses API.
+fn generate_openai_summary(
+    old_context: &str,
+    model_id: &str,
+    provider: &ProviderDescriptor,
+) -> Option<String> {
+    use reqwest::blocking::Client;
+
+    let api_key = std::env::var("OPENAI_API_KEY").ok()?;
+    let base_url = std::env::var("OPENAI_BASE_URL")
+        .unwrap_or_else(|_| provider.base_url.clone());
+
+    let prompt = format!(
+        "Summarize this conversation fragment into a compact context block. \
+         Preserve file paths, function names, errors, and key decisions verbatim. \
+         Structure: 1) Intent 2) Key Concepts 3) Files & Code 4) Errors & Fixes \
+         5) Pending Tasks 6) Current State. Be thorough but concise. \
+         Do NOT use any tools.\n\n---\n\n{old_context}"
+    );
+
+    let body = serde_json::json!({
+        "model": model_id,
+        "input": prompt,
+        "stream": false,
+    });
+
+    let url = format!("{}/responses", base_url.trim_end_matches('/'));
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .ok()?;
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = response.json().ok()?;
+    json.get("output")?
+        .as_array()?
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .and_then(|msg| msg.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|arr| arr.first())
+        .and_then(|block| block.get("text"))
+        .and_then(Value::as_str)
+        .map(String::from)
 }
 
 fn codex_reasoning_config(state: &AppState, supports_reasoning: bool) -> Option<Value> {
