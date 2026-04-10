@@ -254,20 +254,21 @@ fn record_read_from_input(state: &mut AppState, input: &Value) -> Result<()> {
         return Ok(());
     };
     let timestamp_ms = file_timestamp_ms(&path)?;
-    // Mark as partial only if offset > 0 or limit is smaller than actual file lines.
-    // A limit that covers the whole file is effectively a full read.
-    let has_nonzero_offset = input
-        .get("offset")
-        .and_then(Value::as_u64)
-        .is_some_and(|v| v > 0);
-    let has_restrictive_limit = input.get("limit").and_then(Value::as_u64).is_some_and(|limit| {
-        let line_count = std::fs::read_to_string(&path)
-            .map(|content| content.lines().count() as u64)
-            .unwrap_or(u64::MAX);
-        limit < line_count
+    // Mark as partial only when the read genuinely skips content.
+    // Models often send offset:0 or offset:1 meaning "from the start" (0- vs 1-based),
+    // so treat offset <= 1 as full-file when combined with a covering limit.
+    let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let limit = input.get("limit").and_then(Value::as_u64);
+    let line_count = std::fs::read_to_string(&path)
+        .map(|content| content.lines().count() as u64)
+        .unwrap_or(u64::MAX);
+    let has_partial_offset = offset > 1; // offset 0 or 1 = start of file
+    let has_restrictive_limit = limit.is_some_and(|l| {
+        let effective_remaining = line_count.saturating_sub(offset);
+        l < effective_remaining
     });
     let is_partial_view =
-        has_nonzero_offset || has_restrictive_limit || read_pages_field_is_present(input);
+        has_partial_offset || has_restrictive_limit || read_pages_field_is_present(input);
     state.claude_read_state.insert(
         path,
         ClaudeReadState {
