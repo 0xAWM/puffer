@@ -393,30 +393,52 @@ pub(super) fn extend_input_with_response_items(
 /// Maximum number of consecutive auto-compact cycles before giving up.
 const MAX_COMPACT_CYCLES: usize = 10;
 
+/// Max output tokens for compact summary requests.
+/// CC uses 20K (based on P99.99 of 17,387 tokens). We use 16K as a reasonable
+/// balance — enough for complex sessions, avoids burning excessive tokens on
+/// simple conversations.
+const COMPACT_SUMMARY_MAX_OUTPUT_TOKENS: usize = 16_384;
+
 /// Compact the OpenAI input array when total size exceeds ~80% of context.
 /// Phase 1: Snip old function_call_output items.
 /// Phase 2: Generate AI summary of old items via the Responses API.
 /// Phase 3 (fallback): Drop oldest items if summary fails.
+///
+/// Returns `true` when Phase 2 or Phase 3 compaction was performed (meaning
+/// the caller should reset `previous_response_id` and inject post-compact
+/// context). Returns `false` when no compaction or only Phase 1 snipping
+/// occurred.
+///
+/// When `input_tokens_hint` is `Some`, the value comes from the API's
+/// `usage.input_tokens` field and is used directly instead of estimating
+/// token count from character length.
 pub(super) fn compact_openai_input(
     input: &mut Value,
     provider: &ProviderDescriptor,
     model_id: &str,
-) {
+    request_config: &puffer_provider_openai::OpenAIRequestConfig,
+    input_tokens_hint: Option<usize>,
+) -> bool {
     let items = match input.as_array_mut() {
         Some(arr) => arr,
-        None => return,
+        None => return false,
     };
     if items.len() <= 3 {
-        return;
+        return false;
     }
 
-    let context_window = provider
-        .models
-        .iter()
-        .find(|m| m.id == model_id)
+    let model_info = provider.models.iter().find(|m| m.id == model_id);
+    let context_window = model_info
         .map(|m| m.context_window as usize)
         .unwrap_or(200_000);
-    let threshold = context_window * 80 / 100;
+    let max_output = model_info
+        .map(|m| m.max_output_tokens as usize)
+        .filter(|&v| v > 0)
+        .unwrap_or(16_384);
+    // Effective window = context minus output reservation.
+    // Threshold at 90% of effective window (Codex uses 90%, CC ~87%).
+    let effective = context_window.saturating_sub(max_output);
+    let threshold = effective * 90 / 100;
 
     let estimate = |arr: &[Value]| -> usize {
         arr.iter()
@@ -434,8 +456,10 @@ pub(super) fn compact_openai_input(
             / 4
     };
 
-    if estimate(items) <= threshold {
-        return;
+    // Use API-reported token count when available; fall back to chars/4.
+    let current_tokens = input_tokens_hint.unwrap_or_else(|| estimate(items));
+    if current_tokens <= threshold {
+        return false;
     }
 
     // Phase 1: Snip old function_call_output items (keep last 6).
@@ -455,49 +479,25 @@ pub(super) fn compact_openai_input(
         }
     }
 
-    if estimate(items) <= threshold {
-        return;
+    // Re-estimate after snipping; if within budget, no heavy compaction needed.
+    let after_snip = input_tokens_hint
+        .map(|_| {
+            // After snipping, re-estimate: use chars/4 since the hint was pre-snip.
+            estimate(items)
+        })
+        .unwrap_or_else(|| estimate(items));
+    if after_snip <= threshold {
+        return false;
     }
 
     // Phase 2: Generate AI summary of old items, keep last 4 intact.
     let keep_count = 4.min(items.len());
     let to_summarize = &items[..items.len() - keep_count];
     if !to_summarize.is_empty() {
-        // Build a text representation of old items for summarization.
-        let mut old_context = String::new();
-        for item in to_summarize {
-            let item_type = item.get("type").and_then(Value::as_str).unwrap_or("?");
-            match item_type {
-                "message" => {
-                    let role = item.get("role").and_then(Value::as_str).unwrap_or("?");
-                    let text = item
-                        .get("content")
-                        .and_then(|c| c.as_array())
-                        .and_then(|arr| arr.first())
-                        .and_then(|b| b.get("text"))
-                        .and_then(Value::as_str)
-                        .or_else(|| item.get("content").and_then(Value::as_str))
-                        .unwrap_or("");
-                    let preview: String = text.chars().take(500).collect();
-                    old_context.push_str(&format!("[{role}]: {preview}\n\n"));
-                }
-                "function_call" => {
-                    let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
-                    let args = item.get("arguments").and_then(Value::as_str).unwrap_or("");
-                    let preview: String = args.chars().take(200).collect();
-                    old_context.push_str(&format!("[tool_call {name}]: {preview}\n\n"));
-                }
-                "function_call_output" => {
-                    let out = item.get("output").and_then(Value::as_str).unwrap_or("");
-                    let preview: String = out.chars().take(300).collect();
-                    old_context.push_str(&format!("[tool_result]: {preview}\n\n"));
-                }
-                _ => {}
-            }
-        }
+        let old_context = build_items_summary_text(to_summarize);
 
         // Try to generate summary (best effort — if API unavailable, fall through to Phase 3).
-        let summary = generate_openai_summary(&old_context, model_id, provider);
+        let summary = generate_openai_summary(&old_context, model_id, provider, request_config);
 
         if let Some(summary_text) = summary {
             let kept: Vec<Value> = items.split_off(items.len() - keep_count);
@@ -510,7 +510,7 @@ pub(super) fn compact_openai_input(
                 }]
             }));
             items.extend(kept);
-            return;
+            return true;
         }
     }
 
@@ -535,19 +535,174 @@ pub(super) fn compact_openai_input(
             }),
         );
     }
+    true
+}
+
+/// Build a text representation of input items for summarization.
+fn build_items_summary_text(items: &[Value]) -> String {
+    let mut old_context = String::new();
+    for item in items {
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or("?");
+        match item_type {
+            "message" => {
+                let role = item.get("role").and_then(Value::as_str).unwrap_or("?");
+                let text = item
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|b| b.get("text"))
+                    .and_then(Value::as_str)
+                    .or_else(|| item.get("content").and_then(Value::as_str))
+                    .unwrap_or("");
+                let preview: String = text.chars().take(500).collect();
+                old_context.push_str(&format!("[{role}]: {preview}\n\n"));
+            }
+            "function_call" => {
+                let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
+                let args = item.get("arguments").and_then(Value::as_str).unwrap_or("");
+                let preview: String = args.chars().take(200).collect();
+                old_context.push_str(&format!("[tool_call {name}]: {preview}\n\n"));
+            }
+            "function_call_output" => {
+                let out = item.get("output").and_then(Value::as_str).unwrap_or("");
+                let preview: String = out.chars().take(300).collect();
+                old_context.push_str(&format!("[tool_result]: {preview}\n\n"));
+            }
+            _ => {}
+        }
+    }
+    old_context
+}
+
+/// Compact Chat Completions messages when context grows too large.
+/// Uses the same 3-phase strategy as `compact_openai_input` but operates on
+/// the `Vec<OpenAIChatMessage>` structure used by the Chat Completions API.
+pub(super) fn compact_openai_chat_messages(
+    messages: &mut Vec<puffer_provider_openai::OpenAIChatMessage>,
+    provider: &ProviderDescriptor,
+    model_id: &str,
+    request_config: &puffer_provider_openai::OpenAIRequestConfig,
+) {
+    if messages.len() <= 3 {
+        return;
+    }
+
+    let model_info = provider.models.iter().find(|m| m.id == model_id);
+    let context_window = model_info
+        .map(|m| m.context_window as usize)
+        .unwrap_or(200_000);
+    let max_output = model_info
+        .map(|m| m.max_output_tokens as usize)
+        .filter(|&v| v > 0)
+        .unwrap_or(16_384);
+    let effective = context_window.saturating_sub(max_output);
+    let threshold = effective * 90 / 100;
+
+    let estimate_msgs = |msgs: &[puffer_provider_openai::OpenAIChatMessage]| -> usize {
+        msgs.iter()
+            .map(|m| {
+                m.content
+                    .as_ref()
+                    .map(|c| c.to_string().len())
+                    .unwrap_or(20)
+            })
+            .sum::<usize>()
+            / 4
+    };
+
+    if estimate_msgs(messages) <= threshold {
+        return;
+    }
+
+    // Phase 1: Snip old tool results (keep last 6 messages).
+    let keep_recent = 6;
+    if messages.len() > keep_recent {
+        let cutoff = messages.len() - keep_recent;
+        for msg in &mut messages[..cutoff] {
+            if msg.role == "tool" {
+                if let Some(content) = &msg.content {
+                    let text = content.to_string();
+                    if text.len() > 500 {
+                        let snipped: String = text.chars().take(500).collect();
+                        msg.content = Some(json!(format!("{snipped}\n[...output snipped...]")));
+                    }
+                }
+            }
+        }
+    }
+
+    if estimate_msgs(messages) <= threshold {
+        return;
+    }
+
+    // Phase 2: AI summary of old messages, keep system + last 4.
+    let system_count = messages.iter().take_while(|m| m.role == "system").count();
+    let keep_tail = 4.min(messages.len().saturating_sub(system_count));
+    let summarize_end = messages.len() - keep_tail;
+    if summarize_end > system_count {
+        let mut old_context = String::new();
+        for msg in &messages[system_count..summarize_end] {
+            let preview: String = msg
+                .content
+                .as_ref()
+                .map(|c| c.to_string())
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect();
+            old_context.push_str(&format!("[{}]: {preview}\n\n", msg.role));
+        }
+
+        let summary = generate_openai_summary(&old_context, model_id, provider, request_config);
+        if let Some(summary_text) = summary {
+            let tail: Vec<_> = messages.split_off(summarize_end);
+            messages.truncate(system_count);
+            // User message with summary.
+            messages.push(puffer_provider_openai::OpenAIChatMessage {
+                role: "user".to_string(),
+                content: Some(json!(format!(
+                    "[Conversation compacted — prior context summarized]\n\n{summary_text}"
+                ))),
+                tool_call_id: None,
+                tool_calls: Vec::new(),
+            });
+            // Assistant ack to maintain alternation.
+            messages.push(puffer_provider_openai::OpenAIChatMessage {
+                role: "assistant".to_string(),
+                content: Some(json!("Understood, continuing from the compacted context.")),
+                tool_call_id: None,
+                tool_calls: Vec::new(),
+            });
+            messages.extend(tail);
+            return;
+        }
+    }
+
+    // Phase 3 (fallback): Drop oldest non-system messages with circuit breaker.
+    let mut cycles = 0;
+    while messages.len() > 3 && estimate_msgs(messages) > threshold && cycles < MAX_COMPACT_CYCLES {
+        if let Some(pos) = messages.iter().position(|m| m.role != "system") {
+            messages.remove(pos);
+        } else {
+            break;
+        }
+        cycles += 1;
+    }
 }
 
 /// Try to generate a summary of old context via the OpenAI Responses API.
+/// Uses the active `request_config` (auth + base_url) so it works with
+/// API-key, OAuth, and auth-less providers alike.
 fn generate_openai_summary(
     old_context: &str,
     model_id: &str,
-    provider: &ProviderDescriptor,
+    _provider: &ProviderDescriptor,
+    request_config: &puffer_provider_openai::OpenAIRequestConfig,
 ) -> Option<String> {
+    use puffer_provider_openai::OpenAIAuth;
     use reqwest::blocking::Client;
 
-    let api_key = std::env::var("OPENAI_API_KEY").ok()?;
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| provider.base_url.clone());
+    let base_url = &request_config.base_url;
 
     let prompt = format!(
         "Summarize this conversation fragment into a compact context block. \
@@ -560,24 +715,48 @@ fn generate_openai_summary(
     let body = serde_json::json!({
         "model": model_id,
         "input": prompt,
+        "max_output_tokens": COMPACT_SUMMARY_MAX_OUTPUT_TOKENS,
         "stream": false,
     });
 
-    let url = format!("{}/responses", base_url.trim_end_matches('/'));
+    let path = openai_responses_path(base_url);
+    let url = format!("{}{path}", base_url.trim_end_matches('/'));
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .ok()?;
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .body(body.to_string())
-        .send()
-        .ok()?;
+    let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+    match &request_config.auth {
+        OpenAIAuth::ApiKey(key) => {
+            headers.push(("Authorization".to_string(), format!("Bearer {key}")));
+        }
+        OpenAIAuth::OAuthBearer(token) => {
+            headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+        }
+        OpenAIAuth::None => {}
+    }
 
-    if !response.status().is_success() {
+    let body_str = body.to_string();
+    trace_openai_http_request(&url, &headers, &body_str);
+
+    let mut request = client.post(&url);
+    for (key, value) in &headers {
+        request = request.header(key, value);
+    }
+    let response = request.body(body_str).send().ok()?;
+
+    let status = response.status();
+    trace_openai_http_response_headers(
+        &url,
+        status.as_u16(),
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+    );
+
+    if !status.is_success() {
         return None;
     }
 

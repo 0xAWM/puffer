@@ -7,8 +7,8 @@ mod support;
 
 pub(super) use self::support::build_codex_openai_request_body;
 use self::support::{
-    append_default_openai_headers, apply_previous_response_id, compact_openai_input,
-    extend_input_with_response_items, is_codex_openai_provider,
+    append_default_openai_headers, apply_previous_response_id, compact_openai_chat_messages,
+    compact_openai_input, extend_input_with_response_items, is_codex_openai_provider,
     is_openai_structured_output_error, next_openai_input,
     openai_base_url_for_auth, openai_model_supports_reasoning, openai_registry_credential,
     openai_responses_path, openai_stream_read_timeout, prefer_native_structured_output,
@@ -162,6 +162,11 @@ fn execute_openai_once(
 
         let parsed = parse_responses_response(&serde_json::to_string(&response)?)?;
         previous_response_id = parsed.id.clone();
+        // Extract server-reported input token count for precise compaction.
+        let input_tokens = response
+            .pointer("/usage/input_tokens")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize);
         let tool_calls = extract_responses_tool_calls(&parsed)?;
         if tool_calls.is_empty() {
             let assistant_text = parse_openai_assistant_text(&parsed, &response, state)?;
@@ -192,7 +197,17 @@ fn execute_openai_once(
             next_input,
             continuation_input(&tool_calls, &tool_results.outputs),
         );
-        compact_openai_input(&mut next_input, provider, &model_id);
+        let compacted = compact_openai_input(
+            &mut next_input,
+            provider,
+            &model_id,
+            &execution.request_config,
+            input_tokens,
+        );
+        if compacted {
+            previous_response_id = None;
+            inject_post_compact_context(&mut next_input, &cwd);
+        }
     }
 }
 
@@ -354,9 +369,22 @@ where
             &response,
             continuation_input(&tool_calls, &tool_results.outputs),
         );
-        // Context management between tool iterations (CC/Codex parity).
-        // Truncate old items in the input array to stay within budget.
-        compact_openai_input(&mut next_input, provider, &model_id);
+        // Extract server-reported input token count for precise compaction.
+        let input_tokens = response
+            .pointer("/usage/input_tokens")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize);
+        let compacted = compact_openai_input(
+            &mut next_input,
+            provider,
+            &model_id,
+            &execution.request_config,
+            input_tokens,
+        );
+        if compacted {
+            let cwd = state.cwd.clone();
+            inject_post_compact_context(&mut next_input, &cwd);
+        }
     }
 }
 
@@ -517,6 +545,12 @@ fn execute_openai_completions_once(
                 tool_calls: Vec::new(),
             });
         }
+        compact_openai_chat_messages(
+            &mut messages,
+            provider,
+            &model_id,
+            &execution.request_config,
+        );
     }
 }
 
@@ -581,6 +615,8 @@ pub(super) fn execute_openai_tool_calls(
             }
             Err(error) => (format!("Tool execution failed: {error}"), false),
         };
+        let output =
+            super::process_tool_result(&output, super::MAX_TOOL_RESULT_CHARS, &state.session.id);
         outputs.push(OpenAIResponsesFunctionCallOutput {
             kind: "function_call_output".to_string(),
             call_id: tool_call.call_id.clone(),
@@ -593,6 +629,17 @@ pub(super) fn execute_openai_tool_calls(
             success,
         });
     }
+
+    // Enforce per-message aggregate budget (CC: 200K).
+    let mut output_strings: Vec<String> = outputs.iter().map(|o| o.output.clone()).collect();
+    super::enforce_tool_result_budget(&mut output_strings, &state.session.id);
+    for (i, new_output) in output_strings.into_iter().enumerate() {
+        if new_output != outputs[i].output {
+            invocations[i].output = new_output.clone();
+            outputs[i].output = new_output;
+        }
+    }
+
     Ok(OpenAIToolResults {
         outputs,
         invocations,
@@ -686,6 +733,15 @@ fn openai_request_instructions(state: &AppState, system_prompt: Option<&str>) ->
     {
         sections.push(plan_mode_context);
     }
+    // Inject system reminder (current date + git status) matching Anthropic path.
+    let now = time::OffsetDateTime::now_utc();
+    let date_str = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
+    let git_status = super::git_status_context();
+    let mut reminder = format!("# currentDate\nToday's date is {date_str}.");
+    if !git_status.is_empty() {
+        reminder.push_str(&format!("\n\n# gitStatus\n{git_status}"));
+    }
+    sections.push(reminder);
     Ok(sections.join("\n\n"))
 }
 
@@ -1011,4 +1067,26 @@ where
     let text = response.text()?;
     serde_json::from_str::<Value>(&text)
         .with_context(|| format!("response from {url} was not valid JSON"))
+}
+
+/// Inject a brief context-restoration message after compaction so the model
+/// knows its context was trimmed and can orient itself.
+fn inject_post_compact_context(input: &mut Value, cwd: &std::path::Path) {
+    let Some(items) = input.as_array_mut() else {
+        return;
+    };
+    let reminder = format!(
+        "[Context restored after compaction]\nCurrent working directory: {}\n\
+         Continue the task from where you left off.",
+        cwd.display()
+    );
+    let pos = 1.min(items.len());
+    items.insert(
+        pos,
+        json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": reminder}]
+        }),
+    );
 }

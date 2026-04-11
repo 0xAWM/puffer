@@ -41,6 +41,7 @@ pub use runtime::{
     PermissionPromptRequest, StructuredOutputConfig, ToolCallRequest, ToolInvocation,
     TurnExecution, TurnStreamEvent,
 };
+pub use runtime::background_tasks;
 pub use runtime::claude_tools::execute_workflow_tool;
 pub use runtime::teammate_loop;
 pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
