@@ -274,15 +274,21 @@ fn run_bash_command(cwd: &Path, command: &str, timeout_ms: u64) -> Result<TimedC
 
 const MAX_OUTPUT_CHARS: usize = 30_000;
 
+/// Truncates large output using a middle-truncation strategy (Codex pattern):
+/// keeps the first half and last half of the budget so that both the initial
+/// context and the trailing error messages / results are preserved.
 fn truncate_output(output: String) -> String {
-    let char_count = output.chars().count();
-    if char_count <= MAX_OUTPUT_CHARS {
+    let chars: Vec<char> = output.chars().collect();
+    if chars.len() <= MAX_OUTPUT_CHARS {
         return output;
     }
-    let truncated: String = output.chars().take(MAX_OUTPUT_CHARS).collect();
+    let head_len = MAX_OUTPUT_CHARS / 2;
+    let tail_len = MAX_OUTPUT_CHARS - head_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    let omitted = chars.len() - MAX_OUTPUT_CHARS;
     format!(
-        "{}\n\n[output truncated: {} chars total, showing first {}]",
-        truncated, char_count, MAX_OUTPUT_CHARS
+        "{head}\n\n[…{omitted} chars truncated…]\n\n{tail}"
     )
 }
 
@@ -298,6 +304,11 @@ pub fn summary_line(input: &ClaudeBashInput) -> Result<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use uuid::Uuid;
+
+    fn test_session_id() -> Uuid {
+        Uuid::nil()
+    }
 
     #[test]
     fn description_uses_fallback_when_omitted() {
@@ -326,10 +337,9 @@ mod tests {
     #[test]
     fn execute_foreground_returns_stdout() {
         let temp = tempfile::tempdir().unwrap();
-        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
-            &session_id,
+            &test_session_id(),
             ClaudeBashInput {
                 command: "printf 'hello'".to_string(),
                 timeout: Some(1_000),
@@ -348,10 +358,9 @@ mod tests {
     #[test]
     fn execute_timeout_marks_interrupted() {
         let temp = tempfile::tempdir().unwrap();
-        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
-            &session_id,
+            &test_session_id(),
             ClaudeBashInput {
                 command: "sleep 0.2".to_string(),
                 timeout: Some(20),
@@ -370,10 +379,9 @@ mod tests {
     #[test]
     fn execute_background_returns_task_id() {
         let temp = tempfile::tempdir().unwrap();
-        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
-            &session_id,
+            &test_session_id(),
             ClaudeBashInput {
                 command: "sleep 0.1".to_string(),
                 timeout: Some(1_000),
@@ -392,10 +400,9 @@ mod tests {
     #[test]
     fn execute_background_persists_shell_task() {
         let temp = tempfile::tempdir().unwrap();
-        let session_id = Uuid::nil();
         let result = execute(
             temp.path(),
-            &session_id,
+            &test_session_id(),
             ClaudeBashInput {
                 command: "sleep 0.1".to_string(),
                 timeout: Some(1_000),
@@ -413,7 +420,7 @@ mod tests {
             .join("runtime")
             .join("claude_workflow")
             .join("sessions")
-            .join(session_id.to_string())
+            .join(test_session_id().to_string())
             .join("tasks.json");
         let payload: Value =
             serde_json::from_str(&fs::read_to_string(tasks_path).unwrap()).unwrap();
@@ -450,8 +457,7 @@ mod tests {
             "run_in_background": false,
             "dangerouslyDisableSandbox": true
         });
-        let session_id = Uuid::nil();
-        let result = execute_from_value(temp.path(), &session_id, input).unwrap();
+        let result = execute_from_value(temp.path(), &test_session_id(), input).unwrap();
         assert!(result.success);
         assert_eq!(result.output.stdout, "ok");
         assert_eq!(result.output.dangerously_disable_sandbox, Some(true));

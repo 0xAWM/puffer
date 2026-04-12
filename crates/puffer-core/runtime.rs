@@ -1479,11 +1479,16 @@ pub(super) fn process_tool_result(text: &str, max_chars: usize, session_id: &uui
 }
 
 pub(super) fn truncate_tool_result(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
         return text.to_string();
     }
-    let truncated: String = text.chars().take(max_chars).collect();
-    format!("{truncated}\n\n[Output truncated — {max_chars} char limit reached]")
+    let head_len = max_chars / 2;
+    let tail_len = max_chars - head_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    let omitted = chars.len() - max_chars;
+    format!("{head}\n\n[…{omitted} chars truncated…]\n\n{tail}")
 }
 
 /// Persist text to a temp file and return a `<persisted-output>` preview message.
