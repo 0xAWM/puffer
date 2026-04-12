@@ -90,12 +90,12 @@ pub fn render_context_panel(
 
 /// Returns the number of background shell tasks currently running.
 pub fn running_background_task_count(state: &AppState) -> usize {
-    runtime::claude_tools::workflow::running_shell_task_count(&state.cwd)
+    runtime::claude_tools::workflow::running_shell_task_count(&state.cwd, &state.session.id)
 }
 
 /// Drains background task completion notifications (clears after reading).
 pub fn drain_background_task_completions(state: &AppState) -> Vec<String> {
-    runtime::claude_tools::workflow::drain_completed_shell_tasks(&state.cwd)
+    runtime::claude_tools::workflow::drain_completed_shell_tasks(&state.cwd, &state.session.id)
 }
 
 /// Estimates the remaining context-window percentage for the active model.

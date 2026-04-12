@@ -25,7 +25,8 @@ pub(super) fn execute_task_create(
 ) -> Result<String> {
     let parsed: TaskCreateInput =
         serde_json::from_value(input).context("invalid TaskCreate input")?;
-    let mut store = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
+    let tp = tasks_path(state.session.cwd.as_path(), &state.session.id);
+    let mut store = load_store::<TaskStore>(&tp)?;
     let task = StoredTask {
         task_id: next_task_id(&store.tasks),
         subject: parsed.subject,
@@ -46,7 +47,7 @@ pub(super) fn execute_task_create(
         exit_code: None,
     };
     store.tasks.push(task.clone());
-    save_store(&tasks_path(state.session.cwd.as_path()), &store)?;
+    save_store(&tp, &store)?;
     Ok(serde_json::to_string_pretty(&json!({
         "task": {
             "id": task.task_id,
@@ -58,7 +59,7 @@ pub(super) fn execute_task_create(
 /// Executes the live `TaskGet` workflow tool.
 pub(super) fn execute_task_get(state: &mut AppState, _cwd: &Path, input: Value) -> Result<String> {
     let parsed: TaskIdInput = serde_json::from_value(input).context("invalid TaskGet input")?;
-    let task = refresh_stored_task(state.session.cwd.as_path(), &parsed.task_id)?;
+    let task = refresh_stored_task(state.session.cwd.as_path(), &state.session.id, &parsed.task_id)?;
     Ok(serde_json::to_string_pretty(&json!({
         "task": task.map(|task| {
             json!({
@@ -80,17 +81,19 @@ pub(super) fn execute_task_list(
     _input: Value,
 ) -> Result<String> {
     let store_cwd = state.session.cwd.as_path();
-    let mut store = load_store::<TaskStore>(&tasks_path(store_cwd))?;
+    let sid = &state.session.id;
+    let tp = tasks_path(store_cwd, sid);
+    let mut store = load_store::<TaskStore>(&tp)?;
     let mut changed = false;
     for task in &mut store.tasks {
         let previous = task.clone();
-        if let Some(updated) = refresh_stored_task(store_cwd, &task.task_id)? {
+        if let Some(updated) = refresh_stored_task(store_cwd, sid, &task.task_id)? {
             *task = updated;
             changed |= *task != previous;
         }
     }
     if changed {
-        save_store(&tasks_path(store_cwd), &store)?;
+        save_store(&tp, &store)?;
     }
     let resolved = store
         .tasks
@@ -134,7 +137,8 @@ pub(super) fn execute_task_update(
 ) -> Result<String> {
     let parsed: TaskUpdateInput =
         serde_json::from_value(input).context("invalid TaskUpdate input")?;
-    let mut store = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
+    let tp = tasks_path(state.session.cwd.as_path(), &state.session.id);
+    let mut store = load_store::<TaskStore>(&tp)?;
     let Some(index) = store
         .tasks
         .iter()
@@ -151,7 +155,7 @@ pub(super) fn execute_task_update(
     let previous_status = store.tasks[index].status.clone();
     if parsed.status.as_deref() == Some("deleted") {
         store.tasks.remove(index);
-        save_store(&tasks_path(state.session.cwd.as_path()), &store)?;
+        save_store(&tp, &store)?;
         return Ok(serde_json::to_string_pretty(&json!({
             "success": true,
             "taskId": task_id,
@@ -252,7 +256,7 @@ pub(super) fn execute_task_update(
         }
     }
     task.updated_at_ms = Some(now_ms());
-    save_store(&tasks_path(state.session.cwd.as_path()), &store)?;
+    save_store(&tp, &store)?;
     Ok(serde_json::to_string_pretty(&json!({
         "success": true,
         "taskId": task_id,
@@ -270,7 +274,8 @@ pub(super) fn execute_task_stop(state: &mut AppState, _cwd: &Path, input: Value)
         .ok_or_else(|| anyhow!("TaskStop requires task_id or shell_id"))?;
 
     let store_cwd = state.session.cwd.as_path();
-    let mut tasks = load_store::<TaskStore>(&tasks_path(store_cwd))?;
+    let tp = tasks_path(store_cwd, &state.session.id);
+    let mut tasks = load_store::<TaskStore>(&tp)?;
     if let Some(task) = tasks.tasks.iter_mut().find(|task| task.task_id == target) {
         if task.process_id.is_none() && task.command.is_none() && task.output_file.is_none() {
             bail!("task `{target}` is not a running background task");
@@ -293,7 +298,7 @@ pub(super) fn execute_task_stop(state: &mut AppState, _cwd: &Path, input: Value)
         let task_id = task.task_id.clone();
         let task_type = task.task_type.clone().unwrap_or_else(|| "task".to_string());
         let command = task.command.clone();
-        save_store(&tasks_path(store_cwd), &tasks)?;
+        save_store(&tp, &tasks)?;
         return Ok(serde_json::to_string_pretty(&json!({
             "message": format!("Successfully stopped task: {task_id}"),
             "task_id": task_id,
@@ -356,12 +361,13 @@ pub(super) fn execute_task_output(
     let parsed: TaskOutputInput =
         serde_json::from_value(input).context("invalid TaskOutput input")?;
     let store_cwd = state.session.cwd.as_path();
+    let sid = &state.session.id;
     let block = parsed.block.unwrap_or(true);
     let timeout = parsed.timeout.unwrap_or(30_000);
     let (task, timed_out) = if block {
-        wait_for_stored_task(store_cwd, &parsed.task_id, timeout)?
+        wait_for_stored_task(store_cwd, sid, &parsed.task_id, timeout)?
     } else {
-        (refresh_stored_task(store_cwd, &parsed.task_id)?, false)
+        (refresh_stored_task(store_cwd, sid, &parsed.task_id)?, false)
     };
     if let Some(task) = task {
         let mut task_payload = json!({

@@ -645,16 +645,17 @@ pub(super) fn execute_todo_write(
     }))?)
 }
 
-/// Persists one background Bash task into the shared workflow task store.
+/// Persists one background Bash task into the session-scoped workflow task store.
 pub(super) fn register_background_shell_task(
     cwd: &Path,
+    session_id: &Uuid,
     task_id: &str,
     subject: &str,
     command: &str,
     process_id: u32,
     output_file: &Path,
 ) -> Result<()> {
-    let mut store = load_store::<TaskStore>(&tasks_path(cwd))?;
+    let mut store = load_store::<TaskStore>(&tasks_path(cwd, session_id))?;
     let started_at_ms = now_ms();
     store.tasks.retain(|task| task.task_id != task_id);
     store.tasks.push(StoredTask {
@@ -676,17 +677,18 @@ pub(super) fn register_background_shell_task(
         updated_at_ms: Some(started_at_ms),
         exit_code: None,
     });
-    save_store(&tasks_path(cwd), &store)
+    save_store(&tasks_path(cwd, session_id), &store)
 }
 
 /// Marks a background shell task as completed in the persistent store.
 /// Called from the reaper thread after `child.wait()` returns.
 pub(super) fn mark_shell_task_completed(
     cwd: &Path,
+    session_id: &Uuid,
     task_id: &str,
     exit_code: Option<i32>,
 ) -> Result<()> {
-    let mut store = load_store::<TaskStore>(&tasks_path(cwd))?;
+    let mut store = load_store::<TaskStore>(&tasks_path(cwd, session_id))?;
     if let Some(task) = store.tasks.iter_mut().find(|t| t.task_id == task_id) {
         if task.status == "running" {
             task.status = "completed".to_string();
@@ -698,7 +700,7 @@ pub(super) fn mark_shell_task_completed(
             }
         }
     }
-    save_store(&tasks_path(cwd), &store)?;
+    save_store(&tasks_path(cwd, session_id), &store)?;
     // Write a completion marker so the agent loop can detect newly finished tasks.
     let marker_dir = cwd
         .join(".puffer")
@@ -712,7 +714,7 @@ pub(super) fn mark_shell_task_completed(
 
 /// Drains completion markers for background shell tasks that finished since
 /// the last call.  Returns a human-readable description for each.
-pub(super) fn drain_completed_shell_tasks(cwd: &Path) -> Vec<String> {
+pub(super) fn drain_completed_shell_tasks(cwd: &Path, session_id: &Uuid) -> Vec<String> {
     let marker_dir = cwd
         .join(".puffer")
         .join("runtime")
@@ -723,7 +725,7 @@ pub(super) fn drain_completed_shell_tasks(cwd: &Path) -> Vec<String> {
         Err(_) => return Vec::new(),
     };
     let mut descriptions = Vec::new();
-    let store = load_store::<TaskStore>(&tasks_path(cwd)).ok();
+    let store = load_store::<TaskStore>(&tasks_path(cwd, session_id)).ok();
     for entry in entries.flatten() {
         let task_id = entry.file_name().to_string_lossy().to_string();
         // Remove marker so we don't report it again.
@@ -961,7 +963,8 @@ pub(super) fn execute_powershell(state: &mut AppState, cwd: &Path, input: Value)
         serde_json::from_value(input).context("invalid PowerShell input")?;
     let shell = detect_powershell_binary()?;
     if parsed.run_in_background {
-        let mut tasks = load_store::<TaskStore>(&tasks_path(state.session.cwd.as_path()))?;
+        let tp = tasks_path(state.session.cwd.as_path(), &state.session.id);
+        let mut tasks = load_store::<TaskStore>(&tp)?;
         let task_id = next_task_id(&tasks.tasks);
         let output_file = task_output_path(state.session.cwd.as_path(), &task_id)?;
         let stdout = OpenOptions::new()
@@ -1002,7 +1005,7 @@ pub(super) fn execute_powershell(state: &mut AppState, cwd: &Path, input: Value)
             updated_at_ms: Some(now_ms()),
             exit_code: None,
         });
-        save_store(&tasks_path(state.session.cwd.as_path()), &tasks)?;
+        save_store(&tp, &tasks)?;
         return Ok(serde_json::to_string_pretty(&json!({
             "stdout": "",
             "stderr": "",

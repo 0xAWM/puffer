@@ -358,7 +358,7 @@ where
     loop {
         // Check for background tasks that completed since the last turn and inject
         // a system reminder so the model learns about them without needing to poll.
-        let completed = super::claude_tools::workflow::drain_completed_shell_tasks(&state.cwd);
+        let completed = super::claude_tools::workflow::drain_completed_shell_tasks(&state.cwd, &state.session.id);
         if !completed.is_empty() {
             let notice = format!(
                 "<system-reminder>\n{}\nUse TaskOutput to retrieve the full output if needed.\n</system-reminder>",
@@ -592,7 +592,7 @@ fn execute_openai_completions_once(
 
     loop {
         // Check for background tasks that completed since the last turn.
-        let completed = super::claude_tools::workflow::drain_completed_shell_tasks(&state.cwd);
+        let completed = super::claude_tools::workflow::drain_completed_shell_tasks(&state.cwd, &state.session.id);
         if !completed.is_empty() {
             let notice = format!(
                 "<system-reminder>\n{}\nUse TaskOutput to retrieve the full output if needed.\n</system-reminder>",
@@ -770,6 +770,7 @@ pub(super) fn execute_openai_tool_calls(
             let args = tc.arguments.clone();
             let wd = &working_dirs;
             let pc = &provider_context;
+            let sid = &state.session.id;
             handles.push((
                 i,
                 s.spawn(move || {
@@ -778,6 +779,7 @@ pub(super) fn execute_openai_tool_calls(
                         cwd,
                         wd,
                         allow_all_paths,
+                        sid,
                         args,
                         resources,
                         registry,

@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
@@ -74,21 +75,21 @@ pub fn tool_description(input: &ClaudeBashInput) -> String {
 }
 
 /// Parses JSON input and executes a Claude-style `Bash` tool invocation.
-pub fn execute_from_value(cwd: &Path, input: Value) -> Result<ClaudeBashExecution> {
+pub fn execute_from_value(cwd: &Path, session_id: &Uuid, input: Value) -> Result<ClaudeBashExecution> {
     let typed: ClaudeBashInput =
         serde_json::from_value(input).context("invalid Bash tool input payload")?;
-    execute(cwd, typed)
+    execute(cwd, session_id, typed)
 }
 
 /// Executes a Claude-style `Bash` tool invocation in the provided working directory.
-pub fn execute(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
+pub fn execute(cwd: &Path, session_id: &Uuid, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
     if input.run_in_background {
-        return execute_background(cwd, input);
+        return execute_background(cwd, session_id, input);
     }
     execute_foreground(cwd, input)
 }
 
-fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
+fn execute_background(cwd: &Path, session_id: &Uuid, input: ClaudeBashInput) -> Result<ClaudeBashExecution> {
     let output_dir = shell_output_dir(cwd)?;
     let pending_output_file =
         output_dir.join(format!("shell-pending-{}.log", unique_output_nonce()));
@@ -122,6 +123,7 @@ fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
     let _ = fs::rename(&pending_output_file, &output_file);
     super::workflow::register_background_shell_task(
         cwd,
+        session_id,
         &task_id,
         &subject,
         &input.command,
@@ -135,12 +137,13 @@ fn execute_background(cwd: &Path, input: ClaudeBashInput) -> Result<ClaudeBashEx
     // in the persistent store so that status queries see accurate state
     // instead of relying on `kill -0` (which returns true for zombies).
     let reaper_cwd = cwd.to_path_buf();
+    let reaper_session_id = *session_id;
     let reaper_task_id = task_id.clone();
     thread::spawn(move || {
         let exit_status = child.wait();
         let exit_code = exit_status.ok().and_then(|s| s.code());
         // Best-effort: mark the stored task as completed.
-        let _ = super::workflow::mark_shell_task_completed(&reaper_cwd, &reaper_task_id, exit_code);
+        let _ = super::workflow::mark_shell_task_completed(&reaper_cwd, &reaper_session_id, &reaper_task_id, exit_code);
     });
 
     Ok(ClaudeBashExecution {

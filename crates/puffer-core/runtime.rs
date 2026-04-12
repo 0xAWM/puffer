@@ -753,7 +753,7 @@ where
 
     for _ in 0..8 {
         // Drain completed background tasks and inject as user messages.
-        let completed = claude_tools::workflow::drain_completed_shell_tasks(&state.cwd);
+        let completed = claude_tools::workflow::drain_completed_shell_tasks(&state.cwd, &state.session.id);
         if !completed.is_empty() {
             let notice = format!(
                 "<system-reminder>\n{}\nUse TaskOutput to retrieve the full output if needed.\n</system-reminder>",

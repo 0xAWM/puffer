@@ -8,6 +8,7 @@ use puffer_resources::LoadedResources;
 use puffer_tools::{ToolDefinition, ToolExecutionResult, ToolOutput, ToolRegistry};
 use puffer_transport_anthropic::AnthropicRequestConfig;
 use serde_json::Value;
+use uuid::Uuid;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -90,7 +91,7 @@ pub(crate) fn execute_tool(
     let allow_all_paths = workspace_paths::sandbox_allows_all_paths(&state.sandbox_mode);
     match definition.id.as_str() {
         "Bash" => {
-            let execution = bash::execute_from_value(cwd, input)?;
+            let execution = bash::execute_from_value(cwd, &state.session.id, input)?;
             let output = serde_json::to_string_pretty(&execution.output)
                 .context("failed to serialize Bash output")?;
             Ok(tool_result(definition, execution.success, output))
@@ -254,6 +255,7 @@ pub(crate) fn execute_parallel_tool(
     cwd: &Path,
     working_dirs: &[PathBuf],
     allow_all_paths: bool,
+    session_id: &Uuid,
     input: Value,
     resources: &LoadedResources,
     registry: &ToolRegistry,
@@ -261,7 +263,7 @@ pub(crate) fn execute_parallel_tool(
 ) -> Result<ToolExecutionResult> {
     match definition.id.as_str() {
         "Bash" => {
-            let execution = bash::execute_from_value(cwd, input)?;
+            let execution = bash::execute_from_value(cwd, session_id, input)?;
             let output = serde_json::to_string_pretty(&execution.output)
                 .context("failed to serialize Bash output")?;
             Ok(tool_result(definition, execution.success, output))
