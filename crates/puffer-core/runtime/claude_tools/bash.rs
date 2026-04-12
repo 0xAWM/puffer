@@ -475,4 +475,78 @@ mod tests {
         let error = summary_line(&input).unwrap_err();
         assert!(error.to_string().contains("cannot be empty"));
     }
+
+    #[test]
+    fn truncate_output_preserves_short_output() {
+        let short = "hello world".to_string();
+        assert_eq!(truncate_output(short.clone()), short);
+    }
+
+    #[test]
+    fn truncate_output_preserves_exact_limit() {
+        let exact: String = "x".repeat(MAX_OUTPUT_CHARS);
+        assert_eq!(truncate_output(exact.clone()), exact);
+    }
+
+    #[test]
+    fn truncate_output_uses_middle_truncation() {
+        // Build output: "AAAA...BBB..." where head is A's and tail is B's
+        let head_marker = "HEAD_START";
+        let tail_marker = "TAIL_END!!";
+        let filler_len = MAX_OUTPUT_CHARS + 10_000;
+        let mut big = String::with_capacity(filler_len + 20);
+        big.push_str(head_marker);
+        for _ in 0..(filler_len - head_marker.len() - tail_marker.len()) {
+            big.push('.');
+        }
+        big.push_str(tail_marker);
+
+        let result = truncate_output(big);
+        // Head preserved
+        assert!(result.starts_with(head_marker), "head must be preserved");
+        // Tail preserved
+        assert!(result.ends_with(tail_marker), "tail must be preserved");
+        // Truncation marker present
+        assert!(result.contains("[…"), "must contain truncation marker");
+        assert!(result.contains("chars truncated…]"), "must show char count");
+    }
+
+    #[test]
+    fn truncate_output_handles_unicode() {
+        // 50k Chinese chars — well above 30k limit
+        let chinese: String = "测试".repeat(25_000);
+        let result = truncate_output(chinese);
+        assert!(result.contains("[…"), "must contain truncation marker");
+        // Head should start with 测试
+        assert!(result.starts_with("测试"), "head must preserve Chinese");
+        // Tail should end with 测试
+        assert!(result.ends_with("测试"), "tail must preserve Chinese");
+    }
+
+    #[test]
+    fn truncate_output_middle_truncation_real_bash() {
+        // Simulate large output: head=AAAAAA..., tail=ZZZZZZ...
+        let temp = tempfile::tempdir().unwrap();
+        // printf A × 20000 chars, then B × 20000 chars — total 40000 > 30000 limit
+        let result = execute(
+            temp.path(),
+            &test_session_id(),
+            ClaudeBashInput {
+                command: "printf '%0.sA' $(jot 20000); printf '%0.sZ' $(jot 20000)".to_string(),
+                timeout: Some(5_000),
+                description: None,
+                run_in_background: false,
+                dangerously_disable_sandbox: false,
+            },
+        )
+        .unwrap();
+        assert!(result.success, "command failed: {}", result.output.stderr);
+        let stdout = &result.output.stdout;
+        // 40000 chars > 30000 limit, must be truncated
+        assert!(stdout.contains("[…"), "large output must be middle-truncated");
+        // Head preserved (starts with A's)
+        assert!(stdout.starts_with('A'), "head must start with A");
+        // Tail preserved (ends with Z's)
+        assert!(stdout.ends_with('Z'), "tail must end with Z");
+    }
 }
