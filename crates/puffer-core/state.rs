@@ -292,7 +292,7 @@ impl AppState {
             thinking: None,
             call_id: Some(call_id.to_string()),
             tool_id: Some(tool_id.to_string()),
-            tool_input: None,
+            tool_input: Some(input.to_string()),
             success: Some(success),
         });
     }

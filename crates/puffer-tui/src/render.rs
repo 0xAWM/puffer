@@ -498,14 +498,27 @@ fn transcript_line_count_with_width(
 }
 
 fn render_transcript_message(message: &RenderedMessage, pulse_tool: bool) -> Vec<Line<'static>> {
+    let expanded = ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| *value.borrow());
     if message.role == MessageRole::System {
-        if let Some(lines) = render_tool_message(
-            &message.text,
-            ACTIVE_TOOL_DETAILS_EXPANDED.with(|value| *value.borrow()),
-            pulse_tool,
-        ) {
+        if let Some(lines) = render_tool_message(&message.text, expanded, pulse_tool) {
             return lines;
         }
+    }
+    // Structured tool invocations: ToolCall is the input, ToolResult is the output.
+    // Merge them into the "Tool <id> [status]" format that render_tool_message expects.
+    if message.role == MessageRole::ToolResult {
+        if let Some(tool_id) = &message.tool_id {
+            let status = if message.success.unwrap_or(true) { "ok" } else { "error" };
+            let input = message.tool_input.as_deref().unwrap_or("{}");
+            let formatted = format!("Tool {} [{}]\ninput: {}\n{}", tool_id, status, input, message.text);
+            if let Some(lines) = render_tool_message(&formatted, expanded, false) {
+                return lines;
+            }
+        }
+    }
+    // ToolCall input is rendered as part of the ToolResult header — skip it.
+    if message.role == MessageRole::ToolCall {
+        return Vec::new();
     }
     let (first_prefix, continuation_prefix) = match message.role {
         MessageRole::User => ("› ", "  "),

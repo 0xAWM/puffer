@@ -7,6 +7,12 @@ const ORANGE_ACCENT: Color = Color::Indexed(214);
 const TOOL_OUTPUT_COLOR: Color = Color::DarkGray;
 const RUNNING_PULSE_MS: u128 = 800;
 
+// JSON syntax coloring.
+const JSON_KEY_COLOR: Color = Color::Cyan;
+const JSON_STRING_COLOR: Color = Color::Green;
+const JSON_NUMBER_COLOR: Color = Color::Yellow;
+const JSON_KEYWORD_COLOR: Color = Color::Magenta;
+
 pub(super) fn render_tool_message(
     text: &str,
     expanded: bool,
@@ -15,23 +21,20 @@ pub(super) fn render_tool_message(
     let parsed = parse_tool_message(text)?;
     let mut lines = vec![Line::from(header_spans(&parsed, pulse_running))];
 
-    let preview_lines = output_display_lines(parsed.tool_id, parsed.output, expanded);
+    let dim = Style::default()
+        .fg(TOOL_OUTPUT_COLOR)
+        .add_modifier(Modifier::DIM);
+    let (preview_lines, is_json) = output_display_lines(parsed.tool_id, parsed.output, expanded);
     for (index, line) in preview_lines.into_iter().enumerate() {
         let prefix = if index == 0 { "└ " } else { "  " };
-        lines.push(Line::from(vec![
-            Span::styled(
-                prefix.to_string(),
-                Style::default()
-                    .fg(TOOL_OUTPUT_COLOR)
-                    .add_modifier(Modifier::DIM),
-            ),
-            Span::styled(
-                line,
-                Style::default()
-                    .fg(TOOL_OUTPUT_COLOR)
-                    .add_modifier(Modifier::DIM),
-            ),
-        ]));
+        let prefix_span = Span::styled(prefix.to_string(), dim);
+        if is_json && !line.starts_with("[+") {
+            let mut spans = vec![prefix_span];
+            spans.extend(colorize_json_line(&line));
+            lines.push(Line::from(spans));
+        } else {
+            lines.push(Line::from(vec![prefix_span, Span::styled(line, dim)]));
+        }
     }
     Some(lines)
 }
@@ -131,6 +134,12 @@ fn friendly_tool_name(tool_id: &str) -> String {
         "listmcpresourcestool" => "List MCP Resources".to_string(),
         "readmcpresourcetool" => "Read MCP Resource".to_string(),
         "task" => "Task".to_string(),
+        "taskcreate" => "Task Create".to_string(),
+        "taskupdate" => "Task Update".to_string(),
+        "tasklist" => "Task List".to_string(),
+        "taskget" => "Task Get".to_string(),
+        "taskstop" => "Task Stop".to_string(),
+        "taskoutput" => "Task Output".to_string(),
         "agent" => "Agent".to_string(),
         other => other.replace('_', " "),
     }
@@ -166,6 +175,10 @@ fn summarize_input(tool_id: &str, input: &str) -> Option<String> {
         "listmcpresourcestool" => {
             extract_string(parsed.as_ref(), &["server"]).map(normalize_inline_text)
         }
+        "taskcreate" => {
+            extract_string(parsed.as_ref(), &["subject"]).map(normalize_inline_text)
+        }
+        "taskupdate" => extract_string(parsed.as_ref(), &["id"]).map(normalize_inline_text),
         "task" | "agent" => extract_string(parsed.as_ref(), &["prompt"]).map(normalize_inline_text),
         _ => extract_first_string(parsed.as_ref()).map(normalize_inline_text),
     }?;
@@ -190,89 +203,102 @@ fn extract_first_string(value: Option<&Value>) -> Option<&str> {
     value?.as_object()?.values().find_map(Value::as_str)
 }
 
-fn output_display_lines(tool_id: &str, output: Option<&str>, expanded: bool) -> Vec<String> {
+fn output_display_lines(
+    tool_id: &str,
+    output: Option<&str>,
+    expanded: bool,
+) -> (Vec<String>, bool) {
     let text = output.unwrap_or_default().trim();
     if text.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
 
-    let lines = display_output_lines(tool_id, text);
+    let (lines, is_json) = display_output_lines(tool_id, text);
     if lines.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
 
     if expanded || lines.len() <= 3 {
-        return lines;
+        return (lines, is_json);
     }
 
     let hidden = lines.len().saturating_sub(3);
-    vec![
-        truncate(lines.first().map(String::as_str).unwrap_or_default(), 120),
-        format!("[+{hidden} lines · press Ctrl+O to expand]"),
-        truncate(
-            lines
-                .get(lines.len().saturating_sub(2))
-                .map(String::as_str)
-                .unwrap_or_default(),
-            120,
-        ),
-        truncate(lines.last().map(String::as_str).unwrap_or_default(), 120),
-    ]
+    (
+        vec![
+            truncate(lines.first().map(String::as_str).unwrap_or_default(), 120),
+            format!("[+{hidden} lines · press Ctrl+O to expand]"),
+            truncate(
+                lines
+                    .get(lines.len().saturating_sub(2))
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+                120,
+            ),
+            truncate(lines.last().map(String::as_str).unwrap_or_default(), 120),
+        ],
+        is_json,
+    )
 }
 
-fn display_output_lines(tool_id: &str, output: &str) -> Vec<String> {
+fn display_output_lines(tool_id: &str, output: &str) -> (Vec<String>, bool) {
     match normalized_tool_id(tool_id).as_str() {
         "bash" => {
             if let Some(lines) = bash_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "read" => {
             if let Some(lines) = read_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "write" => {
             if let Some(lines) = write_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "edit" | "replace_in_file" => {
             if let Some(lines) = edit_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "glob" => {
             if let Some(lines) = glob_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "webfetch" => {
             if let Some(lines) = web_fetch_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "notebookedit" => {
             if let Some(lines) = notebook_edit_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "listmcpresourcestool" => {
             if let Some(lines) = list_mcp_resources_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         "readmcpresourcetool" => {
             if let Some(lines) = read_mcp_resource_output_lines(output) {
-                return lines;
+                return (lines, false);
             }
         }
         _ => {}
     }
     if let Some(lines) = generic_json_output_lines(output) {
-        return lines;
+        return (lines, false);
     }
-    output.lines().map(str::to_string).collect()
+    // If the output is valid JSON, pretty-print it and flag for syntax coloring.
+    if let Ok(parsed) = serde_json::from_str::<Value>(output.trim()) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
+            return (pretty.lines().map(str::to_string).collect(), true);
+        }
+    }
+    (output.lines().map(str::to_string).collect(), false)
 }
 
 fn bash_output_lines(output: &str) -> Option<Vec<String>> {
@@ -457,6 +483,124 @@ fn generic_json_output_lines(output: &str) -> Option<Vec<String>> {
         return Some(text.lines().map(str::to_string).collect());
     }
     None
+}
+
+/// Colorizes a single line of JSON output into styled spans.
+fn colorize_json_line(line: &str) -> Vec<Span<'static>> {
+    let punct_style = Style::default()
+        .fg(TOOL_OUTPUT_COLOR)
+        .add_modifier(Modifier::DIM);
+    let key_style = Style::default().fg(JSON_KEY_COLOR);
+    let string_style = Style::default().fg(JSON_STRING_COLOR);
+    let number_style = Style::default().fg(JSON_NUMBER_COLOR);
+    let keyword_style = Style::default().fg(JSON_KEYWORD_COLOR);
+
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut i = 0;
+
+    // Leading whitespace.
+    let ws_start = i;
+    while i < len && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i > ws_start {
+        spans.push(Span::raw(line[ws_start..i].to_string()));
+    }
+
+    while i < len {
+        match bytes[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < len && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                if i < len {
+                    i += 1; // closing quote
+                }
+                let s = line[start..i].to_string();
+                // Look ahead past whitespace for ':' to distinguish keys from values.
+                let mut j = i;
+                while j < len && bytes[j] == b' ' {
+                    j += 1;
+                }
+                if j < len && bytes[j] == b':' {
+                    spans.push(Span::styled(s, key_style));
+                } else {
+                    spans.push(Span::styled(s, string_style));
+                }
+            }
+            b'0'..=b'9' => {
+                let start = i;
+                while i < len
+                    && (bytes[i].is_ascii_digit()
+                        || bytes[i] == b'.'
+                        || bytes[i] == b'e'
+                        || bytes[i] == b'E'
+                        || bytes[i] == b'+'
+                        || bytes[i] == b'-')
+                {
+                    i += 1;
+                }
+                spans.push(Span::styled(line[start..i].to_string(), number_style));
+            }
+            b'-' if i + 1 < len && bytes[i + 1].is_ascii_digit() => {
+                let start = i;
+                i += 1;
+                while i < len
+                    && (bytes[i].is_ascii_digit()
+                        || bytes[i] == b'.'
+                        || bytes[i] == b'e'
+                        || bytes[i] == b'E')
+                {
+                    i += 1;
+                }
+                spans.push(Span::styled(line[start..i].to_string(), number_style));
+            }
+            b't' if line.get(i..i + 4) == Some("true") => {
+                spans.push(Span::styled("true".to_string(), keyword_style));
+                i += 4;
+            }
+            b'f' if line.get(i..i + 5) == Some("false") => {
+                spans.push(Span::styled("false".to_string(), keyword_style));
+                i += 5;
+            }
+            b'n' if line.get(i..i + 4) == Some("null") => {
+                spans.push(Span::styled("null".to_string(), keyword_style));
+                i += 4;
+            }
+            b'{' | b'}' | b'[' | b']' | b':' | b',' => {
+                spans.push(Span::styled(String::from(bytes[i] as char), punct_style));
+                i += 1;
+            }
+            b' ' | b'\t' => {
+                let start = i;
+                while i < len && (bytes[i] == b' ' || bytes[i] == b'\t') {
+                    i += 1;
+                }
+                spans.push(Span::raw(line[start..i].to_string()));
+            }
+            _ => {
+                // Handle non-ASCII (UTF-8 multibyte) gracefully.
+                if let Some(ch) = line[i..].chars().next() {
+                    spans.push(Span::styled(ch.to_string(), punct_style));
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::raw(line.to_string()));
+    }
+    spans
 }
 
 fn truncate(text: &str, max_chars: usize) -> String {
