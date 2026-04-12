@@ -162,6 +162,11 @@ impl ProviderRegistry {
         if provider.descriptor.discovery.is_none() {
             return Ok(());
         }
+        // Skip discovery for remote providers that have no credentials — the
+        // request would almost certainly fail with 401/403 anyway.
+        if auth_store.get(provider_id).is_none() && !is_local_url(&provider.descriptor.base_url) {
+            return Ok(());
+        }
         let discovered = client.discover_models(&provider.descriptor, auth_store)?;
         if discovered.is_empty() {
             return Ok(());
@@ -171,6 +176,11 @@ impl ProviderRegistry {
         }
         Ok(())
     }
+}
+
+fn is_local_url(url: &str) -> bool {
+    let url = url.to_lowercase();
+    url.contains("://localhost") || url.contains("://127.0.0.1") || url.contains("://[::1]")
 }
 
 #[cfg(test)]

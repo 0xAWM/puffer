@@ -11,17 +11,26 @@ const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
 const OPENAI_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 /// Performs runtime provider model-discovery requests.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ModelDiscoveryClient {
     client: Client,
 }
 
+impl Default for ModelDiscoveryClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelDiscoveryClient {
-    /// Creates a discovery client backed by the default blocking HTTP client.
+    /// Creates a discovery client with sensible timeouts for startup discovery.
     pub fn new() -> Self {
-        Self {
-            client: Client::new(),
-        }
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .unwrap_or_default();
+        Self { client }
     }
 
     /// Fetches and parses discovery results for a provider descriptor.
