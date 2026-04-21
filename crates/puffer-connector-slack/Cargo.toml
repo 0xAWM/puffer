@@ -9,6 +9,7 @@ anyhow.workspace = true
 puffer-connector-core = { path = "../puffer-connector-core" }
 serde.workspace = true
 serde_json.workspace = true
+slack-morphism = { version = "2.20", features = ["hyper", "axum"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
 uuid.workspace = true
 
