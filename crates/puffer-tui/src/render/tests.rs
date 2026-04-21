@@ -874,6 +874,8 @@ fn loaded_prompt(id: &str, description: &str) -> LoadedItem<puffer_resources::Pr
             model_override: None,
             mode: None,
             chained_from: Vec::new(),
+            for_provider: None,
+            for_model: None,
         },
         source_info: SourceInfo {
             path: PathBuf::from(format!("{id}.yaml")),
