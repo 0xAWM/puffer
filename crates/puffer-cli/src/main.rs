@@ -9,8 +9,9 @@ mod connectors;
 mod desktop_api;
 mod desktop_api_types;
 mod resource_fs;
+mod subscriptions;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use benchmark_run::run_benchmark_command;
 use clap::Parser;
 use cli_args::{AuthCommand, Cli, Command, SessionCommand, ToolCommand};
@@ -55,6 +56,16 @@ use crate::auth_provider::{
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Hidden subscriber subcommand dispatches to a baked-in skill driver
+    // before any other Puffer state is loaded. The supervisor invokes
+    // `puffer __subscriber <id>`; that process is dedicated to the
+    // subscriber loop and has no business loading resources, providers,
+    // or the subscription manager itself.
+    if let Some(Command::Subscriber { id }) = &cli.subcommand {
+        return run_subscriber(id);
+    }
+
     let cwd = std::env::current_dir()?;
     let paths = ConfigPaths::discover(&cwd);
     ensure_workspace_dirs(&paths)?;
@@ -91,7 +102,27 @@ fn main() -> Result<()> {
     }
     let _ = providers.discover_and_merge_all(&auth_store);
 
+    // Boot the subscription manager once providers are wired up so the
+    // classifier can fish the Anthropic base URL out of the registry.
+    // Held until end of `main`; dropped on normal exit, draining the
+    // router and supervisors.
+    let anthropic_base = providers
+        .provider("anthropic")
+        .map(|p| p.base_url.clone());
+    let _subscription_runtime =
+        match subscriptions::install(&paths, &auth_store, anthropic_base.as_deref()) {
+            Ok(rt) => Some(rt),
+            Err(error) => {
+                eprintln!("subscription manager failed to start: {error:#}");
+                None
+            }
+        };
+
     match cli.subcommand {
+        Some(Command::Subscriber { .. }) => {
+            // Already handled above; here only to satisfy exhaustiveness.
+            unreachable!("__subscriber dispatched before main match")
+        }
         Some(Command::Agents { setting_sources }) => {
             run_agents_command(&paths, &config, setting_sources.as_deref())
         }
@@ -991,6 +1022,27 @@ fn run_remote_tui(
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+/// Dispatcher for the hidden `__subscriber <id>` subcommand. Each
+/// supported subscriber id maps to one baked-in driver crate. Unknown
+/// ids exit with a clear error so the supervisor's restart loop does not
+/// silently spin forever.
+fn run_subscriber(id: &str) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name(format!("puffer-subscriber-{id}"))
+        .build()
+        .context("failed to build subscriber tokio runtime")?;
+    runtime.block_on(async move {
+        match id {
+            "telegram-user" => puffer_subscriber_telegram_user::run().await,
+            "email" => puffer_subscriber_email::run().await,
+            other => Err(anyhow::anyhow!(
+                "unknown subscriber id `{other}`; this puffer build does not bundle a driver for it"
+            )),
+        }
+    })
 }
 
 fn resolve_session_query(session_store: &SessionStore, query: &str) -> Result<Uuid> {

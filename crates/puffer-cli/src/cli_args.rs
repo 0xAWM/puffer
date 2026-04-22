@@ -146,6 +146,13 @@ pub(crate) enum Command {
         #[arg(long = "config")]
         config: Option<String>,
     },
+    /// Internal: run a baked-in subscriber skill driver. Invoked by the
+    /// subscriber supervisor; not intended for direct use.
+    #[command(hide = true, name = "__subscriber")]
+    Subscriber {
+        /// Subscriber id, matches `manifest.id` (e.g. `telegram-user`).
+        id: String,
+    },
     /// Run one unattended benchmark turn and emit result artifacts.
     #[command(hide = true)]
     BenchmarkRun {

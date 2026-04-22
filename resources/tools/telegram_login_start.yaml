@@ -1,0 +1,49 @@
+id: TelegramLoginStart
+name: TelegramLoginStart
+description: |-
+  Begin logging in to Telegram with the user's personal account (NOT a
+  bot). Required before installing any subscription whose `source_topic`
+  is `telegram-user`.
+
+  ## When to call
+
+  - The user asks to watch / forward / process Telegram messages and is
+    not already logged in.
+  - The user explicitly asks to log in to Telegram.
+
+  ## What you must collect from the user first (in plain conversation)
+
+  1. **Phone number** in international E.164 format with the leading `+`
+     (e.g. `+15551234567`).
+  2. **api_id** and **api_hash** from https://my.telegram.org →
+     "API development tools". The user creates an "application" once;
+     these credentials persist for the user, not per-session. Tell them
+     you'll save the values to their puffer state directory and never
+     transmit them to Anthropic.
+
+  ## What happens after you call this tool
+
+  Telegram will text a numeric code to the user's other Telegram apps.
+  The subscriber emits a `login_awaiting_code` event. Ask the user for
+  the code and call `TelegramLoginSubmitCode`.
+
+  Do not call this if `SubscriptionList` shows `telegram-user` already
+  in `running_subscribers` and a previous login completed — the existing
+  session is reused automatically.
+handler: runtime:workflow:telegram_login_start
+approval_policy: ask
+sandbox_policy: workspace-write
+input_schema:
+  type: object
+  properties:
+    phone:
+      type: string
+      description: E.164 phone number with leading '+'.
+    api_id:
+      type: integer
+      description: api_id from my.telegram.org.
+    api_hash:
+      type: string
+      description: api_hash from my.telegram.org.
+  required: [phone, api_id, api_hash]
+  additionalProperties: false
