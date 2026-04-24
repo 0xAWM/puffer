@@ -1,0 +1,132 @@
+<script lang="ts" module>
+  import type { AgentState } from "./tweaks.ts";
+
+  export type ActiveAgent = {
+    id: string;
+    name: string;
+    title: string;
+    project: string;
+    branch: string;
+    state: AgentState;
+  };
+
+  export type UserChip = {
+    initials: string;
+    name: string;
+    meta: string;
+  };
+</script>
+
+<script lang="ts">
+  import Puffer from "../design/Puffer.svelte";
+  import Icon, { type IconName } from "../design/Icon.svelte";
+  import type { ScreenId } from "./tweaks.ts";
+
+  type Props = {
+    screen: ScreenId;
+    onSelectScreen: (id: ScreenId) => void;
+    agents: ActiveAgent[];
+    activeAgentId?: string | null;
+    onOpenAgent?: (id: string) => void;
+    user?: UserChip | null;
+  };
+
+  let {
+    screen,
+    onSelectScreen,
+    agents,
+    activeAgentId = null,
+    onOpenAgent,
+    user = null
+  }: Props = $props();
+
+  let filterProject = $state<string>("all");
+  let filterState = $state<string>("all");
+
+  const screens: { id: ScreenId; label: string; icon: IconName }[] = [
+    { id: "workspace", label: "Workspace", icon: "sparkles" },
+    { id: "pipelines", label: "Pipelines", icon: "git" },
+    { id: "deployments", label: "Deployments", icon: "rocket" },
+    { id: "settings", label: "Settings", icon: "settings" }
+  ];
+
+  const states: (AgentState | "all")[] = ["all", "running", "thinking", "awaiting", "idle"];
+
+  let projects = $derived(["all", ...Array.from(new Set(agents.map((a) => a.project)))]);
+  let filtered = $derived(
+    agents.filter(
+      (a) =>
+        (filterProject === "all" || a.project === filterProject) &&
+        (filterState === "all" || a.state === filterState)
+    )
+  );
+</script>
+
+<aside class="pf-sidebar">
+  <div class="pf-sidebar-section">
+    {#each screens as s (s.id)}
+      <button
+        type="button"
+        class="pf-sidebar-item"
+        data-active={screen === s.id}
+        onclick={() => onSelectScreen(s.id)}
+      >
+        <Icon name={s.icon} size={14} color="var(--muted-foreground)" />
+        <span>{s.label}</span>
+      </button>
+    {/each}
+  </div>
+
+  <div class="pf-sidebar-section pf-sidebar-agents">
+    <div class="pf-sidebar-label">
+      Active agents
+      <span class="count">{filtered.length}</span>
+    </div>
+    <div class="pf-sidebar-filters">
+      <select bind:value={filterProject} aria-label="Filter by project">
+        {#each projects as p (p)}
+          <option value={p}>{p === "all" ? "All projects" : p}</option>
+        {/each}
+      </select>
+      <select bind:value={filterState} aria-label="Filter by state">
+        {#each states as s (s)}
+          <option value={s}>{s === "all" ? "All states" : s}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="pf-sidebar-agents-list">
+      {#each filtered as a (a.id)}
+        <button
+          type="button"
+          class="pf-sidebar-agent"
+          data-active={activeAgentId === a.id}
+          onclick={() => onOpenAgent?.(a.id)}
+        >
+          <Puffer size={16} state={a.state} />
+          <div class="pf-row-stack">
+            <span class="title">{a.name} · {a.title}</span>
+            <span class="pf-task-status">{a.project} · {a.state}</span>
+          </div>
+        </button>
+      {/each}
+      {#if filtered.length === 0}
+        <div class="pf-sidebar-empty">No agents match</div>
+      {/if}
+    </div>
+  </div>
+
+  {#if user}
+    <div class="pf-sidebar-section" style="border-top: 1px solid var(--border);">
+      <div class="pf-sidebar-item" style="cursor: default;">
+        <span
+          style="width: 24px; height: 24px; border-radius: 6px; background: color-mix(in oklab, var(--puffer-accent) 18%, var(--background)); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--puffer-accent); flex-shrink: 0;"
+        >{user.initials}</span>
+        <div class="pf-row-stack">
+          <span class="title" style="font-weight: 500;">{user.name}</span>
+          <span class="pf-task-status">{user.meta}</span>
+        </div>
+        <Icon name="moreH" size={14} color="var(--muted-foreground)" />
+      </div>
+    </div>
+  {/if}
+</aside>

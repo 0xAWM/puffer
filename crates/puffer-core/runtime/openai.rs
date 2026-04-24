@@ -529,6 +529,7 @@ where
             .iter()
             .filter(|tool_call| !response.emitted_tool_call_ids.contains(&tool_call.call_id))
             .map(|tool_call| super::ToolCallRequest {
+                call_id: tool_call.call_id.clone(),
                 tool_id: tool_call.name.clone(),
                 input: serde_json::to_string(&tool_call.arguments).unwrap_or_default(),
             })

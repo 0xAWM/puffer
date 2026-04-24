@@ -236,6 +236,24 @@ fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
                     text: format!("Session renamed to {name}."),
                 })
             }
+            TranscriptEvent::ToolInvocation {
+                call_id,
+                tool_id,
+                input,
+                output,
+                success,
+            } => {
+                let input_json = serde_json::from_str::<serde_json::Value>(input).ok();
+                items.push(TimelineItemDto::ToolCall {
+                    id: format!("timeline-{index}-{call_id}"),
+                    tool_id: tool_id.clone(),
+                    status: if *success { "success".to_string() } else { "error".to_string() },
+                    summary: Some(format!("{tool_id} · {}", if *success { "success" } else { "error" })),
+                    input_text: input.clone(),
+                    input_json,
+                    output_text: output.clone(),
+                })
+            }
             TranscriptEvent::TranscriptRewritten { .. } | TranscriptEvent::StateSnapshot { .. } => {
             }
         }

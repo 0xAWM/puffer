@@ -6,6 +6,10 @@ mod benchmark_run;
 mod cli_args;
 mod command_surface;
 mod connectors;
+mod daemon;
+mod daemon_files;
+mod daemon_fs_watch;
+mod daemon_pty;
 mod desktop_api;
 mod desktop_api_types;
 mod resource_fs;
@@ -217,6 +221,17 @@ fn main() -> Result<()> {
             &providers,
             &mut auth_store,
         ),
+        Some(Command::Daemon {
+            bind,
+            handshake_file,
+            token,
+            print_handshake,
+        }) => daemon::run(daemon::DaemonOptions {
+            bind,
+            handshake_file,
+            token,
+            print_handshake,
+        }),
         Some(Command::BenchmarkRun {
             prompt,
             prompt_file,

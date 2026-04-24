@@ -149,7 +149,7 @@ pub(crate) fn run_desktop_api(
     Ok(())
 }
 
-fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<FolderGroupDto>> {
+pub(crate) fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<FolderGroupDto>> {
     let sessions = session_store.list_sessions()?;
     let mut groups = BTreeMap::<String, Vec<SessionListItemDto>>::new();
     for session in sessions {
@@ -194,7 +194,7 @@ fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<FolderGroup
     Ok(folders)
 }
 
-fn load_session_detail(session_store: &SessionStore, session_id: &str) -> Result<SessionDetailDto> {
+pub(crate) fn load_session_detail(session_store: &SessionStore, session_id: &str) -> Result<SessionDetailDto> {
     let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = session_store.load_session(session_uuid)?;
     let folder_path = session_group_root(&record.metadata.cwd)
@@ -230,13 +230,13 @@ fn load_session_detail(session_store: &SessionStore, session_id: &str) -> Result
     })
 }
 
-fn load_session_cwd(session_store: &SessionStore, session_id: &str) -> Result<PathBuf> {
+pub(crate) fn load_session_cwd(session_store: &SessionStore, session_id: &str) -> Result<PathBuf> {
     let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = session_store.load_session(session_uuid)?;
     Ok(record.metadata.cwd)
 }
 
-fn load_settings_snapshot(
+pub(crate) fn load_settings_snapshot(
     paths: &ConfigPaths,
     config: &PufferConfig,
     resources: &LoadedResources,
@@ -355,7 +355,7 @@ fn auth_mode_label(mode: &AuthMode) -> String {
     }
 }
 
-fn store_api_key(
+pub(crate) fn store_api_key(
     auth_store: &mut AuthStore,
     providers: &ProviderRegistry,
     auth_path: &Path,
@@ -373,6 +373,17 @@ fn store_api_key(
         anyhow::bail!("api key cannot be empty");
     }
     auth_store.set_api_key(provider_id.to_string(), trimmed.to_string());
+    auth_store
+        .save(auth_path)
+        .context("failed to save auth store")
+}
+
+pub(crate) fn logout_provider(
+    auth_store: &mut AuthStore,
+    auth_path: &Path,
+    provider_id: &str,
+) -> Result<()> {
+    auth_store.remove(provider_id);
     auth_store
         .save(auth_path)
         .context("failed to save auth store")
@@ -621,7 +632,7 @@ fn summarize_tool_input(tool_id: &str, input_text: &str) -> Option<String> {
     }
 }
 
-fn repo_status(session_id: &str, cwd: &Path) -> RepoStatusDto {
+pub(crate) fn repo_status(session_id: &str, cwd: &Path) -> RepoStatusDto {
     let cwd_text = cwd.display().to_string();
     let repo_root = git_output(cwd, &["rev-parse", "--show-toplevel"]).ok();
     let branch = git_output(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).ok();
@@ -690,7 +701,7 @@ fn repo_status(session_id: &str, cwd: &Path) -> RepoStatusDto {
     }
 }
 
-fn create_pull_request(
+pub(crate) fn create_pull_request(
     session_id: &str,
     cwd: &Path,
     title: Option<String>,
@@ -763,7 +774,7 @@ fn create_pull_request(
     }
 }
 
-fn merge_pull_request(
+pub(crate) fn merge_pull_request(
     session_id: &str,
     cwd: &Path,
     pull_request_number: Option<u64>,

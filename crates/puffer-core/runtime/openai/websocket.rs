@@ -421,6 +421,7 @@ where
             .iter()
             .filter(|tc| !response.emitted_tool_call_ids.contains(&tc.call_id))
             .map(|tc| super::super::ToolCallRequest {
+                call_id: tc.call_id.clone(),
                 tool_id: tc.name.clone(),
                 input: serde_json::to_string(&tc.arguments).unwrap_or_default(),
             })

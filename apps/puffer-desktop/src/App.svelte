@@ -1,26 +1,64 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import SessionSidebar from "./lib/components/SessionSidebar.svelte";
-  import ConversationPane from "./lib/components/ConversationPane.svelte";
-  import DiffView from "./lib/components/DiffView.svelte";
-  import SettingsView from "./lib/components/SettingsView.svelte";
-  import LoginView from "./lib/components/LoginView.svelte";
+
+  import TitleBar, { type TitleTab } from "./lib/shell/TitleBar.svelte";
+  import Sidebar, { type ActiveAgent, type UserChip } from "./lib/shell/Sidebar.svelte";
+  import TweaksPanel from "./lib/shell/TweaksPanel.svelte";
+  import {
+    applyTweaksToDocument,
+    defaultTweaks,
+    loadTweaks,
+    persistTweaks,
+    type ScreenId,
+    type Tweaks,
+    type AgentState
+  } from "./lib/shell/tweaks";
+
+  import Workspace from "./lib/screens/Workspace.svelte";
+  import WorkspacePicker from "./lib/screens/WorkspacePicker.svelte";
+  import AgentDetail from "./lib/screens/agent/AgentDetail.svelte";
+  import {
+    AGENTS as MOCK_AGENTS,
+    PROJECTS as MOCK_PROJECTS,
+    type MockAgent
+  } from "./lib/data/mockProjects";
+  import Pipelines from "./lib/screens/Pipelines.svelte";
+  import Deployments from "./lib/screens/Deployments.svelte";
+  import Settings from "./lib/screens/Settings.svelte";
+  import Onboarding from "./lib/screens/Onboarding.svelte";
+
   import {
     createPullRequest,
     loginWithApiKey,
+    loginWithApiKeyViaDaemon,
     loginWithOauth,
-    listGroupedSessions,
+    listGroupedSessionsFromDaemon,
     loadSettingsSnapshot,
-    loadSessionDetail,
+    loadSessionDetailFromDaemon,
     mergePullRequest,
     logoutProvider,
+    logoutProviderViaDaemon,
     readRemoteFile,
     refreshRepoStatus,
     runRemoteBash,
-    writeRemoteFile
+    writeRemoteFile,
+    runAgentTurn,
+    resolvePermission as resolveTurnPermission,
+    cancelTurn,
+    createSession,
+    loadDefaultWorkspace
   } from "./lib/api/desktop";
+  import {
+    subscribeSessionEvents,
+    type SessionStreamEvent
+  } from "./lib/api/sessionEvents";
+  import {
+    currentDaemonClient,
+    ensureLocalDaemonClient,
+    type ConnectionState
+  } from "./lib/api/daemonClient";
+  import type { UnlistenFn } from "@tauri-apps/api/event";
   import type {
-    AppView,
     DesktopPreferences,
     FolderGroup,
     PermissionTimelineItem,
@@ -32,28 +70,72 @@
     TimelineItem
   } from "./lib/types";
 
-  let groups: FolderGroup[] = [];
-  let selectedSession: SessionListItem | null = null;
-  let sessionDetail: SessionDetail | null = null;
-  let settingsSnapshot: SettingsSnapshot | null = null;
-  let view: AppView = "workspace";
-  let statusMessage = "Desktop workspace ready.";
-  let groupsLoading = true;
-  let sessionLoading = false;
-  let settingsLoading = false;
-  let actionBusy = false;
-  let authBusyProviderId: string | null = null;
-  let authError: string | null = null;
-  let remoteOperation: RemoteOperation | null = null;
-  let remoteBusy = false;
-  let preferredSessionId: string | null = null;
-  let remotePassword = "";
-  let submittedMessages: TimelineItem[] = [];
-  let dismissedPermissionIds: string[] = [];
+  // ─────────────────────────────────────────────────────────────
+  // Shell state
+  // ─────────────────────────────────────────────────────────────
+  let tweaks = $state<Tweaks>({ ...defaultTweaks });
+  let onboarding = $state(true);
+  // Dev bypass so we can screenshot every screen without live auth.
+  const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const skipOnboarding =
+    typeof window !== "undefined" &&
+    (urlParams.has("skipOnboarding") ||
+      window.localStorage.getItem("puffer-desktop:skip-onboarding") === "1");
+  const forceOnboarding = urlParams.has("forceOnboarding");
+  let statusMessage = $state("Desktop workspace ready.");
+  // Auto-dismiss the status strip a few seconds after each message so it
+  // doesn't linger in the sidebar corner looking like a truncated widget.
+  let statusDismissTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    // Re-arm whenever `statusMessage` changes to a non-default value.
+    if (!statusMessage || statusMessage === "Desktop workspace ready.") return;
+    if (statusDismissTimer) clearTimeout(statusDismissTimer);
+    statusDismissTimer = setTimeout(() => {
+      statusMessage = "Desktop workspace ready.";
+      statusDismissTimer = null;
+    }, 4000);
+  });
+  let showWorkspacePicker = $state(false);
 
+  // Backend-backed state
+  let groups = $state<FolderGroup[]>([]);
+  let groupsLoading = $state(false);
+  let selectedSession = $state<SessionListItem | null>(null);
+  let sessionDetail = $state<SessionDetail | null>(null);
+  let sessionLoading = $state(false);
+
+  // Drill-in: when a workspace agent card is clicked we open AgentDetail in
+  // the main stage. If the mock agent isn't mapped to a real session we fall
+  // back to the first available one so the Chat tab has data to render.
+  let openAgent = $state<MockAgent | null>(null);
+  let submittedMessages = $state<TimelineItem[]>([]);
+  let dismissedPermissionIds = $state<string[]>([]);
+
+  // Live turn state: items synthesized from streaming events while a turn is
+  // running. When the turn finishes we reload the session detail so the real
+  // persisted transcript replaces these placeholders.
+  let currentTurnId = $state<string | null>(null);
+  let liveStreamItems = $state<TimelineItem[]>([]);
+  let turnPermissionLookup = $state<Record<string, { turnId: string; requestId: string }>>({});
+  let sessionEventUnlisten: UnlistenFn | null = null;
+  let subscribedSessionId: string | null = null;
+  let connectionState = $state<ConnectionState>("idle");
+
+  let settingsSnapshot = $state<SettingsSnapshot | null>(null);
+  let settingsLoading = $state(false);
+  let authBusyProviderId = $state<string | null>(null);
+  let authError = $state<string | null>(null);
+  let actionBusy = $state(false);
+  let remoteOperation = $state<RemoteOperation | null>(null);
+  let remoteBusy = $state(false);
+  let remotePassword = $state("");
+
+  // Tauri is stateless: preferences live in Puffer's workspace config, not
+  // here. We keep an in-memory copy to drive the Settings pane but never
+  // persist it — relaunching the app re-reads from the daemon.
   const defaultDesktopPreferences: DesktopPreferences = {
-    rememberSession: true,
-    rememberInspectorLayout: true,
+    rememberSession: false,
+    rememberInspectorLayout: false,
     launchInspectorOpen: true,
     defaultInspectorTab: "latest-diff",
     defaultInspectorWidth: 50,
@@ -61,96 +143,200 @@
     remoteTarget: "",
     remoteCwd: ""
   };
-  let desktopPreferences: DesktopPreferences = { ...defaultDesktopPreferences };
+  let desktopPreferences = $state<DesktopPreferences>({ ...defaultDesktopPreferences });
 
-  const storageKeys = {
-    sessionId: "puffer-desktop:selected-session",
-    inspectorOpen: "puffer-desktop:inspector-open",
-    inspectorTab: "puffer-desktop:inspector-tab",
-    inspectorWidth: "puffer-desktop:inspector-width",
-    prefs: "puffer-desktop:preferences"
-  } as const;
+  // The daemon's default workspace (host, path). Shown in the sidebar /
+  // workspace header; new sessions default to this cwd.
+  let defaultWorkspaceCwd = $state<string>("");
 
-  $: baseTimeline = sessionDetail?.timeline ?? [];
-  $: timeline = [...baseTimeline, ...submittedMessages];
-  $: conversationTimeline = timeline.filter((item) => item.kind !== "permission" && item.kind !== "diff");
-  $: pendingPermissions = timeline.filter(
-    (item) => item.kind === "permission" && !dismissedPermissionIds.includes(item.id)
-  ) as PermissionTimelineItem[];
-  $: pendingPermissionCount = timeline.filter((item) => item.kind === "permission").length;
-  $: toolCount = timeline.filter((item) => item.kind === "tool").length;
-  $: diffCount = timeline.filter((item) => item.kind === "diff").length;
-  $: latestDiffLineCount = sessionDetail?.latestDiff?.patch.split("\n").length ?? 0;
-  $: compactDiff = latestDiffLineCount > 0 && latestDiffLineCount <= 18;
-  $: remoteConnection = {
+  let remoteConnection = $derived<RemoteConnection>({
     enabled:
       desktopPreferences.remoteEnabled && desktopPreferences.remoteTarget.trim().length > 0,
     target: desktopPreferences.remoteTarget.trim(),
     cwd: desktopPreferences.remoteCwd.trim(),
     password: remotePassword
-  } satisfies RemoteConnection;
+  });
 
-  function buildPrDefaults(session: SessionListItem) {
-    return {
-      title: session.displayName ?? session.title,
-      body: [
-        `Generated from session: ${session.title}`,
-        session.note ? `Context: ${session.note}` : null
-      ]
-        .filter(Boolean)
-        .join("\n")
-    };
-  }
+  // ─────────────────────────────────────────────────────────────
+  // Active agent mapping (sessions → sidebar agents)
+  //   review  = open PR OR pending manual approval
+  //   running = active work (unresolved permission / uncommitted changes)
+  //   done    = merged / clean on a branch with closed PR
+  //   idle    = otherwise
+  // For Phase 1 we can only distinguish by session metadata at this shell level,
+  // so we mark everything idle until AgentDetail in Phase 2 has per-session state.
+  // ─────────────────────────────────────────────────────────────
+  let combinedTimeline = $derived<TimelineItem[]>([
+    ...(sessionDetail?.timeline ?? []),
+    ...submittedMessages,
+    ...liveStreamItems
+  ]);
+  let pendingPermissions = $derived<PermissionTimelineItem[]>(
+    combinedTimeline.filter(
+      (t): t is PermissionTimelineItem =>
+        t.kind === "permission" && !dismissedPermissionIds.includes(t.id)
+    )
+  );
 
-  function restoreDesktopState() {
-    if (typeof window === "undefined") {
-      return;
+  let realAgents = $derived<ActiveAgent[]>(
+    groups.flatMap((g) =>
+      g.sessions.slice(0, 3).map((s) => ({
+        id: s.id,
+        name: (s.displayName ?? s.title).slice(0, 24) || "session",
+        title: s.title,
+        project: g.label,
+        branch: "",
+        state: "idle" as AgentState
+      }))
+    )
+  );
+
+  let mockSidebarAgents = $derived<ActiveAgent[]>(
+    MOCK_AGENTS.map((a) => ({
+      id: a.id,
+      name: a.name,
+      title: a.title,
+      project: MOCK_PROJECTS.find((p) => p.id === a.project)?.name ?? a.project,
+      branch: a.branch,
+      state: (a.status === "review" ? "idle" : (a.status as AgentState))
+    }))
+  );
+
+  let activeAgents = $derived<ActiveAgent[]>(skipOnboarding ? mockSidebarAgents : realAgents);
+
+  let userChip = $derived<UserChip | null>(
+    skipOnboarding
+      ? { initials: "YO", name: "You", meta: "Pro plan · 18 / 24 agents" }
+      : settingsSnapshot?.auth.length
+        ? {
+            initials: (settingsSnapshot.auth[0].email ?? "you").slice(0, 2).toUpperCase(),
+            name: settingsSnapshot.auth[0].email ?? "You",
+            meta: `${settingsSnapshot.auth[0].providerId}${
+              settingsSnapshot.auth[0].planType ? " · " + settingsSnapshot.auth[0].planType : ""
+            }`
+          }
+        : null
+  );
+
+  const mockTitleTabs: TitleTab[] = [
+    { id: "tab1", title: "Fix proration in webhook", state: "running" },
+    { id: "tab2", title: "Add dark-mode toggle",     state: "thinking" },
+    { id: "tab3", title: "Bump terraform aws",       state: "awaiting" }
+  ];
+
+  let tabs = $derived<TitleTab[]>(
+    skipOnboarding || forceOnboarding
+      ? mockTitleTabs
+      : selectedSession
+        ? [
+            {
+              id: selectedSession.id,
+              title: selectedSession.displayName ?? selectedSession.title,
+              state: tweaks.agentState
+            }
+          ]
+        : []
+  );
+  let activeTab = $state("tab1");
+  $effect(() => {
+    if (!skipOnboarding && selectedSession) activeTab = selectedSession.id;
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // Init
+  // ─────────────────────────────────────────────────────────────
+  onMount(() => {
+    tweaks = loadTweaks();
+    applyTweaksToDocument(tweaks);
+    if (forceOnboarding) {
+      onboarding = true;
+    } else if (skipOnboarding) {
+      onboarding = false;
     }
-    const rawPrefs = window.localStorage.getItem(storageKeys.prefs);
-    if (rawPrefs) {
-      try {
-        desktopPreferences = {
-          ...defaultDesktopPreferences,
-          ...JSON.parse(rawPrefs)
-        };
-      } catch {
-        desktopPreferences = { ...defaultDesktopPreferences };
+    if (typeof window !== "undefined") {
+      const debugOpen = window.localStorage.getItem("puffer-desktop:debug-open-agent");
+      if (debugOpen) {
+        const m = MOCK_AGENTS.find((a) => a.id === debugOpen);
+        if (m) {
+          openAgent = m;
+          tweaks = { ...tweaks, screen: "workspace" };
+        }
       }
     }
-    preferredSessionId = desktopPreferences.rememberSession
-      ? window.localStorage.getItem(storageKeys.sessionId)
-      : null;
-  }
+    void init();
+  });
 
-  function persistDesktopState() {
-    if (typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(storageKeys.prefs, JSON.stringify(desktopPreferences));
-    if (desktopPreferences.rememberSession && selectedSession?.id) {
-      window.localStorage.setItem(storageKeys.sessionId, selectedSession.id);
-    } else if (!desktopPreferences.rememberSession) {
-      window.localStorage.removeItem(storageKeys.sessionId);
-    }
-  }
+  $effect(() => {
+    applyTweaksToDocument(tweaks);
+    persistTweaks(tweaks); // Tweaks are renderer ergonomics, not workspace data.
+  });
 
-  async function openSettingsView() {
-    view = "settings";
+  async function init() {
+    void loadDefaultWorkspace()
+      .then((info) => {
+        defaultWorkspaceCwd = info.cwd;
+      })
+      .catch(() => {
+        /* daemon might be remote / unavailable; keep default empty */
+      });
+    // Observe daemon connection state so the banner reflects reality.
+    void ensureLocalDaemonClient()
+      .then((client) => {
+        client.onConnectionChange((s) => {
+          connectionState = s;
+          // When we reconnect after a drop, refresh groups + re-open the
+          // selected session so the UI catches up.
+          if (s === "open" && !onboarding) {
+            void refreshGroups();
+            if (selectedSession) void openSession(selectedSession);
+          }
+        });
+        // Any time a session is created or a turn finishes, refresh the
+        // workspace board + sidebar. Coalesced by `refreshGroups`'s own
+        // loading guard.
+        client.on("workspace:sessions:changed", () => {
+          void refreshGroups();
+        });
+      })
+      .catch(() => {
+        /* connection may be unavailable (web preview); stay idle */
+      });
     await refreshSettings();
+    if (!onboarding) {
+      await refreshGroups();
+      // When drilled into a mock agent via the screenshot harness (or the
+      // user just landed after login without picking a session), auto-open
+      // the most recent real session so the Chat tab renders a transcript
+      // instead of the empty state.
+      if (!selectedSession) {
+        const firstReal = groups
+          .flatMap((g) => g.sessions)
+          .sort((a, b) => b.updatedAtMs - a.updatedAtMs)[0];
+        if (firstReal) {
+          await openSession(firstReal);
+        }
+      }
+    }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // Handlers — mostly lifted from the prior App.svelte
+  // ─────────────────────────────────────────────────────────────
   async function refreshSettings() {
     settingsLoading = true;
     try {
       settingsSnapshot = await loadSettingsSnapshot(remoteConnection);
-      if ((settingsSnapshot.auth?.length ?? 0) === 0) {
-        view = "login";
-      } else if (view === "login") {
-        view = "workspace";
+      if (forceOnboarding) {
+        onboarding = true;
+      } else if (skipOnboarding) {
+        onboarding = false;
+      } else {
+        onboarding = (settingsSnapshot.auth?.length ?? 0) === 0;
       }
       statusMessage = "Settings snapshot refreshed.";
     } catch (error) {
       statusMessage = String(error);
+      if (skipOnboarding) onboarding = false;
     } finally {
       settingsLoading = false;
     }
@@ -161,9 +347,10 @@
     authError = null;
     try {
       settingsSnapshot = await loginWithOauth(providerId, remoteConnection);
-      view = "workspace";
+      onboarding = false;
+      tweaks = { ...tweaks, screen: "workspace" };
       statusMessage = `Logged in to ${providerId}.`;
-      await refreshGroups(preferredSessionId ?? undefined);
+      await refreshGroups();
     } catch (error) {
       authError = String(error);
       statusMessage = authError;
@@ -176,10 +363,20 @@
     authBusyProviderId = providerId;
     authError = null;
     try {
-      settingsSnapshot = await loginWithApiKey(providerId, apiKey, remoteConnection);
-      view = "workspace";
+      // Prefer the daemon path; it reuses the workspace auth store and
+      // lets remote daemons (SSH) pick up credentials server-side. Falls
+      // back to the Tauri-invoke path inside the wrapper when no daemon
+      // is reachable. For genuinely remote connections we stay on the
+      // Tauri path so `remoteConnection` (SSH command) is honored.
+      if (remoteConnection.enabled) {
+        settingsSnapshot = await loginWithApiKey(providerId, apiKey, remoteConnection);
+      } else {
+        settingsSnapshot = await loginWithApiKeyViaDaemon(providerId, apiKey);
+      }
+      onboarding = false;
+      tweaks = { ...tweaks, screen: "workspace" };
       statusMessage = `Stored API key for ${providerId}.`;
-      await refreshGroups(preferredSessionId ?? undefined);
+      await refreshGroups();
     } catch (error) {
       authError = String(error);
       statusMessage = authError;
@@ -192,13 +389,17 @@
     authBusyProviderId = providerId;
     authError = null;
     try {
-      settingsSnapshot = await logoutProvider(providerId, remoteConnection);
+      if (remoteConnection.enabled) {
+        settingsSnapshot = await logoutProvider(providerId, remoteConnection);
+      } else {
+        settingsSnapshot = await logoutProviderViaDaemon(providerId);
+      }
       statusMessage = `Logged out from ${providerId}.`;
       if ((settingsSnapshot.auth?.length ?? 0) === 0) {
         groups = [];
         selectedSession = null;
         sessionDetail = null;
-        view = "login";
+        onboarding = true;
       }
     } catch (error) {
       authError = String(error);
@@ -208,10 +409,89 @@
     }
   }
 
-  async function handleRemoteBash(command: string) {
-    if (!remoteConnection.enabled) {
-      return;
+  async function refreshGroups() {
+    groupsLoading = true;
+    try {
+      groups = await listGroupedSessionsFromDaemon();
+      statusMessage =
+        groups.length === 0
+          ? "No sessions in this workspace yet."
+          : `${groups.length} project${groups.length === 1 ? "" : "s"} loaded.`;
+    } catch (error) {
+      statusMessage = String(error);
+    } finally {
+      groupsLoading = false;
     }
+  }
+
+  async function openSession(session: SessionListItem) {
+    sessionLoading = true;
+    try {
+      const detail = await loadSessionDetailFromDaemon(session.id);
+      selectedSession = detail.session;
+      sessionDetail = detail;
+      // New session lands: drop any lingering live-stream items + local draft
+      // so the composer feels fresh.
+      submittedMessages = [];
+      liveStreamItems = [];
+      turnPermissionLookup = {};
+      statusMessage = `Loaded ${detail.timeline.length} conversation items.`;
+    } catch (error) {
+      statusMessage = String(error);
+    } finally {
+      sessionLoading = false;
+    }
+  }
+
+  /** Creates a blank session via the daemon in the given cwd (or the daemon's
+   *  default workspace if unset) and opens AgentDetail on it. The workspace
+   *  list refreshes so the new session appears as an agent card. */
+  async function handleNewAgent(cwd: string) {
+    try {
+      const created = await createSession(cwd || undefined);
+      await refreshGroups();
+      const newSession =
+        groups.flatMap((g) => g.sessions).find((s) => s.id === created.sessionId) ?? null;
+      if (newSession) {
+        await openSession(newSession);
+      } else {
+        // Fall back to a synthetic SessionListItem so the AgentDetail can
+        // still open; reloading later will pick up the real record.
+        const fallback: SessionListItem = {
+          id: created.sessionId,
+          displayName: null,
+          title: "New agent",
+          cwd: created.cwd,
+          folderPath: created.cwd,
+          updatedAtMs: created.createdAtMs,
+          createdAtMs: created.createdAtMs,
+          eventCount: 0,
+          slug: null,
+          tags: [],
+          note: null,
+          parentSessionId: null
+        };
+        await openSession(fallback);
+      }
+      openAgent = null; // blank chat, no mock identity
+      tweaks = { ...tweaks, screen: "workspace" };
+      statusMessage = `New agent in ${cwd || defaultWorkspaceCwd || "default workspace"}.`;
+    } catch (error) {
+      statusMessage = `Failed to create session: ${error}`;
+    }
+  }
+
+  function updateDesktopPreference<K extends keyof DesktopPreferences>(key: K, value: DesktopPreferences[K]) {
+    desktopPreferences = { ...desktopPreferences, [key]: value };
+  }
+
+  function resetDesktopPreferences() {
+    desktopPreferences = { ...defaultDesktopPreferences };
+    statusMessage = "Desktop preferences reset.";
+  }
+
+  async function handleRemoteBash(command: string) {
+    if (!remoteConnection.enabled) return;
     remoteBusy = true;
     try {
       remoteOperation = await runRemoteBash(remoteConnection, command);
@@ -225,9 +505,7 @@
   }
 
   async function handleRemoteRead(path: string) {
-    if (!remoteConnection.enabled) {
-      return;
-    }
+    if (!remoteConnection.enabled) return;
     remoteBusy = true;
     try {
       remoteOperation = await readRemoteFile(remoteConnection, path);
@@ -241,9 +519,7 @@
   }
 
   async function handleRemoteWrite(path: string, contents: string) {
-    if (!remoteConnection.enabled) {
-      return;
-    }
+    if (!remoteConnection.enabled) return;
     remoteBusy = true;
     try {
       remoteOperation = await writeRemoteFile(remoteConnection, path, contents);
@@ -256,121 +532,75 @@
     }
   }
 
-  function updateDesktopPreference<K extends keyof DesktopPreferences>(
-    key: K,
-    value: DesktopPreferences[K]
-  ) {
-    desktopPreferences = { ...desktopPreferences, [key]: value };
+  // Phase 2+: these aren't surfaced yet in the new UI, but we keep the handlers
+  // live so PR / repo actions continue to work through whatever embeds them.
+  // Referenced via the noop below so TS/svelte-check don't treat them as dead.
+  const _keepAlive = { createPullRequest, mergePullRequest, refreshRepoStatus, cancelTurn };
+  void _keepAlive;
+
+  function updateTweak<K extends keyof Tweaks>(key: K, value: Tweaks[K]) {
+    tweaks = { ...tweaks, [key]: value };
   }
 
-  function resetDesktopPreferences() {
-    desktopPreferences = { ...defaultDesktopPreferences };
-    preferredSessionId = null;
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(storageKeys.sessionId);
-      window.localStorage.setItem(storageKeys.prefs, JSON.stringify(desktopPreferences));
-    }
-    statusMessage = "Desktop preferences reset.";
+  function onSelectScreen(id: ScreenId) {
+    tweaks = { ...tweaks, screen: id };
   }
 
-  async function openSession(session: SessionListItem) {
-    sessionLoading = true;
-    try {
-      const detail = await loadSessionDetail(session.id, remoteConnection);
-      selectedSession = detail.session;
-      sessionDetail = detail;
-      submittedMessages = [];
-      dismissedPermissionIds = [];
-      statusMessage = `Loaded ${detail.timeline.length} conversation items.`;
-    } catch (error) {
-      statusMessage = String(error);
-    } finally {
-      sessionLoading = false;
-    }
+  function onSelectTab(id: string) {
+    activeTab = id;
   }
 
-  async function refreshGroups(preferredSessionId?: string) {
-    groupsLoading = true;
-    try {
-      groups = await listGroupedSessions(remoteConnection);
-      const allSessions = groups.flatMap((group) => group.sessions);
-      const selectedSessionId = selectedSession?.id ?? null;
-      const nextSession =
-        allSessions.find((session) => session.id === preferredSessionId) ??
-        (selectedSessionId
-          ? allSessions.find((session) => session.id === selectedSessionId)
-          : null) ??
-        allSessions[0] ??
-        null;
-
-      if (!nextSession) {
-        selectedSession = null;
-        sessionDetail = null;
-        submittedMessages = [];
-        dismissedPermissionIds = [];
-        statusMessage = "No sessions found in this workspace yet.";
-        return;
-      }
-
-      await openSession(nextSession);
-    } catch (error) {
-      statusMessage = String(error);
-    } finally {
-      groupsLoading = false;
-    }
-  }
-
-  async function refreshSelectedRepo() {
-    if (!selectedSession || !sessionDetail) {
+  function onOpenAgent(id: string) {
+    // First: a real session id (from the sidebar's active-agents list).
+    const realTarget = groups.flatMap((g) => g.sessions).find((s) => s.id === id);
+    if (realTarget) {
+      openAgent = null;
+      tweaks = { ...tweaks, screen: "workspace" };
+      void openSession(realTarget);
       return;
     }
-    actionBusy = true;
-    try {
-      const repoStatus = await refreshRepoStatus(selectedSession.id, remoteConnection);
-      sessionDetail = { ...sessionDetail, repoStatus };
-      statusMessage = "Repository status refreshed.";
-    } catch (error) {
-      statusMessage = String(error);
-    } finally {
-      actionBusy = false;
+    // Otherwise: a mock agent id (from a workspace board agent card). We open
+    // the AgentDetail shell and load whichever real session we have so the
+    // Chat tab has content; backend wiring comes later.
+    const mock = MOCK_AGENTS.find((a) => a.id === id) ?? null;
+    if (mock) {
+      openAgent = mock;
+      tweaks = { ...tweaks, screen: "workspace" };
+      const firstReal = groups.flatMap((g) => g.sessions)[0];
+      if (firstReal && !selectedSession) {
+        void openSession(firstReal);
+      }
     }
   }
 
-  async function runRepoAction(action: "create" | "merge") {
-    if (!selectedSession || !sessionDetail) {
+  function onCloseAgent() {
+    openAgent = null;
+  }
+
+  /** Fired by ConnectProjectModal once a clone+create has landed. Refreshes
+   *  the workspace board and drills straight into the new session. */
+  async function handleSessionReady(sessionId: string) {
+    // Refresh the default workspace info in case we just connected to a
+    // remote daemon — the workspace root changed.
+    void loadDefaultWorkspace()
+      .then((info) => {
+        defaultWorkspaceCwd = info.cwd;
+      })
+      .catch(() => {});
+    await refreshGroups();
+    const session = groups.flatMap((g) => g.sessions).find((s) => s.id === sessionId);
+    if (session) {
+      await openSession(session);
+    }
+    openAgent = null;
+    tweaks = { ...tweaks, screen: "workspace" };
+  }
+
+  async function submitMessage(message: string) {
+    if (!selectedSession) {
+      statusMessage = "Select a session to send a message.";
       return;
     }
-
-    actionBusy = true;
-    try {
-      if (action === "create") {
-        const defaults = buildPrDefaults(selectedSession);
-        const result = await createPullRequest(
-          selectedSession.id,
-          defaults.title,
-          defaults.body,
-          remoteConnection
-        );
-        sessionDetail = { ...sessionDetail, repoStatus: result.repoStatus };
-        statusMessage = result.message;
-      } else {
-        const result = await mergePullRequest(
-          selectedSession.id,
-          sessionDetail.repoStatus.pullRequest?.number,
-          "merge",
-          remoteConnection
-        );
-        sessionDetail = { ...sessionDetail, repoStatus: result.repoStatus };
-        statusMessage = result.message;
-      }
-    } catch (error) {
-      statusMessage = String(error);
-    } finally {
-      actionBusy = false;
-    }
-  }
-
-  function submitMessage(message: string) {
     const now = Date.now();
     submittedMessages = [
       ...submittedMessages,
@@ -383,100 +613,378 @@
         meta: []
       }
     ];
-    statusMessage = "Added a local draft message to the transcript.";
+    try {
+      const turnId = await runAgentTurn(selectedSession.id, message);
+      currentTurnId = turnId;
+      statusMessage = `Agent turn ${turnId.slice(0, 8)} started.`;
+    } catch (error) {
+      statusMessage = `run_agent_turn failed: ${error}`;
+    }
   }
 
-  function resolvePermission(permissionId: string, choice: string) {
+  function mapPermissionAction(choice: string): "allow_once" | "allow_session" | "allow_all_session" | "deny" {
+    const n = choice.toLowerCase();
+    if (n.includes("always") && n.includes("session")) return "allow_all_session";
+    if (n.includes("always")) return "allow_all_session";
+    if (n.includes("session")) return "allow_session";
+    if (n.includes("deny") || n.includes("never")) return "deny";
+    return "allow_once";
+  }
+
+  async function resolvePermission(permissionId: string, choice: string) {
     dismissedPermissionIds = [...dismissedPermissionIds, permissionId];
-    statusMessage = `${choice} selected for the pending permission request.`;
+    const mapping = turnPermissionLookup[permissionId];
+    if (mapping) {
+      try {
+        await resolveTurnPermission(mapping.turnId, mapping.requestId, mapPermissionAction(choice));
+        statusMessage = `${choice} sent to agent.`;
+      } catch (error) {
+        statusMessage = `resolve_permission failed: ${error}`;
+      }
+      const { [permissionId]: _drop, ...rest } = turnPermissionLookup;
+      turnPermissionLookup = rest;
+    } else {
+      statusMessage = `${choice} selected (no in-flight turn).`;
+    }
   }
 
-  onMount(() => {
-    restoreDesktopState();
-    void (async () => {
-      await refreshSettings();
-      if (view !== "login") {
-        await refreshGroups(preferredSessionId ?? undefined);
-      }
-    })();
-  });
+  function appendLive(item: TimelineItem) {
+    liveStreamItems = [...liveStreamItems, item];
+  }
 
-  $: persistDesktopState();
+  function upsertStreamingAssistant(delta: string) {
+    const last = liveStreamItems[liveStreamItems.length - 1];
+    if (last && last.kind === "assistant" && last.id.startsWith("live-stream-assistant")) {
+      const updated = { ...last, body: last.body + delta, summary: last.body + delta };
+      liveStreamItems = [...liveStreamItems.slice(0, -1), updated];
+    } else {
+      appendLive({
+        id: `live-stream-assistant-${Date.now()}`,
+        kind: "assistant",
+        title: "Assistant",
+        summary: delta,
+        body: delta,
+        meta: []
+      });
+    }
+  }
+
+  function handleSessionEvent(sid: string, ev: SessionStreamEvent) {
+    if (!selectedSession || selectedSession.id !== sid) return;
+    switch (ev.type) {
+      case "turn-start":
+        liveStreamItems = [];
+        break;
+      case "text-delta":
+        upsertStreamingAssistant(ev.delta);
+        break;
+      case "tool-calls-requested":
+        // Render an immediate pending card per requested call so the user
+        // sees *what* the agent is doing before it finishes. The id is
+        // `live-tool-<callId>` — we replace in place when `tool-invocations`
+        // arrives with the matching callId.
+        for (const req of ev.requests) {
+          const id = `live-tool-${req.callId}`;
+          if (liveStreamItems.some((x) => x.id === id)) continue;
+          appendLive({
+            id,
+            kind: "tool",
+            title: req.toolId,
+            summary: `${req.toolId} · running`,
+            body: "",
+            meta: [],
+            toolName: req.toolId,
+            status: "running",
+            input: req.input,
+            output: "",
+            inputJson: safeParseJson(req.input)
+          });
+        }
+        break;
+      case "tool-invocations":
+        for (const inv of ev.invocations) {
+          const id = `live-tool-${inv.callId}`;
+          const existingIdx = liveStreamItems.findIndex((x) => x.id === id);
+          const payload: TimelineItem = {
+            id,
+            kind: "tool",
+            title: inv.toolId,
+            summary: `${inv.toolId} · ${inv.success ? "success" : "error"}`,
+            body: inv.output,
+            meta: [],
+            toolName: inv.toolId,
+            status: inv.success ? "success" : "error",
+            input: inv.input,
+            output: inv.output,
+            inputJson: safeParseJson(inv.input)
+          };
+          if (existingIdx >= 0) {
+            // Upgrade the pending card in place. Svelte needs a new array
+            // reference to observe the change.
+            liveStreamItems = [
+              ...liveStreamItems.slice(0, existingIdx),
+              payload,
+              ...liveStreamItems.slice(existingIdx + 1)
+            ];
+          } else {
+            appendLive(payload);
+          }
+        }
+        break;
+      case "permission-request": {
+        const id = `live-perm-${ev.requestId}`;
+        appendLive({
+          id,
+          kind: "permission",
+          title: `Permission · ${ev.toolId}`,
+          summary: ev.summary,
+          body: ev.reason ?? ev.summary,
+          meta: [],
+          toolName: ev.toolId,
+          status: "pending",
+          permissionDialog: {
+            state: "pending",
+            reason: ev.reason ?? ev.summary,
+            summary: ev.summary,
+            inputText: null,
+            toolName: ev.toolId,
+            choices: ["Allow once", "Always allow", "Deny"]
+          },
+          scopeLabel: null,
+          choices: ["Allow once", "Always allow", "Deny"]
+        });
+        turnPermissionLookup = {
+          ...turnPermissionLookup,
+          [id]: { turnId: ev.turnId, requestId: ev.requestId }
+        };
+        break;
+      }
+      case "turn-complete":
+      case "turn-error":
+        currentTurnId = null;
+        // Reload the persisted transcript; then drop live items.
+        if (selectedSession) {
+          void openSession(selectedSession).then(() => {
+            liveStreamItems = [];
+            submittedMessages = [];
+          });
+        }
+        break;
+    }
+  }
+
+  function safeParseJson(text: string): Record<string, unknown> | null {
+    try {
+      const v = JSON.parse(text);
+      return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function ensureSessionSubscription() {
+    if (!selectedSession) {
+      if (sessionEventUnlisten) {
+        sessionEventUnlisten();
+        sessionEventUnlisten = null;
+      }
+      subscribedSessionId = null;
+      return;
+    }
+    if (subscribedSessionId === selectedSession.id && sessionEventUnlisten) return;
+    if (sessionEventUnlisten) sessionEventUnlisten();
+    const sid = selectedSession.id;
+    subscribedSessionId = sid;
+    sessionEventUnlisten = await subscribeSessionEvents(sid, (ev) => handleSessionEvent(sid, ev));
+  }
+
+  $effect(() => {
+    void ensureSessionSubscription();
+  });
 </script>
 
-<div class:single-column={view !== "workspace"} class="shell">
-  {#if view === "workspace"}
-    <SessionSidebar
-      groups={groups}
-      activeSessionId={selectedSession?.id ?? null}
-      loading={groupsLoading}
-      onSelect={(session) => void openSession(session)}
-    />
+<div class="pf-mac">
+  <TitleBar
+    {tabs}
+    {activeTab}
+    onSelectTab={onSelectTab}
+    onOpenSettings={onboarding ? undefined : () => onSelectScreen("settings")}
+  />
+  {#if onboarding}
+    <div class="pf-app-body">
+      <div class="pf-main">
+        <div class="pf-stage">
+          <Onboarding
+            snapshot={settingsSnapshot}
+            loading={settingsLoading}
+            remoteEnabled={remoteConnection.enabled}
+            busyProviderId={authBusyProviderId}
+            errorMessage={authError}
+            onLoginOauth={(providerId) => void handleOauthLogin(providerId)}
+            onLoginApiKey={(providerId, apiKey) => void handleApiKeyLogin(providerId, apiKey)}
+            onRefresh={() => void refreshSettings()}
+            forceRepoStep={forceOnboarding}
+          />
+        </div>
+      </div>
+    </div>
+  {:else}
+    <div class="pf-app-body">
+      {#if tweaks.showSidebar}
+        <Sidebar
+          screen={tweaks.screen}
+          onSelectScreen={onSelectScreen}
+          agents={activeAgents}
+          activeAgentId={selectedSession?.id ?? null}
+          onOpenAgent={onOpenAgent}
+          user={userChip}
+        />
+      {/if}
+      <div class="pf-main">
+        <div class="pf-stage">
+          {#if tweaks.screen === "workspace"}
+            {#if openAgent}
+              <AgentDetail
+                agent={openAgent}
+                session={selectedSession}
+                sessionDetail={sessionDetail}
+                timeline={combinedTimeline}
+                pendingPermissions={pendingPermissions}
+                loading={sessionLoading}
+                turnRunning={!!currentTurnId}
+                onBack={onCloseAgent}
+                onSubmitMessage={submitMessage}
+                onResolvePermission={resolvePermission}
+                onCancelTurn={() => { if (currentTurnId) void cancelTurn(currentTurnId); }}
+              />
+            {:else}
+              <Workspace
+                groups={skipOnboarding ? undefined : groups}
+                defaultWorkspaceCwd={defaultWorkspaceCwd}
+                loading={groupsLoading}
+                onOpenAgent={(id) => onOpenAgent(id)}
+                onOpenBoard={(id) => { console.log("open board", id); }}
+                onNewAgent={(cwd) => handleNewAgent(cwd)}
+                onSessionReady={(sessionId) => handleSessionReady(sessionId)}
+                onOpenWorkspacePicker={() => (showWorkspacePicker = true)}
+              />
+            {/if}
+          {:else if tweaks.screen === "pipelines"}
+            <Pipelines />
+          {:else if tweaks.screen === "deployments"}
+            <Deployments />
+          {:else if tweaks.screen === "settings"}
+            <Settings
+              snapshot={settingsSnapshot}
+              loading={settingsLoading}
+              preferences={desktopPreferences}
+              remoteEnabled={remoteConnection.enabled}
+              remotePassword={remotePassword}
+              remoteBusy={remoteBusy}
+              remoteResult={remoteOperation}
+              onPreferenceChange={updateDesktopPreference}
+              onRemotePasswordChange={(value) => (remotePassword = value)}
+              onResetPreferences={resetDesktopPreferences}
+              onRefresh={() => void refreshSettings()}
+              onLogout={(providerId) => void handleLogout(providerId)}
+              onApiKeyLogin={(providerId, apiKey) => void handleApiKeyLogin(providerId, apiKey)}
+              onRunRemoteBash={(command) => void handleRemoteBash(command)}
+              onReadRemoteFile={(path) => void handleRemoteRead(path)}
+              onWriteRemoteFile={(path, contents) => void handleRemoteWrite(path, contents)}
+            />
+          {/if}
+        </div>
+      </div>
+    </div>
   {/if}
 
-  <main class="workspace">
-    {#if view === "workspace"}
-      <div
-        class:loading={sessionLoading}
-        class:has-diff={Boolean(sessionDetail?.latestDiff)}
-        class:no-diff={!sessionDetail?.latestDiff}
-        class:compact-diff={compactDiff}
-        class="content workspace-split"
-      >
-        <ConversationPane
-          session={selectedSession}
-          timeline={conversationTimeline}
-          loading={sessionLoading}
-          noDiffMessage={sessionDetail?.latestDiff ? null : "No diff captured in this session yet."}
-          {pendingPermissions}
-          onSubmitMessage={submitMessage}
-          onResolvePermission={resolvePermission}
-        />
-
-        {#if sessionDetail?.latestDiff}
-          <section class="diff-pane">
-            <DiffView diff={sessionDetail.latestDiff} />
-          </section>
-        {/if}
-
-        {#if sessionLoading}
-          <div class="loading-overlay">
-            <div class="loading-card">
-              <strong>Loading session</strong>
-              <span>Refreshing transcript, diffs, and repository state.</span>
-            </div>
-          </div>
-        {/if}
-      </div>
-    {:else if view === "settings"}
-      <SettingsView
-        snapshot={settingsSnapshot}
-        loading={settingsLoading}
-        preferences={desktopPreferences}
-        remoteEnabled={remoteConnection.enabled}
-        remotePassword={remotePassword}
-        remoteBusy={remoteBusy}
-        remoteResult={remoteOperation}
-        onPreferenceChange={updateDesktopPreference}
-        onRemotePasswordChange={(value) => (remotePassword = value)}
-        onResetPreferences={resetDesktopPreferences}
-        onRefresh={() => void refreshSettings()}
-        onLogout={(providerId) => void handleLogout(providerId)}
-        onRunRemoteBash={(command) => void handleRemoteBash(command)}
-        onReadRemoteFile={(path) => void handleRemoteRead(path)}
-        onWriteRemoteFile={(path, contents) => void handleRemoteWrite(path, contents)}
-      />
-    {:else}
-      <LoginView
-        snapshot={settingsSnapshot}
-        loading={settingsLoading}
-        remoteEnabled={remoteConnection.enabled}
-        busyProviderId={authBusyProviderId}
-        errorMessage={authError}
-        onLoginOauth={(providerId) => void handleOauthLogin(providerId)}
-        onLoginApiKey={(providerId, apiKey) => void handleApiKeyLogin(providerId, apiKey)}
-        onRefresh={() => void refreshSettings()}
-      />
-    {/if}
-  </main>
+  <TweaksPanel tweaks={tweaks} onChange={updateTweak} />
 </div>
+
+{#if showWorkspacePicker}
+  <WorkspacePicker
+    onClose={() => (showWorkspacePicker = false)}
+    onSwitched={async (hs) => {
+      showWorkspacePicker = false;
+      // Daemon has swapped — reload the default workspace + groups so the
+      // UI reflects the new session store.
+      defaultWorkspaceCwd = hs.workspaceRoot;
+      selectedSession = null;
+      sessionDetail = null;
+      submittedMessages = [];
+      liveStreamItems = [];
+      turnPermissionLookup = {};
+      await refreshGroups();
+      statusMessage = `Switched workspace to ${hs.workspaceRoot}.`;
+    }}
+  />
+{/if}
+
+{#if !skipOnboarding && !forceOnboarding && !onboarding && statusMessage && statusMessage !== "Desktop workspace ready." && statusMessage !== "Settings snapshot refreshed."}
+  <div class="status-strip" aria-live="polite">{statusMessage}</div>
+{/if}
+
+{#if connectionState === "reconnecting" || connectionState === "closed"}
+  <div class="connection-banner" role="status" aria-live="polite">
+    {#if connectionState === "reconnecting"}
+      <span class="dot"></span>
+      Lost connection to Puffer daemon. Reconnecting…
+    {:else}
+      <span class="dot err"></span>
+      Puffer daemon disconnected.
+      <button
+        type="button"
+        class="sc-btn"
+        data-variant="outline"
+        data-size="sm"
+        onclick={() => void ensureLocalDaemonClient().then((c) => c.connect()).catch(() => {})}
+      >Reconnect</button>
+    {/if}
+  </div>
+{/if}
+
+<style>
+  .status-strip {
+    position: fixed;
+    bottom: 8px;
+    left: 12px;
+    font-size: 11px;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    max-width: 60vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 5;
+  }
+  .connection-banner {
+    position: fixed;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    font-size: 12px;
+    color: var(--foreground);
+    background: color-mix(in oklab, oklch(0.72 0.18 70) 18%, var(--background));
+    border: 1px solid color-mix(in oklab, oklch(0.72 0.18 70) 40%, var(--border));
+    border-radius: 999px;
+    box-shadow: var(--shadow-md);
+    z-index: 80;
+    font-family: var(--font-mono);
+  }
+  .connection-banner .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: oklch(0.72 0.18 70);
+    animation: pf-breathe 1.6s ease-in-out infinite;
+  }
+  .connection-banner .dot.err {
+    background: oklch(0.62 0.22 25);
+    animation: none;
+  }
+</style>

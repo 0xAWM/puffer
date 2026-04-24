@@ -32,7 +32,13 @@ puffer-transport-anthropic = { path = "../puffer-transport-anthropic" }
 puffer-tools = { path = "../puffer-tools" }
 puffer-tui = { path = "../puffer-tui" }
 reqwest.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net"] }
+
+# Daemon subcommand dependencies — WebSocket server + tower-layered HTTP
+axum = { version = "0.7", features = ["ws"] }
+futures = "0.3"
+rand = "0.8"
+tower = "0.5"
 
 # Connector support (opt-in per platform). The `serve` subcommand is
 # compiled in unconditionally, but each platform connector is gated
@@ -46,6 +52,17 @@ puffer-connector-matrix = { path = "../puffer-connector-matrix", optional = true
 puffer-connector-email = { path = "../puffer-connector-email", optional = true }
 puffer-connector-webhook = { path = "../puffer-connector-webhook", optional = true }
 ctrlc = "3"
+
+# PTY-backed user terminal tab. `portable-pty` spawns a real shell in the
+# session cwd and lets us fan the output onto the daemon event bus; base64
+# keeps the NDJSON frames ASCII-safe regardless of shell output.
+portable-pty = "0.8"
+base64 = { workspace = true }
+
+# Filesystem watcher — backs the Files pane's auto-refresh. `notify` picks the
+# best native backend per OS (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW
+# on Windows); we stick to the 6.x line for its simple synchronous callback API.
+notify = "6"
 
 [features]
 default = []

@@ -12,12 +12,15 @@
   "app": {
     "windows": [
       {
-        "title": "Puffer Desktop",
-        "width": 1500,
-        "height": 960,
-        "minWidth": 1200,
-        "minHeight": 760,
-        "resizable": true
+        "title": "Puffer",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 720,
+        "minHeight": 480,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "acceptFirstMouse": true
       }
     ],
     "security": {

@@ -223,3 +223,28 @@ pub(crate) struct ProviderSummaryDto {
     pub(crate) source_kind: String,
     pub(crate) source_path: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpServerDto {
+    pub(crate) id: String,
+    pub(crate) display_name: String,
+    pub(crate) description: String,
+    pub(crate) transport: String,
+    pub(crate) endpoint: String,
+    pub(crate) target: String,
+    pub(crate) source_kind: String,
+    pub(crate) source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelDescriptorDto {
+    pub(crate) id: String,
+    pub(crate) display_name: String,
+    pub(crate) provider: String,
+    pub(crate) api: String,
+    pub(crate) context_window: u32,
+    pub(crate) max_output_tokens: u32,
+    pub(crate) supports_reasoning: bool,
+}
