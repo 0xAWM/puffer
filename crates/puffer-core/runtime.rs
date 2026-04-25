@@ -120,8 +120,12 @@ pub struct ToolInvocation {
 }
 
 /// Describes one tool call requested by the model before execution finishes.
+/// The `call_id` matches the paired `ToolInvocation` when execution
+/// completes — callers can use it to upgrade a pending UI card in place
+/// rather than rendering a fresh one on result arrival.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallRequest {
+    pub call_id: String,
     pub tool_id: String,
     pub input: String,
 }

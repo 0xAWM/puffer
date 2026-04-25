@@ -194,6 +194,7 @@ where
                         if !already_emitted {
                             on_event(TurnStreamEvent::ToolCallsRequested(vec![
                                 super::ToolCallRequest {
+                                    call_id: call_id.to_string(),
                                     tool_id: name.to_string(),
                                     input: arguments_str.to_string(),
                                 },

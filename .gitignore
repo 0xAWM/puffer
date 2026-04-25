@@ -8,3 +8,7 @@ benchmark/harbor-cache/
 benchmark/tb2-trajectory/
 benchmark/__pycache__/
 benchmark/*.pyc
+
+# Claude Code + OMX tool metadata
+.claude/
+.omx/

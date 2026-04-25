@@ -15,14 +15,17 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1.0.100"
 indexmap = "2.13.1"
 puffer-config = { path = "../../../crates/puffer-config" }
+puffer-core = { path = "../../../crates/puffer-core" }
 puffer-provider-openai = { path = "../../../crates/puffer-provider-openai" }
 puffer-provider-registry = { path = "../../../crates/puffer-provider-registry" }
 puffer-resources = { path = "../../../crates/puffer-resources" }
 puffer-session-store = { path = "../../../crates/puffer-session-store" }
+puffer-tools = { path = "../../../crates/puffer-tools" }
 puffer-transport-anthropic = { path = "../../../crates/puffer-transport-anthropic" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 url = "2.5.8"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 

@@ -146,6 +146,26 @@ pub(crate) enum Command {
         #[arg(long = "config")]
         config: Option<String>,
     },
+    /// Run the Puffer daemon — a WebSocket/NDJSON server that exposes the
+    /// runtime (sessions, turns, permissions) to desktop / web / remote
+    /// clients. One daemon per workspace; auth is a pre-shared token.
+    Daemon {
+        /// Bind address. Defaults to `127.0.0.1:0` (ephemeral localhost).
+        #[arg(long = "bind", default_value = "127.0.0.1:0")]
+        bind: String,
+        /// Path to write the auth token + bound port as NDJSON so callers
+        /// can pick them up. Defaults to `<user-config>/daemon.handshake`.
+        #[arg(long = "handshake-file")]
+        handshake_file: Option<String>,
+        /// Preset token (otherwise one is generated). Handy for tests.
+        #[arg(long = "token")]
+        token: Option<String>,
+        /// Print a single NDJSON line to stdout once bound, then continue
+        /// serving. Used by parent processes (Tauri) to pick up the port
+        /// + token without racing against the file write.
+        #[arg(long = "print-handshake", default_value_t = false)]
+        print_handshake: bool,
+    },
     /// Internal: run a baked-in subscriber skill driver. Invoked by the
     /// subscriber supervisor; not intended for direct use.
     #[command(hide = true, name = "__subscriber")]
