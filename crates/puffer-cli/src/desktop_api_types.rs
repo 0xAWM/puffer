@@ -145,6 +145,67 @@ pub(crate) struct SessionDetailDto {
     pub(crate) latest_diff: Option<DiffSummaryDto>,
     pub(crate) diff_history: Vec<DiffSummaryDto>,
     pub(crate) repo_status: RepoStatusDto,
+    /// Reconstructed from the transcript's editing tool calls — what the
+    /// agent thinks it changed, in order. Independent of `latest_diff`,
+    /// which is the on-disk git view; pairing the two surfaces drift
+    /// (e.g. a hand-edit between turns or a hook rolling work back).
+    pub(crate) agent_diff: AgentDiffDto,
+    /// Set difference between agent-touched paths and git-touched paths.
+    /// Empty `agent_only` + empty `git_only` means the two views agree
+    /// on which files moved; differences mean something to look at.
+    pub(crate) divergence: DivergenceReportDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffDto {
+    /// Files the agent edited at least once during this session, with the
+    /// most recent intent per file. Sorted alphabetically.
+    pub(crate) files: Vec<AgentDiffFileDto>,
+    /// Per-call breakdown — preserves the order edits happened so the UI
+    /// can show "edit 3 of 7" style context if it wants to.
+    pub(crate) entries: Vec<AgentDiffEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffFileDto {
+    pub(crate) path: String,
+    pub(crate) latest_kind: String,
+    pub(crate) edit_count: usize,
+    /// Last successful edit summary — a unified-diff-ish snippet
+    /// reconstructed from the tool's input (e.g. old → new for
+    /// replace_in_file, full contents for write_file). Suitable for
+    /// rendering in a code block.
+    pub(crate) latest_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffEntryDto {
+    pub(crate) call_id: String,
+    pub(crate) tool_id: String,
+    pub(crate) kind: String,
+    pub(crate) path: String,
+    pub(crate) success: bool,
+    pub(crate) summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DivergenceReportDto {
+    /// Files the agent claims to have edited that don't appear in the
+    /// current git diff. Could mean the agent's edit was reverted,
+    /// formatted away, or never landed (failed apply).
+    pub(crate) agent_only: Vec<String>,
+    /// Files git sees as changed that no agent tool call touched. Could
+    /// mean a hook rewrote the file, the user hand-edited between turns,
+    /// or a build artifact slipped in.
+    pub(crate) git_only: Vec<String>,
+    /// Total files in the agent diff (denominator for badges).
+    pub(crate) agent_total: usize,
+    /// Total files in the git diff (denominator for badges).
+    pub(crate) git_total: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

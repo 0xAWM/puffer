@@ -376,12 +376,45 @@ const timeline: TimelineItem[] = [
   }
 ];
 
+// Mock agent-diff payloads — three example edits the design uses to
+// fill out the Agent / Divergence sub-tabs in screenshot reviews.
+const mockAgentDiffB = {
+  files: [
+    {
+      path: "apps/puffer-desktop/src/lib/shell/Sidebar.svelte",
+      latestKind: "replace",
+      editCount: 2,
+      latestSummary:
+        "-  let inspectorTab = \"latest-diff\";\n+  let inspectorTab: InspectorTab = \"latest-diff\";\n"
+    },
+    {
+      path: "apps/puffer-desktop/src/lib/components/InspectorPane.svelte",
+      latestKind: "write",
+      editCount: 1,
+      latestSummary:
+        "+<script lang=\"ts\">\n+  export let tab: InspectorTab;\n+</script>\n"
+    }
+  ],
+  entries: []
+};
+
+const mockDivergenceB = {
+  agentOnly: [],
+  // The repo formatter rewrote a file the agent never touched —
+  // exactly the kind of drift the divergence tab exists to surface.
+  gitOnly: ["apps/puffer-desktop/src/app.css"],
+  agentTotal: 2,
+  gitTotal: 3
+};
+
 export const mockSessionDetail: SessionDetail = {
   session: sessionB,
   timeline,
   latestDiff,
   diffHistory: [latestDiff, olderDiff],
-  repoStatus: mockRepoStatus
+  repoStatus: mockRepoStatus,
+  agentDiff: mockAgentDiffB,
+  divergence: mockDivergenceB
 };
 
 const mockSessionDetailA: SessionDetail = {
@@ -395,6 +428,24 @@ const mockSessionDetailA: SessionDetail = {
     cwd: sessionA.cwd,
     branch: "fix/permission-parity",
     pullRequest: null
+  },
+  agentDiff: {
+    files: [
+      {
+        path: "crates/puffer-core/runtime/permissions.rs",
+        latestKind: "replace",
+        editCount: 1,
+        latestSummary:
+          "-return PermissionDecision::Deny;\n+if context.plan_mode() {\n+  return PermissionDecision::Ask;\n+}\n+return PermissionDecision::Deny;\n"
+      }
+    ],
+    entries: []
+  },
+  divergence: {
+    agentOnly: [],
+    gitOnly: [],
+    agentTotal: 1,
+    gitTotal: 1
   }
 };
 
@@ -434,7 +485,9 @@ const mockSessionDetailC: SessionDetail = {
     hasUncommittedChanges: false,
     isClean: true,
     statusLines: []
-  }
+  },
+  agentDiff: { files: [], entries: [] },
+  divergence: { agentOnly: [], gitOnly: [], agentTotal: 0, gitTotal: 0 }
 };
 
 export function mockSessionDetailFor(sessionId: string): SessionDetail {

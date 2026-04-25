@@ -121,11 +121,41 @@ type BackendTimelineItem =
     }
   | { kind: "diff_snapshot"; id: string; snapshot: BackendDiff };
 
+type BackendAgentDiffFile = {
+  path: string;
+  latestKind: string;
+  editCount: number;
+  latestSummary: string;
+};
+
+type BackendAgentDiffEntry = {
+  callId: string;
+  toolId: string;
+  kind: string;
+  path: string;
+  success: boolean;
+  summary: string;
+};
+
+type BackendAgentDiff = {
+  files: BackendAgentDiffFile[];
+  entries: BackendAgentDiffEntry[];
+};
+
+type BackendDivergenceReport = {
+  agentOnly: string[];
+  gitOnly: string[];
+  agentTotal: number;
+  gitTotal: number;
+};
+
 type BackendSessionDetail = BackendSessionListItem & {
   timeline: BackendTimelineItem[];
   latestDiff: BackendDiff | null;
   diffHistory: BackendDiff[];
   repoStatus: BackendRepoStatus;
+  agentDiff: BackendAgentDiff;
+  divergence: BackendDivergenceReport;
 };
 
 function remoteArgs(remote?: RemoteConnection): Record<string, unknown> {
@@ -334,12 +364,24 @@ function normalizeTimelineItem(value: BackendTimelineItem): TimelineItem {
 
 function normalizeSessionDetail(value: BackendSessionDetail): SessionDetail {
   const session = normalizeSessionListItem(value);
+  // Older daemons may not emit agentDiff/divergence yet — fall back to
+  // empty defaults so the UI still renders a sensible (empty) diff tab
+  // instead of throwing on undefined.
+  const agentDiff = value.agentDiff ?? { files: [], entries: [] };
+  const divergence = value.divergence ?? {
+    agentOnly: [],
+    gitOnly: [],
+    agentTotal: 0,
+    gitTotal: 0
+  };
   return {
     session,
     timeline: value.timeline.map(normalizeTimelineItem),
     latestDiff: value.latestDiff ? normalizeDiff(value.latestDiff) : null,
     diffHistory: value.diffHistory.map(normalizeDiff),
-    repoStatus: normalizeRepoStatus(value.repoStatus)
+    repoStatus: normalizeRepoStatus(value.repoStatus),
+    agentDiff,
+    divergence
   };
 }
 

@@ -135,12 +135,50 @@ export type TimelineItem =
   | PermissionTimelineItem
   | DiffTimelineItem;
 
+/** A single agent edit reconstructed from a tool-call transcript event.
+ *  `kind` is the high-level operation (write/replace/move/remove);
+ *  `summary` is a unified-diff-ish snippet rendered server-side. */
+export type AgentDiffEntry = {
+  callId: string;
+  toolId: string;
+  kind: string;
+  path: string;
+  success: boolean;
+  summary: string;
+};
+
+/** Per-file rollup of the agent's edits — useful for "the agent
+ *  touched these N files this session" lists. */
+export type AgentDiffFile = {
+  path: string;
+  latestKind: string;
+  editCount: number;
+  latestSummary: string;
+};
+
+export type AgentDiff = {
+  files: AgentDiffFile[];
+  entries: AgentDiffEntry[];
+};
+
+/** Set difference between agent-touched and git-touched paths. Empty
+ *  arrays mean the two views agree; non-empty means there's drift to
+ *  surface (hand-edits, hook rewrites, rolled-back applies, …). */
+export type DivergenceReport = {
+  agentOnly: string[];
+  gitOnly: string[];
+  agentTotal: number;
+  gitTotal: number;
+};
+
 export type SessionDetail = {
   session: SessionListItem;
   timeline: TimelineItem[];
   latestDiff: DiffSnapshot | null;
   diffHistory: DiffSnapshot[];
   repoStatus: RepoStatus;
+  agentDiff: AgentDiff;
+  divergence: DivergenceReport;
 };
 
 export type DesktopPreferences = {

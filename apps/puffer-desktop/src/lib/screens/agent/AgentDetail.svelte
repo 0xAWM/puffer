@@ -50,7 +50,9 @@
   }: Props = $props();
 
   type Tab = "chat" | "diff" | "terminal" | "files";
+  type DiffSubTab = "agent" | "git" | "divergence";
   let tab = $state<Tab>("chat");
+  let diffTab = $state<DiffSubTab>("agent");
 
   // Identity for the header: prefer the mock agent, fall back to real session.
   let displayName = $derived(
@@ -81,6 +83,24 @@
 
   let pufferState = $derived<AgentState>(agentPufferState(status));
   let diffCount = $derived(timeline.filter((t) => t.kind === "diff").length);
+  let agentDiff = $derived(sessionDetail?.agentDiff ?? { files: [], entries: [] });
+  let divergence = $derived(
+    sessionDetail?.divergence ?? { agentOnly: [], gitOnly: [], agentTotal: 0, gitTotal: 0 }
+  );
+  let divergenceCount = $derived(divergence.agentOnly.length + divergence.gitOnly.length);
+
+  function kindIcon(kind: string): "edit" | "file" | "x" | "branch" {
+    switch (kind) {
+      case "write":
+        return "file";
+      case "remove":
+        return "x";
+      case "move":
+        return "branch";
+      default:
+        return "edit";
+    }
+  }
 </script>
 
 <div class="pf-agent-detail">
@@ -153,15 +173,140 @@
         onCancelTurn={onCancelTurn}
       />
     {:else if tab === "diff"}
-      {#if sessionDetail?.latestDiff}
-        <div class="diff-wrap">
-          <DiffView diff={sessionDetail.latestDiff} />
-        </div>
+      <div class="diff-subtabs">
+        <button
+          class="diff-subtab"
+          class:on={diffTab === "agent"}
+          onclick={() => (diffTab = "agent")}
+        >
+          <Icon name="sparkles" size={11} />Agent
+          {#if agentDiff.files.length > 0}
+            <span class="pf-agent-tab-badge">{agentDiff.files.length}</span>
+          {/if}
+        </button>
+        <button
+          class="diff-subtab"
+          class:on={diffTab === "git"}
+          onclick={() => (diffTab = "git")}
+        >
+          <Icon name="git" size={11} />Git
+          {#if divergence.gitTotal > 0}
+            <span class="pf-agent-tab-badge">{divergence.gitTotal}</span>
+          {/if}
+        </button>
+        <button
+          class="diff-subtab"
+          class:on={diffTab === "divergence"}
+          onclick={() => (diffTab = "divergence")}
+          title={divergenceCount > 0
+            ? "Agent and git disagree on which files changed"
+            : "Agent and git agree"}
+        >
+          <Icon name="bolt" size={11} />Divergence
+          {#if divergenceCount > 0}
+            <span class="pf-agent-tab-badge warn">{divergenceCount}</span>
+          {/if}
+        </button>
+      </div>
+
+      {#if diffTab === "agent"}
+        {#if agentDiff.files.length > 0}
+          <div class="diff-wrap">
+            <div class="agent-diff-list">
+              {#each agentDiff.files as file (file.path)}
+                <article class="agent-diff-card">
+                  <header>
+                    <Icon
+                      name={kindIcon(file.latestKind)}
+                      size={12}
+                      color="var(--muted-foreground)"
+                    />
+                    <span class="path mono" title={file.path}>{file.path}</span>
+                    <span class="kind">{file.latestKind}</span>
+                    {#if file.editCount > 1}
+                      <span class="count">×{file.editCount}</span>
+                    {/if}
+                  </header>
+                  <pre class="diff-snippet"><code>{file.latestSummary}</code></pre>
+                </article>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <div class="pane-empty">
+            <Icon name="sparkles" size={20} color="var(--muted-foreground)" />
+            <div class="title">No agent edits yet</div>
+            <div class="sub">
+              Once the agent writes or replaces a file, the per-edit summary lands here —
+              independent of git, so you can see what the model intended even if a hook
+              rolled it back.
+            </div>
+          </div>
+        {/if}
+      {:else if diffTab === "git"}
+        {#if sessionDetail?.latestDiff}
+          <div class="diff-wrap">
+            <DiffView diff={sessionDetail.latestDiff} />
+          </div>
+        {:else}
+          <div class="pane-empty">
+            <Icon name="git" size={20} color="var(--muted-foreground)" />
+            <div class="title">No git changes</div>
+            <div class="sub">
+              The session has no working-tree changes against HEAD. Edits the agent
+              already committed won't appear here — switch to the Agent tab for those.
+            </div>
+          </div>
+        {/if}
       {:else}
-        <div class="pane-empty">
-          <Icon name="git" size={20} color="var(--muted-foreground)" />
-          <div class="title">No diff yet</div>
-          <div class="sub">When the agent edits files, the most-recent patch will land here.</div>
+        <div class="diff-wrap divergence-pane">
+          {#if divergenceCount === 0}
+            <div class="pane-empty">
+              <Icon name="check" size={20} color="var(--muted-foreground)" />
+              <div class="title">Agent and git agree</div>
+              <div class="sub">
+                Every file the agent edited shows up in git diff, and nothing else has
+                changed on disk. {divergence.agentTotal} agent · {divergence.gitTotal} git.
+              </div>
+            </div>
+          {:else}
+            {#if divergence.agentOnly.length > 0}
+              <section class="diverge-block">
+                <header>
+                  <Icon name="sparkles" size={12} />
+                  Agent edited, not in git ({divergence.agentOnly.length})
+                </header>
+                <p class="hint">
+                  The agent claims to have edited these files but they don't appear in
+                  the current git diff. Possible causes: a hook reverted the change, the
+                  edit was committed earlier this session, or the apply silently failed.
+                </p>
+                <ul>
+                  {#each divergence.agentOnly as path (path)}
+                    <li class="mono">{path}</li>
+                  {/each}
+                </ul>
+              </section>
+            {/if}
+            {#if divergence.gitOnly.length > 0}
+              <section class="diverge-block">
+                <header>
+                  <Icon name="git" size={12} />
+                  Changed on disk, no agent edit ({divergence.gitOnly.length})
+                </header>
+                <p class="hint">
+                  Git sees these files as modified but no agent tool call touched them.
+                  Possible causes: a post-tool hook rewrote the file, the user
+                  hand-edited between turns, or a build artifact slipped in.
+                </p>
+                <ul>
+                  {#each divergence.gitOnly as path (path)}
+                    <li class="mono">{path}</li>
+                  {/each}
+                </ul>
+              </section>
+            {/if}
+          {/if}
         </div>
       {/if}
     {:else if tab === "terminal"}
@@ -343,6 +488,138 @@
   }
   .pane-empty .title { font-size: 14px; font-weight: 600; color: var(--foreground); }
   .pane-empty .sub { font-size: 12.5px; max-width: 360px; line-height: 1.55; }
+
+  .diff-subtabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--background) 96%, var(--muted));
+  }
+  .diff-subtab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted-foreground);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 100ms, border-color 100ms, background 100ms;
+  }
+  .diff-subtab:hover { color: var(--foreground); }
+  .diff-subtab.on {
+    color: var(--foreground);
+    background: var(--background);
+    border-color: var(--border);
+  }
+  .pf-agent-tab-badge.warn {
+    background: color-mix(in oklab, oklch(0.62 0.22 25) 18%, var(--background));
+    color: oklch(0.55 0.2 30);
+    border: 1px solid color-mix(in oklab, oklch(0.62 0.22 25) 35%, var(--border));
+  }
+
+  .agent-diff-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+  .agent-diff-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--background);
+  }
+  .agent-diff-card header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: color-mix(in oklab, var(--background) 96%, var(--muted));
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .agent-diff-card .path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--foreground);
+  }
+  .agent-diff-card .kind {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+  }
+  .agent-diff-card .count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted-foreground);
+  }
+  .diff-snippet {
+    margin: 0;
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--foreground);
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .diff-snippet code { color: inherit; }
+
+  .divergence-pane {
+    padding: 14px 16px;
+  }
+  .diverge-block {
+    margin-bottom: 18px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--background);
+    overflow: hidden;
+  }
+  .diverge-block header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 12.5px;
+    color: var(--foreground);
+    background: color-mix(in oklab, var(--background) 96%, var(--muted));
+  }
+  .diverge-block .hint {
+    margin: 0;
+    padding: 10px 14px;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .diverge-block ul {
+    list-style: none;
+    margin: 0;
+    padding: 0 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .diverge-block li {
+    font-size: 12px;
+    color: var(--foreground);
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: color-mix(in oklab, var(--muted) 50%, var(--background));
+  }
 
   @media (max-width: 720px) {
     .pf-agent-detail-head { flex-wrap: wrap; row-gap: 6px; padding: 8px 10px; }
