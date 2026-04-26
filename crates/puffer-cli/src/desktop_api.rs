@@ -3,6 +3,7 @@ use puffer_config::{ConfigPaths, PufferConfig};
 use puffer_provider_registry::{AuthMode, AuthStore, ProviderRegistry, StoredCredential};
 use puffer_resources::LoadedResources;
 use puffer_session_store::{GitDiffSnapshot, SessionRecord, SessionStore, TranscriptEvent};
+use puffer_workflow::WorkflowStore;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -146,6 +147,21 @@ pub(crate) fn run_desktop_api(
             )?;
             println!("{}", serde_json::to_string_pretty(&snapshot)?);
         }
+        DesktopApiCommand::WorkflowList => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!("{}", serde_json::to_string_pretty(&store.snapshot()?)?);
+        }
+        DesktopApiCommand::WorkflowRunsList { workflow_slug } => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&store.list_runs_for(&workflow_slug)?)?
+            );
+        }
+        DesktopApiCommand::WorkflowRunsShow { idx } => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!("{}", serde_json::to_string_pretty(&store.get_run(idx)?)?);
+        }
     }
     Ok(())
 }
@@ -195,7 +211,10 @@ pub(crate) fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<
     Ok(folders)
 }
 
-pub(crate) fn load_session_detail(session_store: &SessionStore, session_id: &str) -> Result<SessionDetailDto> {
+pub(crate) fn load_session_detail(
+    session_store: &SessionStore,
+    session_id: &str,
+) -> Result<SessionDetailDto> {
     let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = session_store.load_session(session_uuid)?;
     let folder_path = session_group_root(&record.metadata.cwd)
@@ -670,8 +689,7 @@ fn compute_divergence(
     latest_git_diff: Option<&DiffSummaryDto>,
     cwd: &Path,
 ) -> DivergenceReportDto {
-    let agent_paths: BTreeSet<String> =
-        agent_diff.files.iter().map(|f| f.path.clone()).collect();
+    let agent_paths: BTreeSet<String> = agent_diff.files.iter().map(|f| f.path.clone()).collect();
     let git_paths = latest_git_diff
         .map(|d| extract_paths_from_patch(&d.patch, cwd))
         .unwrap_or_default();
@@ -684,14 +702,8 @@ fn compute_divergence(
         .map(|p| relativize_path(p, cwd))
         .collect();
 
-    let agent_only: Vec<String> = agent_relative
-        .difference(&git_paths)
-        .cloned()
-        .collect();
-    let git_only: Vec<String> = git_paths
-        .difference(&agent_relative)
-        .cloned()
-        .collect();
+    let agent_only: Vec<String> = agent_relative.difference(&git_paths).cloned().collect();
+    let git_only: Vec<String> = git_paths.difference(&agent_relative).cloned().collect();
 
     DivergenceReportDto {
         agent_total: agent_relative.len(),

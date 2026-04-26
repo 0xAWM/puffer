@@ -13,7 +13,9 @@ import type {
   SessionDetail,
   SessionListItem,
   SettingsSnapshot,
-  TimelineItem
+  TimelineItem,
+  WorkflowRun,
+  WorkflowSnapshot
 } from "../types";
 import {
   mockCreatePrResult,
@@ -808,6 +810,24 @@ export async function loadSessionDetailFromDaemon(
     if (!canReachDaemon()) return mockSessionDetailFor(sessionId) ?? mockSessionDetail;
     throw _error;
   }
+}
+
+/** Load registered workflows and recent runs from the daemon. */
+export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<WorkflowSnapshot>("workflow_list");
+}
+
+/** Load runs for one workflow slug from the daemon. */
+export async function listWorkflowRuns(workflowSlug: string): Promise<WorkflowRun[]> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<WorkflowRun[]>("workflow_runs_list", { workflowSlug });
+}
+
+/** Load one workflow run by global run index from the daemon. */
+export async function showWorkflowRun(idx: number): Promise<WorkflowRun | null> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<WorkflowRun | null>("workflow_run_show", { idx });
 }
 
 export type PermissionAction = "allow_once" | "allow_session" | "allow_all_session" | "deny";

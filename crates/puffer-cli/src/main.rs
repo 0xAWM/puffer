@@ -1,7 +1,7 @@
 mod auth_credentials;
 mod auth_provider;
-mod benchmark_reflection;
 mod authflow;
+mod benchmark_reflection;
 mod benchmark_run;
 mod cli_args;
 mod command_surface;
@@ -14,6 +14,8 @@ mod desktop_api;
 mod desktop_api_types;
 mod resource_fs;
 mod subscriptions;
+mod workflow_runtime;
+mod workflows;
 
 use anyhow::{Context, Result};
 use benchmark_run::run_benchmark_command;
@@ -106,21 +108,33 @@ fn main() -> Result<()> {
     }
     let _ = providers.discover_and_merge_all(&auth_store);
 
-    // Boot the subscription manager once providers are wired up so the
-    // classifier can fish the Anthropic base URL out of the registry.
-    // Held until end of `main`; dropped on normal exit, draining the
-    // router and supervisors.
-    let anthropic_base = providers
-        .provider("anthropic")
-        .map(|p| p.base_url.clone());
-    let _subscription_runtime =
+    // Boot background automation only for long-lived processes. Short CLI
+    // commands like `workflow register` and `workflow ls` must not fire cron
+    // triggers as a side effect of inspecting state.
+    let anthropic_base = providers.provider("anthropic").map(|p| p.base_url.clone());
+    let start_background_runtimes = should_start_background_runtimes(&cli.subcommand);
+    let _workflow_runtime = if start_background_runtimes {
+        match workflow_runtime::install(&paths, &config, &resources, &providers, &auth_store) {
+            Ok(rt) => Some(rt),
+            Err(error) => {
+                eprintln!("workflow runtime failed to start: {error:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let _subscription_runtime = if start_background_runtimes {
         match subscriptions::install(&paths, &auth_store, anthropic_base.as_deref()) {
             Ok(rt) => Some(rt),
             Err(error) => {
                 eprintln!("subscription manager failed to start: {error:#}");
                 None
             }
-        };
+        }
+    } else {
+        None
+    };
 
     match cli.subcommand {
         Some(Command::Subscriber { .. }) => {
@@ -146,6 +160,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Mcp { command }) => run_mcp_command(command, &paths, &resources),
         Some(Command::Plugin { command }) => run_plugin_command(command, &paths, &resources),
+        Some(Command::Workflow { command }) => workflows::run_workflow_command(command, &paths),
         Some(Command::SetupToken {
             provider,
             token,
@@ -308,7 +323,9 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Some(Command::Serve { config: config_override }) => run_serve_command(
+        Some(Command::Serve {
+            config: config_override,
+        }) => run_serve_command(
             config_override.as_deref(),
             &cwd,
             config,
@@ -419,6 +436,16 @@ fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn should_start_background_runtimes(subcommand: &Option<Command>) -> bool {
+    matches!(
+        subcommand,
+        None | Some(Command::Resume { .. })
+            | Some(Command::Fork { .. })
+            | Some(Command::Daemon { .. })
+            | Some(Command::Serve { .. })
+    )
 }
 
 fn run_existing_session_tui(
@@ -1112,7 +1139,11 @@ fn run_serve_command(
     }
 
     let ids = running.ids();
-    eprintln!("puffer serve: running {} connector(s): {}", ids.len(), ids.join(", "));
+    eprintln!(
+        "puffer serve: running {} connector(s): {}",
+        ids.len(),
+        ids.join(", ")
+    );
     eprintln!("press Ctrl+C to stop");
 
     // Block on SIGINT. `ctrlc` installs the handler and signals via the

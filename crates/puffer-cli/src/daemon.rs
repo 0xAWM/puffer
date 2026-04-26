@@ -35,12 +35,13 @@ use puffer_config::{
     ensure_workspace_dirs, load_config, save_user_config, ConfigPaths, PufferConfig,
 };
 use puffer_core::{
-    execute_user_turn_streaming_with_permissions, AppState, MessageRole,
-    PermissionPromptAction, PermissionPromptRequest, TurnStreamEvent,
+    execute_user_turn_streaming_with_permissions, AppState, MessageRole, PermissionPromptAction,
+    PermissionPromptRequest, TurnStreamEvent,
 };
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::{load_resources, LoadedResources};
 use puffer_session_store::{SessionStore, TranscriptEvent};
+use puffer_workflow::WorkflowStore;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -94,7 +95,9 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
     let paths = ConfigPaths::discover(&cwd);
     ensure_workspace_dirs(&paths)?;
 
-    let token = options.token.unwrap_or_else(|| load_or_generate_token(&paths));
+    let token = options
+        .token
+        .unwrap_or_else(|| load_or_generate_token(&paths));
 
     let state = DaemonState::load(cwd.clone(), paths.clone(), token.clone())?;
     let state = Arc::new(state);
@@ -133,7 +136,10 @@ async fn run_async(options: DaemonOptions) -> Result<()> {
         println!("{handshake_json}");
     }
 
-    eprintln!("puffer daemon listening on {url} (workspace: {})", paths.workspace_root.display());
+    eprintln!(
+        "puffer daemon listening on {url} (workspace: {})",
+        paths.workspace_root.display()
+    );
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -271,7 +277,10 @@ impl DaemonState {
 /// persist events that carry transcript- or progress-level state; pure
 /// fire-and-forget UI pings (like `hello`) aren't useful to replay.
 fn is_replay_channel(event: &str) -> bool {
-    event.starts_with("session:") || event.starts_with("workspace:") || event.starts_with("clone:")
+    event.starts_with("session:")
+        || event.starts_with("workspace:")
+        || event.starts_with("clone:")
+        || event.starts_with("workflow:")
 }
 
 impl DaemonState {
@@ -574,6 +583,9 @@ async fn dispatch_request(
         "read_file" => respond!(crate::daemon_files::handle_read_file(&state, &params)),
         "fs_watch" => respond!(crate::daemon_fs_watch::handle_fs_watch(&state, &params)),
         "fs_unwatch" => respond!(crate::daemon_fs_watch::handle_fs_unwatch(&state, &params)),
+        "workflow_list" => respond!(handle_workflow_list(&state)),
+        "workflow_runs_list" => respond!(handle_workflow_runs_list(&state, &params)),
+        "workflow_run_show" => respond!(handle_workflow_run_show(&state, &params)),
 
         "run_agent_turn" => {
             let tx_clone = tx.clone();
@@ -665,6 +677,30 @@ fn handle_load_settings_snapshot(state: &DaemonState) -> Result<Value> {
         &inputs.session_store,
     )?;
     Ok(serde_json::to_value(snapshot)?)
+}
+
+fn handle_workflow_list(state: &DaemonState) -> Result<Value> {
+    let store = WorkflowStore::new(&state.paths.workspace_config_dir);
+    Ok(serde_json::to_value(store.snapshot()?)?)
+}
+
+fn handle_workflow_runs_list(state: &DaemonState, params: &Value) -> Result<Value> {
+    let slug = params
+        .get("workflowSlug")
+        .or_else(|| params.get("workflow_slug"))
+        .and_then(Value::as_str)
+        .context("missing workflowSlug")?;
+    let store = WorkflowStore::new(&state.paths.workspace_config_dir);
+    Ok(serde_json::to_value(store.list_runs_for(slug)?)?)
+}
+
+fn handle_workflow_run_show(state: &DaemonState, params: &Value) -> Result<Value> {
+    let idx = params
+        .get("idx")
+        .and_then(Value::as_u64)
+        .context("missing idx")?;
+    let store = WorkflowStore::new(&state.paths.workspace_config_dir);
+    Ok(serde_json::to_value(store.get_run(idx)?)?)
 }
 
 /// Stores an API key credential in the workspace auth store and returns
@@ -803,10 +839,9 @@ fn permissions_file_path(state: &DaemonState) -> std::path::PathBuf {
 fn handle_list_permissions(state: &DaemonState) -> Result<Value> {
     let path = permissions_file_path(state);
     let loaded: PermissionsFileDto = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
-        toml::from_str(&text)
-            .with_context(|| format!("parse {}", path.display()))?
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?
     } else {
         PermissionsFileDto::default()
     };
@@ -817,9 +852,7 @@ fn handle_list_permissions(state: &DaemonState) -> Result<Value> {
 }
 
 fn handle_save_permissions(state: &DaemonState, params: &Value) -> Result<Value> {
-    let tools_val = params
-        .get("tools")
-        .context("missing tools map")?;
+    let tools_val = params.get("tools").context("missing tools map")?;
     let tools: std::collections::BTreeMap<String, String> =
         serde_json::from_value(tools_val.clone()).context("tools must be object<string,string>")?;
     // Normalize: lowercase policy, trim tool ids. Reject unknown policies
@@ -1030,9 +1063,8 @@ fn handle_git_clone(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
     };
 
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("creating parent directory {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating parent directory {}", parent.display()))?;
     }
     if dest.exists() {
         let non_empty = std::fs::read_dir(&dest)
@@ -1067,10 +1099,7 @@ fn handle_git_clone(state: &Arc<DaemonState>, params: &Value) -> Result<Value> {
     let mut child = cmd
         .spawn()
         .context("failed to spawn `git clone` — is git installed?")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("git clone stderr missing")?;
+    let stderr = child.stderr.take().context("git clone stderr missing")?;
     let stdout_pipe = child.stdout.take();
 
     let clone_id_thread = clone_id.clone();
@@ -1459,10 +1488,7 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
         let on_permission = move |req: PermissionPromptRequest| -> PermissionPromptAction {
             let request_id = next_req_id.fetch_add(1, Ordering::SeqCst).to_string();
             let (tx, rx) = std::sync::mpsc::channel();
-            perm_pending
-                .lock()
-                .unwrap()
-                .insert(request_id.clone(), tx);
+            perm_pending.lock().unwrap().insert(request_id.clone(), tx);
 
             perm_state.publish_event(ServerEnvelope::Event {
                 event: perm_channel.clone(),
@@ -1551,9 +1577,12 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
             }
         }
 
-        state_for_thread.turns.lock().unwrap().remove(&turn_id_thread);
+        state_for_thread
+            .turns
+            .lock()
+            .unwrap()
+            .remove(&turn_id_thread);
     });
 
     Ok(json!({"turnId": turn_id_resp}))
 }
-

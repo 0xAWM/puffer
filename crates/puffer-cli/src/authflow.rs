@@ -16,7 +16,7 @@ pub(crate) struct CallbackListener {
 impl CallbackListener {
     /// Binds an OS-assigned localhost callback port for the provided path.
     pub(crate) fn bind_localhost(path: &str) -> Result<Self> {
-        let listener = TcpListener::bind(("localhost", 0))
+        let listener = TcpListener::bind(("127.0.0.1", 0))
             .with_context(|| format!("failed to bind callback listener for {path}"))?;
         listener.set_nonblocking(true)?;
         let port = listener
@@ -25,10 +25,10 @@ impl CallbackListener {
             .port();
         Ok(Self {
             listener,
-            host: "localhost".to_string(),
+            host: "127.0.0.1".to_string(),
             port,
             expected_path: path.to_string(),
-            redirect_uri: format!("http://localhost:{port}{path}"),
+            redirect_uri: format!("http://127.0.0.1:{port}{path}"),
         })
     }
 
@@ -171,7 +171,7 @@ mod tests {
 
         let callback = handle.join().unwrap();
         let expected =
-            format!("http://localhost:{callback_port}/callback?code=test-code&state=test-state");
+            format!("http://127.0.0.1:{callback_port}/callback?code=test-code&state=test-state");
         assert_eq!(callback.as_deref(), Some(expected.as_str()));
     }
 }
