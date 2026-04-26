@@ -191,16 +191,11 @@ type BackendSettingsSnapshot = {
 
 type BackendRemoteOperation = RemoteOperation;
 
-function canInvokeTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
-
 /** Exposed to Svelte components so they can branch on whether the daemon
- *  is reachable (Tauri desktop shell) vs. running in pure web preview. In
- *  preview mode calls to `ensureLocalDaemonClient` throw — UIs that need
- *  live data should skip the RPC and render a friendly banner instead. */
+ *  is reachable. Tauri can spawn it automatically; browser mode needs a
+ *  configured daemon WebSocket handshake. */
 export function isDaemonReachable(): boolean {
-  return canInvokeTauri();
+  return canReachDaemon();
 }
 
 function preview(text: string, maxLength = 160): string {
@@ -388,6 +383,7 @@ function normalizeSessionDetail(value: BackendSessionDetail): SessionDetail {
 
 export async function listGroupedSessions(remote?: RemoteConnection): Promise<FolderGroup[]> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) return listGroupedSessionsFromDaemon();
     return mockFolders;
   }
   const response = await invoke<BackendFolderGroup[]>("list_grouped_sessions", remoteArgs(remote));
@@ -405,6 +401,7 @@ export async function loadSessionDetail(
   remote?: RemoteConnection
 ): Promise<SessionDetail> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) return loadSessionDetailFromDaemon(sessionId);
     return mockSessionDetailFor(sessionId);
   }
   const response = await invoke<BackendSessionDetail>("load_session_detail", {
@@ -419,6 +416,13 @@ export async function refreshRepoStatus(
   remote?: RemoteConnection
 ): Promise<RepoStatus> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      const response = await client.request<BackendRepoStatus>("refresh_repo_status", {
+        sessionId
+      });
+      return normalizeRepoStatus(response);
+    }
     return mockRepoStatus;
   }
   const response = await invoke<BackendRepoStatus>("refresh_repo_status", {
@@ -478,6 +482,10 @@ export async function mergePullRequest(
 
 export async function loadSettingsSnapshot(remote?: RemoteConnection): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("load_settings_snapshot");
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("load_settings_snapshot", remoteArgs(remote));
@@ -488,6 +496,9 @@ export async function loginWithOauth(
   remote?: RemoteConnection
 ): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      throw new Error("OAuth login requires the Tauri desktop shell. Use API key login in browser mode.");
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("login_with_oauth", {
@@ -502,6 +513,13 @@ export async function loginWithApiKey(
   remote?: RemoteConnection
 ): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("login_with_api_key", {
+        providerId,
+        apiKey
+      });
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("login_with_api_key", {
@@ -538,6 +556,12 @@ export async function logoutProvider(
   remote?: RemoteConnection
 ): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("logout_provider", {
+        providerId
+      });
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("logout_provider", {
@@ -598,7 +622,12 @@ export async function writeRemoteFile(
 // sessions, transcripts, and provider state. This module is a thin adapter.
 // ============================================================================
 
-import { ensureLocalDaemonClient, switchDaemonClient } from "./daemonClient";
+import {
+  canInvokeTauri,
+  canReachDaemon,
+  ensureLocalDaemonClient,
+  switchDaemonClient
+} from "./daemonClient";
 
 /** A blank session created on the fly. The daemon places it in the given
  *  `cwd` (defaults to the daemon's boot workspace). Returns the session id
@@ -759,7 +788,7 @@ export async function listGroupedSessionsFromDaemon(): Promise<FolderGroup[]> {
       sessions: folder.sessions.map(normalizeSessionListItem)
     }));
   } catch (_error) {
-    if (!canInvokeTauri()) return mockFolders;
+    if (!canReachDaemon()) return mockFolders;
     throw _error;
   }
 }
@@ -776,7 +805,7 @@ export async function loadSessionDetailFromDaemon(
     });
     return normalizeSessionDetail(raw);
   } catch (_error) {
-    if (!canInvokeTauri()) return mockSessionDetailFor(sessionId) ?? mockSessionDetail;
+    if (!canReachDaemon()) return mockSessionDetailFor(sessionId) ?? mockSessionDetail;
     throw _error;
   }
 }
