@@ -212,10 +212,20 @@ export class DaemonClient {
   }
 }
 
+const BROWSER_HANDSHAKE_STORAGE_KEY = "puffer-desktop:daemon-handshake";
+
 function appendToken(url: string, token: string): string {
-  return url.includes("?")
-    ? `${url}&token=${encodeURIComponent(token)}`
-    : `${url}?token=${encodeURIComponent(token)}`;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has("token")) {
+      parsed.searchParams.set("token", token);
+    }
+    return parsed.toString();
+  } catch {
+    return url.includes("?")
+      ? `${url}&token=${encodeURIComponent(token)}`
+      : `${url}?token=${encodeURIComponent(token)}`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,20 +235,121 @@ function appendToken(url: string, token: string): string {
 let sharedClient: DaemonClient | null = null;
 let sharedConnectPromise: Promise<DaemonClient> | null = null;
 
-function canInvokeTauri(): boolean {
+export function canInvokeTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+function envValue(name: string): string | null {
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+  const value = env[name]?.trim();
+  return value ? value : null;
+}
+
+function normalizeDaemonUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:") parsed.protocol = "ws:";
+    if (parsed.protocol === "https:") parsed.protocol = "wss:";
+    if (parsed.pathname === "/" || parsed.pathname === "") {
+      parsed.pathname = "/ws";
+    }
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+function handshakeFromStorage(): DaemonHandshake | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(BROWSER_HANDSHAKE_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<DaemonHandshake>;
+    if (typeof parsed.url !== "string" || typeof parsed.token !== "string") return null;
+    return {
+      url: normalizeDaemonUrl(parsed.url),
+      token: parsed.token,
+      protocolVersion: parsed.protocolVersion ?? "1",
+      workspaceRoot: parsed.workspaceRoot ?? ""
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistBrowserHandshake(handshake: DaemonHandshake): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(BROWSER_HANDSHAKE_STORAGE_KEY, JSON.stringify(handshake));
+}
+
+function handshakeFromUrl(): DaemonHandshake | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const url =
+    params.get("daemonUrl") ??
+    params.get("pufferDaemonUrl") ??
+    params.get("wsUrl") ??
+    params.get("url");
+  const token =
+    params.get("daemonToken") ??
+    params.get("pufferDaemonToken") ??
+    params.get("token");
+  if (!url || !token) return null;
+  return {
+    url: normalizeDaemonUrl(url),
+    token,
+    protocolVersion: params.get("daemonProtocolVersion") ?? "1",
+    workspaceRoot: params.get("daemonWorkspaceRoot") ?? ""
+  };
+}
+
+function handshakeFromEnv(): DaemonHandshake | null {
+  const url = envValue("VITE_PUFFER_DAEMON_URL");
+  const token = envValue("VITE_PUFFER_DAEMON_TOKEN");
+  if (!url || !token) return null;
+  return {
+    url: normalizeDaemonUrl(url),
+    token,
+    protocolVersion: envValue("VITE_PUFFER_DAEMON_PROTOCOL_VERSION") ?? "1",
+    workspaceRoot: envValue("VITE_PUFFER_DAEMON_WORKSPACE_ROOT") ?? ""
+  };
+}
+
+/** Returns the browser-supplied daemon handshake, if one is configured.
+ *  URL params win and are persisted so reloads do not require pasting the
+ *  token again. */
+export function configuredBrowserDaemonHandshake(): DaemonHandshake | null {
+  const fromUrl = handshakeFromUrl();
+  if (fromUrl) {
+    persistBrowserHandshake(fromUrl);
+    return fromUrl;
+  }
+  return handshakeFromEnv() ?? handshakeFromStorage();
+}
+
+/** Whether the renderer has any route to a daemon. Tauri can spawn one;
+ *  browser mode needs a pre-supplied WebSocket handshake. */
+export function canReachDaemon(): boolean {
+  return canInvokeTauri() || configuredBrowserDaemonHandshake() !== null || sharedClient !== null;
+}
+
 /** Returns the singleton local daemon client, starting the subprocess if
- *  this is the first caller. Requires the Tauri host. */
+ *  this is the first caller. In a browser this attaches to a configured
+ *  WebSocket daemon instead of spawning a subprocess. */
 export async function ensureLocalDaemonClient(): Promise<DaemonClient> {
   if (sharedClient) return sharedClient;
   if (sharedConnectPromise) return sharedConnectPromise;
-  if (!canInvokeTauri()) {
-    throw new Error("local daemon requires the Tauri desktop shell");
-  }
   sharedConnectPromise = (async () => {
-    const handshake = await invoke<DaemonHandshake>("start_local_daemon");
+    const handshake = canInvokeTauri()
+      ? await invoke<DaemonHandshake>("start_local_daemon")
+      : configuredBrowserDaemonHandshake();
+    if (!handshake) {
+      throw new Error(
+        "No Puffer daemon WebSocket configured. Start `puffer daemon --bind 127.0.0.1:1421 --token <token>` and open the app with `?daemonUrl=ws://127.0.0.1:1421/ws&daemonToken=<token>`."
+      );
+    }
     const client = new DaemonClient(handshake);
     await client.connect();
     sharedClient = client;
