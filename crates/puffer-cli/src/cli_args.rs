@@ -67,6 +67,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: Option<PluginCommand>,
     },
+    /// Register and inspect native Puffer workflows.
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
     /// Store a long-lived API token for a provider.
     SetupToken {
         /// Provider id. Defaults to the configured provider or `anthropic`.
@@ -147,7 +152,7 @@ pub(crate) enum Command {
         config: Option<String>,
     },
     /// Run the Puffer daemon — a WebSocket/NDJSON server that exposes the
-    /// runtime (sessions, turns, permissions) to desktop / web / remote
+    /// runtime (conversations, turns, permissions) to desktop / web / remote
     /// clients. One daemon per workspace; auth is a pre-shared token.
     Daemon {
         /// Bind address. Defaults to `127.0.0.1:0` (ephemeral localhost).
@@ -246,6 +251,82 @@ pub(crate) enum DesktopApiCommand {
         provider: String,
     },
     SettingsSnapshot,
+    WorkflowList,
+    WorkflowRunsList {
+        workflow_slug: String,
+    },
+    WorkflowRunsShow {
+        idx: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WorkflowCommand {
+    /// Register a workflow envelope or raw AgentFlow pipeline JSON file.
+    Register {
+        /// JSON file path.
+        json_path: String,
+        /// Optional workflow slug override.
+        #[arg(long = "slug")]
+        slug: Option<String>,
+        /// Cron trigger for raw AgentFlow pipeline imports.
+        #[arg(long = "cron", conflicts_with = "subscription_topic")]
+        cron: Option<String>,
+        /// Subscription source topic for raw AgentFlow pipeline imports.
+        #[arg(long = "subscription-topic", conflicts_with = "cron")]
+        subscription_topic: Option<String>,
+        /// Optional subscription regex prefilter.
+        #[arg(long = "subscription-pattern")]
+        subscription_pattern: Option<String>,
+        /// Optional subscription classifier prompt.
+        #[arg(long = "classify-prompt")]
+        classify_prompt: Option<String>,
+    },
+    /// List registered workflows.
+    Ls {
+        /// Output JSON.
+        #[arg(long = "json", default_value_t = false)]
+        json: bool,
+    },
+    /// Inspect workflow run records.
+    Runs {
+        #[command(subcommand)]
+        command: WorkflowRunsCommand,
+    },
+    /// Run one workflow once. Use --dry-run for deterministic local execution.
+    Run {
+        /// Workflow slug.
+        workflow_slug: String,
+        /// Trigger JSON payload used for prompt interpolation.
+        #[arg(long = "trigger-json")]
+        trigger_json: Option<String>,
+        /// Use a deterministic local executor instead of calling an LLM provider.
+        #[arg(long = "dry-run", default_value_t = false)]
+        dry_run: bool,
+        /// Output JSON.
+        #[arg(long = "json", default_value_t = false)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WorkflowRunsCommand {
+    /// List runs for a workflow slug.
+    Ls {
+        /// Workflow slug.
+        workflow_slug: String,
+        /// Output JSON.
+        #[arg(long = "json", default_value_t = false)]
+        json: bool,
+    },
+    /// Show one run by global index.
+    Show {
+        /// Global run index.
+        idx: u64,
+        /// Output JSON.
+        #[arg(long = "json", default_value_t = false)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
