@@ -8,13 +8,15 @@
   import ToolCard from "./ToolCard.svelte";
   import DiffCard from "./DiffCard.svelte";
   import Approval from "./Approval.svelte";
+  import QuestionPrompt from "./QuestionPrompt.svelte";
   import type {
     PermissionTimelineItem,
     SessionListItem,
     TimelineItem,
     ToolTimelineItem,
     DiffTimelineItem,
-    MessageTimelineItem
+    MessageTimelineItem,
+    UserQuestionTimelineItem
   } from "../../types";
   import type { AgentState } from "../../shell/tweaks";
 
@@ -24,6 +26,7 @@
     agentState?: AgentState;
     timeline: TimelineItem[];
     pendingPermissions: PermissionTimelineItem[];
+    pendingQuestions: UserQuestionTimelineItem[];
     loading: boolean;
     /** True while an agent turn is running on the current session. Flips
      *  the composer's send button into a red "Stop" so the user can
@@ -34,6 +37,11 @@
     turnStatusHint?: string | null;
     onSubmitMessage: (message: string) => void;
     onResolvePermission: (permissionId: string, choice: string) => void;
+    onResolveUserQuestion: (
+      questionId: string,
+      answers: Record<string, string | string[]>,
+      annotations?: Record<string, Record<string, string>>
+    ) => void;
     onCancelTurn?: () => void;
   };
 
@@ -43,6 +51,7 @@
     agentState = "idle",
     timeline,
     pendingPermissions,
+    pendingQuestions,
     loading,
     turnRunning = false,
     turnStartedAtMs = null,
@@ -50,6 +59,7 @@
     turnStatusHint = null,
     onSubmitMessage,
     onResolvePermission,
+    onResolveUserQuestion,
     onCancelTurn
   }: Props = $props();
 
@@ -69,6 +79,7 @@
         item: MessageTimelineItem | null;
         children: (ToolTimelineItem | DiffTimelineItem)[];
         approvals: PermissionTimelineItem[];
+        questions: UserQuestionTimelineItem[];
       };
 
   function buildRows(items: TimelineItem[]): RowKind[] {
@@ -89,13 +100,14 @@
           kind: "agent",
           item: item as MessageTimelineItem,
           children: [],
-          approvals: []
+          approvals: [],
+          questions: []
         };
       } else if (item.kind === "tool") {
-        if (!current) current = { kind: "agent", item: null, children: [], approvals: [] };
+        if (!current) current = { kind: "agent", item: null, children: [], approvals: [], questions: [] };
         current.children.push(item as ToolTimelineItem);
       } else if (item.kind === "diff") {
-        if (!current) current = { kind: "agent", item: null, children: [], approvals: [] };
+        if (!current) current = { kind: "agent", item: null, children: [], approvals: [], questions: [] };
         current.children.push(item as DiffTimelineItem);
       }
     }
@@ -103,7 +115,7 @@
     return rows;
   }
 
-  let rows = $derived(buildRows(timeline.filter((i) => i.kind !== "permission")));
+  let rows = $derived(buildRows(timeline.filter((i) => i.kind !== "permission" && i.kind !== "question")));
 
   function formatTime(ms: number | undefined): string {
     if (!ms) return "";
@@ -157,7 +169,7 @@
   // approval prompt sits with the tool call it's asking about.
   let distributedRows = $derived.by(() => {
     const out = [...rows];
-    if (!pendingPermissions.length) return out;
+    if (!pendingPermissions.length && !pendingQuestions.length) return out;
     // attach to the last agent row (or append a synthetic one)
     const lastAgentIdx = (() => {
       for (let i = out.length - 1; i >= 0; i--) if (out[i].kind === "agent") return i;
@@ -165,9 +177,19 @@
     })();
     if (lastAgentIdx >= 0 && out[lastAgentIdx].kind === "agent") {
       const prev = out[lastAgentIdx] as Extract<RowKind, { kind: "agent" }>;
-      out[lastAgentIdx] = { ...prev, approvals: [...prev.approvals, ...pendingPermissions] };
+      out[lastAgentIdx] = {
+        ...prev,
+        approvals: [...prev.approvals, ...pendingPermissions],
+        questions: [...prev.questions, ...pendingQuestions]
+      };
     } else {
-      out.push({ kind: "agent", item: null, children: [], approvals: [...pendingPermissions] });
+      out.push({
+        kind: "agent",
+        item: null,
+        children: [],
+        approvals: [...pendingPermissions],
+        questions: [...pendingQuestions]
+      });
     }
     return out;
   });
@@ -180,7 +202,7 @@
       if (turnThinking) return `Thinking${suffix}`;
       return `Running${suffix}`;
     }
-    if (agentState === "awaiting") return `${agentName} paused - waiting for your approval`;
+    if (agentState === "awaiting") return `${agentName} paused - waiting for your response`;
     return null;
   });
 </script>
@@ -234,7 +256,7 @@
                     <MessageBody body={row.item.body} />
                   </div>
                 {/if}
-                {#if row.children.length || row.approvals.length}
+                {#if row.children.length || row.approvals.length || row.questions.length}
                   <div class="agent-tools">
                     {#each row.children as child (child.id)}
                       {#if child.kind === "tool"}
@@ -245,6 +267,9 @@
                     {/each}
                     {#each row.approvals as p (p.id)}
                       <Approval item={p} onResolve={onResolvePermission} />
+                    {/each}
+                    {#each row.questions as q (q.id)}
+                      <QuestionPrompt item={q} onResolve={onResolveUserQuestion} />
                     {/each}
                   </div>
                 {/if}

@@ -829,6 +829,8 @@ export async function loadSessionDetailFromDaemon(
 }
 
 export type PermissionAction = "allow_once" | "allow_session" | "allow_all_session" | "deny";
+export type UserQuestionAnswers = Record<string, string | string[]>;
+export type UserQuestionAnnotations = Record<string, Record<string, string>>;
 
 /** Starts a new agent turn on `sessionId` with `message`. Returns the turn id
  *  so the caller can correlate streamed events and reply to permission
@@ -862,6 +864,23 @@ export async function resolvePermission(
   } catch (daemonError) {
     if (!canInvokeTauri()) throw daemonError;
     await invoke("resolve_permission", { turnId, requestId, action });
+  }
+}
+
+/** Resolves a pending AskUserQuestion prompt for an in-flight turn. */
+export async function resolveUserQuestion(
+  turnId: string,
+  requestId: string,
+  answers: UserQuestionAnswers,
+  annotations: UserQuestionAnnotations = {}
+): Promise<void> {
+  try {
+    const client = await ensureLocalDaemonClient();
+    await client.request("resolve_user_question", { turnId, requestId, answers, annotations });
+    return;
+  } catch (daemonError) {
+    if (!canInvokeTauri()) throw daemonError;
+    await invoke("resolve_user_question", { turnId, requestId, answers, annotations });
   }
 }
 

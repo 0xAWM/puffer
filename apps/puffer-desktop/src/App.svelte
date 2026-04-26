@@ -41,6 +41,7 @@
     writeRemoteFile,
     runAgentTurn,
     resolvePermission as resolveTurnPermission,
+    resolveUserQuestion as resolveTurnUserQuestion,
     cancelTurn,
     createSession,
     loadDefaultWorkspace
@@ -60,13 +61,15 @@
     DesktopPreferences,
     ExternalCredential,
     FolderGroup,
+    AskUserQuestionItem,
     PermissionTimelineItem,
     RemoteConnection,
     RemoteOperation,
     SessionDetail,
     SessionListItem,
     SettingsSnapshot,
-    TimelineItem
+    TimelineItem,
+    UserQuestionTimelineItem
   } from "./lib/types";
 
   // ─────────────────────────────────────────────────────────────
@@ -108,6 +111,7 @@
   let openAgentSessionId = $state<string | null>(null);
   let submittedMessages = $state<TimelineItem[]>([]);
   let dismissedPermissionIds = $state<string[]>([]);
+  let dismissedQuestionIds = $state<string[]>([]);
 
   // Live turn state: items synthesized from streaming events while a turn is
   // running. When the turn finishes we reload the session detail so the real
@@ -118,6 +122,7 @@
   let turnStatusHint = $state<string | null>(null);
   let liveStreamItems = $state<TimelineItem[]>([]);
   let turnPermissionLookup = $state<Record<string, { turnId: string; requestId: string }>>({});
+  let turnQuestionLookup = $state<Record<string, { turnId: string; requestId: string }>>({});
   let sessionEventUnlisten: UnlistenFn | null = null;
   let subscribedSessionId: string | null = null;
   let connectionState = $state<ConnectionState>("idle");
@@ -178,6 +183,12 @@
     combinedTimeline.filter(
       (t): t is PermissionTimelineItem =>
         t.kind === "permission" && !dismissedPermissionIds.includes(t.id)
+    )
+  );
+  let pendingQuestions = $derived<UserQuestionTimelineItem[]>(
+    combinedTimeline.filter(
+      (t): t is UserQuestionTimelineItem =>
+        t.kind === "question" && !dismissedQuestionIds.includes(t.id)
     )
   );
   let turnRunning = $derived(currentTurnId !== null || turnStartedAtMs !== null);
@@ -448,6 +459,7 @@
         submittedMessages = [];
         liveStreamItems = [];
         turnPermissionLookup = {};
+        turnQuestionLookup = {};
         currentTurnId = null;
         turnStartedAtMs = null;
         turnThinking = false;
@@ -666,6 +678,29 @@
     }
   }
 
+  async function resolveUserQuestion(
+    questionId: string,
+    answers: Record<string, string | string[]>,
+    annotations: Record<string, Record<string, string>> = {}
+  ) {
+    dismissedQuestionIds = [...dismissedQuestionIds, questionId];
+    const mapping = turnQuestionLookup[questionId];
+    if (mapping) {
+      try {
+        await resolveTurnUserQuestion(mapping.turnId, mapping.requestId, answers, annotations);
+        statusMessage = "Answer sent to agent.";
+      } catch (error) {
+        const detail = errorText(error);
+        statusMessage = `resolve_user_question failed: ${detail}`;
+        appendAgentError("Question response failed", detail, "question-error");
+      }
+      const { [questionId]: _drop, ...rest } = turnQuestionLookup;
+      turnQuestionLookup = rest;
+    } else {
+      statusMessage = "Answer selected (no in-flight turn).";
+    }
+  }
+
   function appendLive(item: TimelineItem) {
     liveStreamItems = [...liveStreamItems, item];
   }
@@ -828,6 +863,28 @@
         };
         break;
       }
+      case "user-question-request": {
+        currentTurnId = ev.turnId;
+        turnThinking = false;
+        turnStatusHint = "Waiting for answer";
+        const id = `live-question-${ev.requestId}`;
+        const questions = normalizeUserQuestions(ev.questions);
+        appendLive({
+          id,
+          kind: "question",
+          title: "Question",
+          summary: questions.map((q) => q.question).join("\n"),
+          body: "",
+          meta: [],
+          status: "pending",
+          questions
+        });
+        turnQuestionLookup = {
+          ...turnQuestionLookup,
+          [id]: { turnId: ev.turnId, requestId: ev.requestId }
+        };
+        break;
+      }
       case "turn-complete":
       case "turn-error":
         currentTurnId = null;
@@ -870,6 +927,32 @@
     } catch {
       return null;
     }
+  }
+
+  function normalizeUserQuestions(raw: unknown[]): AskUserQuestionItem[] {
+    return raw
+      .map((item) => (typeof item === "object" && item !== null ? item as Record<string, unknown> : null))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => ({
+        question: typeof item.question === "string" ? item.question : "Question",
+        header: typeof item.header === "string" ? item.header : "Question",
+        multiSelect: item.multiSelect === true,
+        options: Array.isArray(item.options)
+          ? item.options
+              .map((option) =>
+                typeof option === "object" && option !== null
+                  ? option as Record<string, unknown>
+                  : null
+              )
+              .filter((option): option is Record<string, unknown> => option !== null)
+              .map((option) => ({
+                label: typeof option.label === "string" ? option.label : "Option",
+                description: typeof option.description === "string" ? option.description : "",
+                preview: typeof option.preview === "string" ? option.preview : null
+              }))
+          : []
+      }))
+      .filter((item) => item.options.length > 0);
   }
 
   async function ensureSessionSubscription() {
@@ -943,6 +1026,7 @@
                 sessionDetail={sessionDetail}
                 timeline={combinedTimeline}
                 pendingPermissions={pendingPermissions}
+                pendingQuestions={pendingQuestions}
                 loading={sessionLoading}
                 turnRunning={turnRunning}
                 turnStartedAtMs={turnStartedAtMs}
@@ -951,6 +1035,7 @@
                 onBack={onCloseAgent}
                 onSubmitMessage={submitMessage}
                 onResolvePermission={resolvePermission}
+                onResolveUserQuestion={resolveUserQuestion}
                 onCancelTurn={() => { if (currentTurnId) void cancelTurn(currentTurnId); }}
               />
             {:else}
@@ -1017,6 +1102,7 @@
       submittedMessages = [];
       liveStreamItems = [];
       turnPermissionLookup = {};
+      turnQuestionLookup = {};
       currentTurnId = null;
       turnStartedAtMs = null;
       turnThinking = false;

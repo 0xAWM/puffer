@@ -7,6 +7,7 @@ export type TimelineKind =
   | "system"
   | "tool"
   | "permission"
+  | "question"
   | "diff"
   | "command";
 
@@ -124,6 +125,25 @@ export type PermissionTimelineItem = TimelineBase & {
   choices: string[];
 };
 
+export type AskUserQuestionOption = {
+  label: string;
+  description: string;
+  preview?: string | null;
+};
+
+export type AskUserQuestionItem = {
+  question: string;
+  header: string;
+  options: AskUserQuestionOption[];
+  multiSelect?: boolean;
+};
+
+export type UserQuestionTimelineItem = TimelineBase & {
+  kind: "question";
+  status: string;
+  questions: AskUserQuestionItem[];
+};
+
 export type DiffTimelineItem = TimelineBase & {
   kind: "diff";
   diff: DiffSnapshot;
@@ -133,6 +153,7 @@ export type TimelineItem =
   | MessageTimelineItem
   | ToolTimelineItem
   | PermissionTimelineItem
+  | UserQuestionTimelineItem
   | DiffTimelineItem;
 
 /** A single agent edit reconstructed from a tool-call transcript event.

@@ -15,7 +15,8 @@
     PermissionTimelineItem,
     SessionDetail,
     SessionListItem,
-    TimelineItem
+    TimelineItem,
+    UserQuestionTimelineItem
   } from "../../types";
   import type { AgentState } from "../../shell/tweaks";
 
@@ -25,6 +26,7 @@
     sessionDetail: SessionDetail | null;
     timeline: TimelineItem[];
     pendingPermissions: PermissionTimelineItem[];
+    pendingQuestions: UserQuestionTimelineItem[];
     loading: boolean;
     turnRunning?: boolean;
     turnStartedAtMs?: number | null;
@@ -33,6 +35,11 @@
     onBack: () => void;
     onSubmitMessage: (message: string) => void;
     onResolvePermission: (permissionId: string, choice: string) => void;
+    onResolveUserQuestion: (
+      questionId: string,
+      answers: Record<string, string | string[]>,
+      annotations?: Record<string, Record<string, string>>
+    ) => void;
     onCancelTurn?: () => void;
   };
 
@@ -41,6 +48,7 @@
     sessionDetail,
     timeline,
     pendingPermissions,
+    pendingQuestions,
     loading,
     turnRunning = false,
     turnStartedAtMs = null,
@@ -49,6 +57,7 @@
     onBack,
     onSubmitMessage,
     onResolvePermission,
+    onResolveUserQuestion,
     onCancelTurn
   }: Props = $props();
 
@@ -76,7 +85,7 @@
   }
 
   let pufferState = $derived<AgentState>(
-    pendingPermissions.length > 0
+    pendingPermissions.length > 0 || pendingQuestions.length > 0
       ? "awaiting"
       : turnRunning
         ? turnThinking
@@ -175,6 +184,7 @@
         agentState={pufferState}
         timeline={timeline}
         pendingPermissions={pendingPermissions}
+        pendingQuestions={pendingQuestions}
         loading={loading}
         turnRunning={turnRunning}
         turnStartedAtMs={turnStartedAtMs}
@@ -182,6 +192,7 @@
         turnStatusHint={turnStatusHint}
         onSubmitMessage={onSubmitMessage}
         onResolvePermission={onResolvePermission}
+        onResolveUserQuestion={onResolveUserQuestion}
         onCancelTurn={onCancelTurn}
       />
     {:else if tab === "diff"}

@@ -35,8 +35,9 @@ use puffer_config::{
     ensure_workspace_dirs, load_config, save_user_config, ConfigPaths, PufferConfig,
 };
 use puffer_core::{
-    execute_user_turn_streaming_with_permissions, AppState, MessageRole, PermissionPromptAction,
-    PermissionPromptRequest, TurnStreamEvent,
+    execute_user_turn_streaming_with_permissions, with_user_question_prompt_handler, AppState,
+    MessageRole, PermissionPromptAction, PermissionPromptRequest, TurnStreamEvent,
+    UserQuestionPromptRequest, UserQuestionPromptResponse,
 };
 use puffer_provider_openai::{
     exchange_authorization_code as exchange_openai_authorization_code,
@@ -245,6 +246,8 @@ impl DaemonState {
 
 struct TurnHandle {
     pending: Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<PermissionPromptAction>>>>,
+    pending_questions:
+        Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<UserQuestionPromptResponse>>>>,
 }
 
 impl DaemonState {
@@ -632,6 +635,7 @@ async fn dispatch_request(
         }
 
         "resolve_permission" => respond!(handle_resolve_permission(&state, &params)),
+        "resolve_user_question" => respond!(handle_resolve_user_question(&state, &params)),
         "cancel_turn" => respond!(handle_cancel_turn(&state, &params)),
 
         other => {
@@ -1439,6 +1443,45 @@ fn handle_resolve_permission(state: &DaemonState, params: &Value) -> Result<Valu
     Ok(json!({"ok": true}))
 }
 
+fn handle_resolve_user_question(state: &DaemonState, params: &Value) -> Result<Value> {
+    let turn_id = params
+        .get("turnId")
+        .or_else(|| params.get("turn_id"))
+        .and_then(|v| v.as_str())
+        .context("missing turnId")?;
+    let request_id = params
+        .get("requestId")
+        .or_else(|| params.get("request_id"))
+        .and_then(|v| v.as_str())
+        .context("missing requestId")?;
+    let answers = params
+        .get("answers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .context("missing answers")?;
+    let annotations = params
+        .get("annotations")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let responder = {
+        let mut turns = state.turns.lock().unwrap();
+        turns
+            .get_mut(turn_id)
+            .and_then(|h| h.pending_questions.lock().unwrap().remove(request_id))
+    };
+    let responder = responder.ok_or_else(|| {
+        anyhow::anyhow!("no pending user question request `{request_id}` on turn `{turn_id}`")
+    })?;
+    responder
+        .send(UserQuestionPromptResponse {
+            answers,
+            annotations,
+        })
+        .map_err(|_| anyhow::anyhow!("worker already released the user question channel"))?;
+    Ok(json!({"ok": true}))
+}
+
 fn handle_cancel_turn(state: &DaemonState, params: &Value) -> Result<Value> {
     let turn_id = params
         .get("turnId")
@@ -1450,6 +1493,13 @@ fn handle_cancel_turn(state: &DaemonState, params: &Value) -> Result<Value> {
         let mut pending = handle.pending.lock().unwrap();
         for (_, tx) in pending.drain() {
             let _ = tx.send(PermissionPromptAction::Deny);
+        }
+        let mut pending_questions = handle.pending_questions.lock().unwrap();
+        for (_, tx) in pending_questions.drain() {
+            let _ = tx.send(UserQuestionPromptResponse {
+                answers: serde_json::Map::new(),
+                annotations: serde_json::Map::new(),
+            });
         }
     }
     Ok(json!({"ok": true}))
@@ -1484,11 +1534,15 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
     let channel = format!("session:{session_id}:event");
     let pending: Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<PermissionPromptAction>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let pending_questions: Arc<
+        Mutex<HashMap<String, std::sync::mpsc::Sender<UserQuestionPromptResponse>>>,
+    > = Arc::new(Mutex::new(HashMap::new()));
 
     state.turns.lock().unwrap().insert(
         turn_id.clone(),
         TurnHandle {
             pending: pending.clone(),
+            pending_questions: pending_questions.clone(),
         },
     );
 
@@ -1649,17 +1703,48 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
             rx.recv().unwrap_or(PermissionPromptAction::Deny)
         };
 
+        let question_state = setup_state.clone();
+        let question_channel = channel_thread.clone();
+        let question_turn = turn_id_thread.clone();
+        let question_pending = pending_questions.clone();
+        let question_next_id = setup_state.next_request_id.clone();
+        let on_user_question = move |req: UserQuestionPromptRequest| -> UserQuestionPromptResponse {
+            let request_id = question_next_id.fetch_add(1, Ordering::SeqCst).to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            question_pending
+                .lock()
+                .unwrap()
+                .insert(request_id.clone(), tx);
+
+            question_state.publish_event(ServerEnvelope::Event {
+                event: question_channel.clone(),
+                payload: json!({
+                    "type": "user-question-request",
+                    "turnId": question_turn.clone(),
+                    "requestId": request_id,
+                    "questions": req.questions,
+                }),
+            });
+
+            rx.recv().unwrap_or(UserQuestionPromptResponse {
+                answers: serde_json::Map::new(),
+                annotations: serde_json::Map::new(),
+            })
+        };
+
         let mut auth_store = inputs.auth_store.clone();
-        let outcome = execute_user_turn_streaming_with_permissions(
-            &mut app_state,
-            &inputs.resources,
-            &inputs.providers,
-            &mut auth_store,
-            &message_for_thread,
-            None,
-            on_event,
-            on_permission,
-        );
+        let outcome = with_user_question_prompt_handler(on_user_question, || {
+            execute_user_turn_streaming_with_permissions(
+                &mut app_state,
+                &inputs.resources,
+                &inputs.providers,
+                &mut auth_store,
+                &message_for_thread,
+                None,
+                on_event,
+                on_permission,
+            )
+        });
 
         match outcome {
             Ok(turn) => {
