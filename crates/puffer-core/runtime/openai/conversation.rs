@@ -454,16 +454,25 @@ pub(crate) fn items_to_responses_input(items: &[ConversationItem]) -> Value {
     )
 }
 
-/// Inserts a synthetic user-context reminder at the right position in
-/// `items`: after any leading run of `role:"system"` items, so the boundary
-/// filter's first-position exemption keeps preserving the sub-agent
-/// identity prompt that `agents.rs:319` pushes at transcript[0].
+/// Inserts the per-turn synthetic context reminder at the right position
+/// in `items`: after any leading run of `role:"system"` items, so the
+/// boundary filter's first-position exemption keeps preserving the
+/// sub-agent identity prompt that `agents.rs:319` pushes at transcript[0].
 ///
-/// Naive `items.insert(0, ...)` would push the identity to position 1,
+/// **TODO(phase3): delete this helper and revert call sites to
+/// `items.insert(0, …)` once sub-agent identity moves into top-level
+/// `Prompt::base_instructions` (codex parity). At that point no
+/// legitimate `role:"system"` exists in transcript, so no leading-system
+/// run to navigate around.**
+///
+/// Naive `items.insert(0, …)` would push the identity to position 1,
 /// past the exemption, and `drop_transient_system_messages()` would then
 /// strip it. Inserting after the leading system run keeps both the
 /// reminder and the identity in their right slots.
-pub(crate) fn insert_context_reminder(items: &mut Vec<ConversationItem>, reminder_text: &str) {
+pub(crate) fn insert_context_reminder_preserving_legacy_leading_system(
+    items: &mut Vec<ConversationItem>,
+    reminder_text: &str,
+) {
     let insert_pos = items
         .iter()
         .take_while(|item| {
@@ -1368,7 +1377,7 @@ mod tests {
     /// past `drop_transient_system_messages`'s first-position exemption,
     /// where it then got stripped.
     ///
-    /// The fix lives in `insert_context_reminder()` (this file): it
+    /// The fix lives in `insert_context_reminder_preserving_legacy_leading_system()` (this file): it
     /// inserts the reminder *after* any leading run of `role:"system"`
     /// items, preserving the sub-agent identity at the head where the
     /// boundary expects it.
@@ -1379,7 +1388,7 @@ mod tests {
             ConversationItem::user_message("audit this"),
         ];
         // Mimic the runtime call site (openai.rs / websocket.rs).
-        insert_context_reminder(&mut items, "[context: cwd=/foo, ts=...]");
+        insert_context_reminder_preserving_legacy_leading_system(&mut items, "[context: cwd=/foo, ts=...]");
         let value = items_to_responses_input(&items);
         let arr = value.as_array().unwrap();
         let identity_count = arr
@@ -1430,28 +1439,27 @@ mod tests {
         assert_eq!(msgs[2].role, "user");
     }
 
-    /// Multiple consecutive leading system items must all be preserved
-    /// (covers a future scenario where agent identity + a static side-car
-    /// instruction block are both pushed at the head before the first
-    /// non-system item).
+    /// Mid-conversation transient system items get dropped even when a
+    /// stale UI `MessageRole::System` was reloaded from session_store at
+    /// startup. The reload path is `state.rs:197`; when followed by any
+    /// user/assistant content the new entry lands at items[1+] where the
+    /// boundary filter strips it.
+    ///
+    /// This is the core safety net for the "session reload after a
+    /// crash that left a `Provider request failed: ...` system in the
+    /// transcript" scenario that motivated PR#46.
     #[test]
-    fn responses_input_preserves_multiple_leading_system_messages() {
+    fn responses_input_drops_replayed_ui_system_when_followed_by_user() {
         let items = vec![
-            ConversationItem::system_message("identity prompt"),
-            ConversationItem::system_message("static side-car"),
-            ConversationItem::user_message("hello"),
-            ConversationItem::system_message("Provider request failed: ..."),
+            ConversationItem::user_message("first user message"),
+            ConversationItem::system_message("Provider request failed: 400 ..."),
             ConversationItem::user_message("retry"),
         ];
         let value = items_to_responses_input(&items);
         let arr = value.as_array().unwrap();
-        assert_eq!(arr.len(), 4, "transient mid-conversation system entry must be dropped");
-        assert_eq!(arr[0]["role"], "system");
-        assert_eq!(arr[0]["content"], "identity prompt");
-        assert_eq!(arr[1]["role"], "system");
-        assert_eq!(arr[1]["content"], "static side-car");
-        assert_eq!(arr[2]["role"], "user");
-        assert_eq!(arr[3]["role"], "user");
+        assert_eq!(arr.len(), 2, "stale UI system must be dropped");
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[1]["role"], "user");
     }
 
     #[test]
