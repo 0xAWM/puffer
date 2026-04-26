@@ -4,6 +4,7 @@
   import Icon from "../design/Icon.svelte";
   import ProjectRow from "./workspace/ProjectRow.svelte";
   import ConnectProjectModal from "./workspace/ConnectProjectModal.svelte";
+  import { sessionDisplayName, sessionDisplayTitle } from "../sessionDisplay";
   import type { MockAgent, MockProject } from "../data/mockProjects";
   import type { FolderGroup, SessionListItem } from "../types";
 
@@ -83,8 +84,8 @@
     return {
       id: session.id,
       project: projectId,
-      name: session.displayName?.trim() || session.slug || `session ${session.id.slice(0, 6)}`,
-      title: session.title,
+      name: sessionDisplayName(session),
+      title: sessionDisplayTitle(session),
       worktree: "",
       branch: "",
       status: "idle",

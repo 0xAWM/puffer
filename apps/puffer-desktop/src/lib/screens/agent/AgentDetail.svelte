@@ -10,6 +10,7 @@
     agentPufferState,
     type AgentStatus
   } from "../../data/mockProjects";
+  import { sessionDisplayName, sessionDisplayTitle } from "../../sessionDisplay";
   import type {
     PermissionTimelineItem,
     SessionDetail,
@@ -52,8 +53,8 @@
 
   // Header identity comes straight from the live session record. No
   // local board persona — the daemon is the source of truth.
-  let displayName = $derived(session?.displayName ?? session?.title ?? "Session");
-  let displayTitle = $derived(session?.title ?? session?.note ?? "");
+  let displayName = $derived(sessionDisplayName(session));
+  let displayTitle = $derived(sessionDisplayTitle(session));
   let displayBranch = $derived(sessionDetail?.repoStatus?.branch ?? "");
   let displayProject = $derived(session?.folderPath?.split("/").pop() ?? "");
   let displayWorktree = $derived("");

@@ -104,7 +104,12 @@
         >
           <Puffer size={16} state={a.state} />
           <div class="pf-row-stack">
-            <span class="title">{a.name} · {a.title}</span>
+            <span class="title">
+              {a.name}
+              {#if a.title}
+                · {a.title}
+              {/if}
+            </span>
             <span class="pf-task-status">{a.project} · {a.state}</span>
           </div>
         </button>

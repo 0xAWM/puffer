@@ -54,6 +54,7 @@
     ensureLocalDaemonClient,
     type ConnectionState
   } from "./lib/api/daemonClient";
+  import { sessionDisplayName, sessionDisplayTitle } from "./lib/sessionDisplay";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type {
     DesktopPreferences,
@@ -181,8 +182,8 @@
     groups.flatMap((g) =>
       g.sessions.slice(0, 3).map((s) => ({
         id: s.id,
-        name: (s.displayName ?? s.title).slice(0, 24) || "session",
-        title: s.title,
+        name: sessionDisplayName(s).slice(0, 24),
+        title: sessionDisplayTitle(s),
         project: g.label,
         branch: "",
         state: "idle" as AgentState
@@ -209,7 +210,7 @@
       ? [
           {
             id: selectedSession.id,
-            title: selectedSession.displayName ?? selectedSession.title,
+            title: sessionDisplayName(selectedSession),
             state: tweaks.agentState
           }
         ]
@@ -460,7 +461,7 @@
         const fallback: SessionListItem = {
           id: created.sessionId,
           displayName: null,
-          title: "New agent",
+          title: "New Session",
           cwd: created.cwd,
           folderPath: created.cwd,
           updatedAtMs: created.createdAtMs,

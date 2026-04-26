@@ -16,7 +16,9 @@
     </div>
     <span class="status-pill" data-status={a.status}>{AGENT_STATE_LABELS[a.status] ?? a.status}</span>
   </div>
-  <div class="title">{a.title}</div>
+  {#if a.title}
+    <div class="title">{a.title}</div>
+  {/if}
   <div class="branch-row">
     <Icon name="branch" size={10} />
     <span class="branch">{a.branch}</span>
