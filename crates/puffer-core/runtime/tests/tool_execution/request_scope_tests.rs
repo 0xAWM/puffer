@@ -108,6 +108,7 @@ fn send_user_message_ignores_workspace_ask_permissions() {
             structured_output: None,
         },
         None,
+        Some("call_1"),
         "SendUserMessage",
         json!({
             "message": "hi",

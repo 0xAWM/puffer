@@ -36,8 +36,34 @@ pub struct PufferConfig {
     pub effort_level: Option<String>,
     #[serde(default, alias = "copyFullResponse")]
     pub copy_full_response: bool,
+    #[serde(default)]
+    pub remote_tool_runner: Option<RemoteToolRunnerConfig>,
     pub mascot: MascotConfig,
     pub ui: UiConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RemoteToolRunnerConfig {
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    #[serde(default)]
+    pub auth_token_env: Option<String>,
+    #[serde(default)]
+    pub remote_cwd: Option<String>,
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+    #[serde(default)]
+    pub path_map: Option<RemotePathMapConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RemotePathMapConfig {
+    #[serde(default)]
+    pub local_root: Option<String>,
+    #[serde(default)]
+    pub remote_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +102,7 @@ impl Default for PufferConfig {
             fast_mode: false,
             effort_level: None,
             copy_full_response: false,
+            remote_tool_runner: None,
             mascot: MascotConfig {
                 id: "clawd".to_string(),
                 display_name: "Clawd".to_string(),

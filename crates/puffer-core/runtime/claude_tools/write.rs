@@ -60,6 +60,32 @@ pub fn execute_claude_write_tool(
     input: Value,
     read_file_state: &mut HashMap<PathBuf, ClaudeReadSnapshot>,
 ) -> Result<String> {
+    execute_claude_write_tool_internal(
+        cwd,
+        working_dirs,
+        allow_all_paths,
+        input,
+        Some(read_file_state),
+    )
+}
+
+/// Executes a Claude-compatible `Write` tool call without enforcing prior-read state.
+pub(crate) fn execute_claude_write_tool_unchecked(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    allow_all_paths: bool,
+    input: Value,
+) -> Result<String> {
+    execute_claude_write_tool_internal(cwd, working_dirs, allow_all_paths, input, None)
+}
+
+fn execute_claude_write_tool_internal(
+    cwd: &Path,
+    working_dirs: &[PathBuf],
+    allow_all_paths: bool,
+    input: Value,
+    mut read_file_state: Option<&mut HashMap<PathBuf, ClaudeReadSnapshot>>,
+) -> Result<String> {
     let input: ClaudeWriteInput =
         serde_json::from_value(input).context("invalid Write tool input")?;
     let raw_path = PathBuf::from(&input.file_path);
@@ -94,7 +120,9 @@ pub fn execute_claude_write_tool(
         None
     };
     if existed {
-        validate_existing_write(&path, read_file_state)?;
+        if let Some(state) = read_file_state.as_deref() {
+            validate_existing_write(&path, state)?;
+        }
     }
 
     if let Some(parent) = path.parent() {
@@ -105,13 +133,15 @@ pub fn execute_claude_write_tool(
         .with_context(|| format!("failed to write file {}", path.display()))?;
 
     let timestamp_ms = file_timestamp_ms(&path)?;
-    read_file_state.insert(
-        path.clone(),
-        ClaudeReadSnapshot {
-            timestamp_ms,
-            is_partial_view: false,
-        },
-    );
+    if let Some(state) = read_file_state.as_deref_mut() {
+        state.insert(
+            path.clone(),
+            ClaudeReadSnapshot {
+                timestamp_ms,
+                is_partial_view: false,
+            },
+        );
+    }
 
     let output = ClaudeWriteOutput {
         write_type: if original_file.is_some() {

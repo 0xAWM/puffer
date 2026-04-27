@@ -1826,6 +1826,17 @@ async fn start_turn(state: Arc<DaemonState>, params: Value) -> Result<Value> {
                         "success": i.success,
                     })).collect::<Vec<_>>(),
                 }),
+                TurnStreamEvent::ToolOutputDelta(delta) => json!({
+                    "type": "tool-output-delta",
+                    "turnId": ev_turn,
+                    "callId": delta.call_id,
+                    "toolId": delta.tool_id,
+                    "stream": match delta.stream {
+                        puffer_core::ToolOutputStream::Stdout => "stdout",
+                        puffer_core::ToolOutputStream::Stderr => "stderr",
+                    },
+                    "delta": delta.text,
+                }),
                 TurnStreamEvent::Usage(r) => json!({
                     "type": "usage",
                     "turnId": ev_turn,

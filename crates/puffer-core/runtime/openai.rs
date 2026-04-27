@@ -833,7 +833,7 @@ pub(super) fn execute_openai_tool_calls(
     // Count how many parallel-safe tools we have.
     let parallel_count = tool_calls
         .iter()
-        .filter(|tc| is_parallel_safe_tool(&tc.name))
+        .filter(|tc| is_parallel_safe_tool(state, &tc.name))
         .count();
 
     // If 0-1 tool calls or nothing to parallelize, use the serial fast-path.
@@ -888,7 +888,7 @@ pub(super) fn execute_openai_tool_calls(
             Vec::new();
         for (i, tc) in tool_calls.iter().enumerate() {
             // Skip denied tools and non-parallel tools.
-            if !is_parallel_safe_tool(&tc.name) {
+            if !is_parallel_safe_tool(state, &tc.name) {
                 continue;
             }
             if let PermissionOutcome::Denied(ref denied) = permissions[i] {
@@ -967,6 +967,7 @@ pub(super) fn execute_openai_tool_calls(
                 structured_output,
             },
             tool_filter,
+            Some(&tc.call_id),
             &tc.name,
             tc.arguments.clone(),
         ) {
@@ -1055,6 +1056,7 @@ fn execute_openai_tool_calls_serial(
                 structured_output,
             },
             tool_filter,
+            Some(&tool_call.call_id),
             &tool_call.name,
             tool_call.arguments.clone(),
         ) {

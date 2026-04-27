@@ -10,6 +10,10 @@ use uuid::Uuid;
 mod agent_team_e2e;
 #[path = "tool_execution/multi_agent_e2e.rs"]
 mod multi_agent_e2e;
+#[path = "tool_execution/remote_runner.rs"]
+mod remote_runner;
+#[path = "tool_execution/remote_session_e2e.rs"]
+mod remote_session_e2e;
 #[path = "tool_execution/request_scope_tests.rs"]
 mod request_scope_tests;
 
@@ -71,6 +75,24 @@ fn mark_file_fully_read(state: &mut AppState, path: &Path) {
             is_partial_view: false,
         },
     );
+}
+
+fn configure_remote_tool_runner(
+    state: &mut AppState,
+    runner: &remote_runner::RemoteToolRunnerHandle,
+    enabled_tools: &[&str],
+) {
+    state.config.remote_tool_runner = Some(puffer_config::RemoteToolRunnerConfig {
+        endpoint: Some(runner.endpoint().to_string()),
+        auth_token: Some(runner.token().to_string()),
+        auth_token_env: None,
+        remote_cwd: Some(state.cwd.display().to_string()),
+        enabled_tools: enabled_tools
+            .iter()
+            .map(|tool| (*tool).to_string())
+            .collect(),
+        path_map: None,
+    });
 }
 
 #[path = "tool_execution/workflow.rs"]
@@ -511,6 +533,7 @@ fn execute_tool_call_requires_prior_read_for_notebook_edit() {
             structured_output: None,
         },
         None,
+        Some("call_1"),
         "NotebookEdit",
         json!({
             "notebook_path": notebook.display().to_string(),
@@ -722,4 +745,146 @@ fn openai_tool_hooks_run_for_completed_tool_calls() {
         std::fs::read_to_string(hook_output).unwrap(),
         "start:bash\nend:bash:true\n"
     );
+}
+
+#[test]
+fn execute_openai_tool_calls_route_bash_through_remote_runner_and_stream_output() {
+    let runner = remote_runner::spawn_remote_tool_runner();
+    let mut bash = loaded_tool("Bash", "Run shell", "runtime:claude_bash");
+    bash.value.approval_policy = Some("never".to_string());
+    bash.value.sandbox_policy = Some("read-only".to_string());
+    let resources = LoadedResources {
+        tools: vec![bash],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(openai_provider("http://127.0.0.1".to_string()));
+    let request_config = test_openai_request_config();
+    let tool_calls = vec![OpenAIResponseToolCall {
+        item_id: Some("fc_remote_bash".to_string()),
+        status: Some("completed".to_string()),
+        call_id: "call_remote_bash".to_string(),
+        name: "Bash".to_string(),
+        arguments: json!({
+            "command": "printf remote-stdout; printf remote-stderr >&2"
+        }),
+    }];
+    let mut state = temp_state();
+    configure_remote_tool_runner(&mut state, &runner, &["Bash"]);
+    let cwd = state.cwd.clone();
+    let mut deltas = Vec::new();
+    let mut on_delta = |delta| deltas.push(delta);
+
+    let result = super::super::tool_stream::with_tool_stream_handler(&mut on_delta, || {
+        execute_openai_tool_calls(
+            &mut state,
+            &resources,
+            &providers,
+            &mut AuthStore::default(),
+            &tool_calls,
+            &registry,
+            &cwd,
+            &request_config,
+            "gpt-5",
+            None,
+            None,
+        )
+    })
+    .unwrap();
+
+    assert_eq!(result.invocations.len(), 1);
+    assert!(result.invocations[0].success);
+    assert_eq!(result.invocations[0].tool_id, "Bash");
+    assert!(result.outputs[0]
+        .output
+        .contains("\"stdout\": \"remote-stdout\""));
+    assert!(result.outputs[0]
+        .output
+        .contains("\"stderr\": \"remote-stderr\""));
+    assert!(deltas.iter().any(|delta| {
+        delta.call_id == "call_remote_bash"
+            && delta.tool_id == "Bash"
+            && delta.stream == ToolOutputStream::Stdout
+            && delta.text.contains("remote-stdout")
+    }));
+    assert!(deltas.iter().any(|delta| {
+        delta.call_id == "call_remote_bash"
+            && delta.tool_id == "Bash"
+            && delta.stream == ToolOutputStream::Stderr
+            && delta.text.contains("remote-stderr")
+    }));
+}
+
+#[test]
+fn execute_openai_tool_calls_keep_local_read_state_in_sync_after_remote_write_and_edit() {
+    let runner = remote_runner::spawn_remote_tool_runner();
+    let mut write = loaded_tool("Write", "Write file", "runtime:claude_write");
+    write.value.approval_policy = Some("auto".to_string());
+    write.value.sandbox_policy = Some("workspace-write".to_string());
+    let mut edit = loaded_tool("Edit", "Edit file", "runtime:claude_edit");
+    edit.value.approval_policy = Some("auto".to_string());
+    edit.value.sandbox_policy = Some("workspace-write".to_string());
+    let resources = LoadedResources {
+        tools: vec![write, edit],
+        ..LoadedResources::default()
+    };
+    let registry = ToolRegistry::from_resources(&resources);
+    let mut providers = ProviderRegistry::new();
+    providers.register(openai_provider("http://127.0.0.1".to_string()));
+    let request_config = test_openai_request_config();
+    let mut state = temp_state();
+    configure_remote_tool_runner(&mut state, &runner, &["Write", "Edit"]);
+    let file = state.cwd.join("remote-edit.txt");
+    let tool_calls = vec![
+        OpenAIResponseToolCall {
+            item_id: Some("fc_remote_write".to_string()),
+            status: Some("completed".to_string()),
+            call_id: "call_remote_write".to_string(),
+            name: "Write".to_string(),
+            arguments: json!({
+                "file_path": file.display().to_string(),
+                "content": "hello from remote\n"
+            }),
+        },
+        OpenAIResponseToolCall {
+            item_id: Some("fc_remote_edit".to_string()),
+            status: Some("completed".to_string()),
+            call_id: "call_remote_edit".to_string(),
+            name: "Edit".to_string(),
+            arguments: json!({
+                "file_path": file.display().to_string(),
+                "old_string": "hello from remote",
+                "new_string": "updated remotely"
+            }),
+        },
+    ];
+    let cwd = state.cwd.clone();
+
+    let result = execute_openai_tool_calls(
+        &mut state,
+        &resources,
+        &providers,
+        &mut AuthStore::default(),
+        &tool_calls,
+        &registry,
+        &cwd,
+        &request_config,
+        "gpt-5",
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(result.invocations.len(), 2);
+    assert!(result
+        .invocations
+        .iter()
+        .all(|invocation| invocation.success));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "updated remotely\n");
+    let snapshot = state
+        .claude_read_state
+        .get(&file)
+        .expect("remote write/edit should refresh local read state");
+    assert!(!snapshot.is_partial_view);
 }

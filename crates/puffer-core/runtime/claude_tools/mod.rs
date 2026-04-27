@@ -14,16 +14,17 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use uuid::Uuid;
 
-mod bash;
-mod edit;
-mod glob;
-mod grep;
+pub(crate) mod bash;
+pub(crate) use bash::BashOutputStream;
+pub(crate) mod edit;
+pub(crate) mod glob;
+pub(crate) mod grep;
 pub(super) mod mcp_resources;
-mod notebook_edit;
-mod read;
+pub(crate) mod notebook_edit;
+pub(crate) mod read;
 pub(crate) mod skill;
 pub(crate) mod tool_search;
-mod web_fetch;
+pub(crate) mod web_fetch;
 mod web_search;
 
 /// Retries a blocking HTTP send operation up to `max_attempts` times with 1s delay
@@ -56,7 +57,7 @@ fn is_retryable_send_error(error: &anyhow::Error) -> bool {
     })
 }
 pub(crate) mod workflow;
-mod write;
+pub(crate) mod write;
 
 /// Carries provider-specific execution context for runtime-backed tools.
 pub(crate) enum ProviderToolContext<'a> {
@@ -97,7 +98,7 @@ pub(crate) fn execute_tool(
             Ok(tool_result(definition, execution.success, output))
         }
         "Read" => {
-            if is_full_read_request(&input) {
+            if should_use_local_read_shortcut(state) && is_full_read_request(&input) {
                 if let Some(path) = input_file_path(&input, "file_path")? {
                     if let Some(snapshot) = state.claude_read_state.get(&path) {
                         let timestamp_ms = file_timestamp_ms(&path)?;
@@ -331,6 +332,55 @@ fn tool_result(definition: &ToolDefinition, success: bool, stdout: String) -> To
     }
 }
 
+/// Applies the local prior-read guard for tools that will execute on a remote runner.
+pub(crate) fn validate_remote_tool_preconditions(
+    state: &AppState,
+    tool_id: &str,
+    input: &Value,
+) -> Result<()> {
+    match tool_id {
+        "Edit" => enforce_read_precondition(state, input_file_path(input, "file_path")?.as_deref()),
+        "NotebookEdit" => {
+            enforce_read_precondition(state, input_file_path(input, "notebook_path")?.as_deref())
+        }
+        "Write" => {
+            let Some(path) = input_file_path(input, "file_path")? else {
+                return Ok(());
+            };
+            if path.exists() {
+                enforce_read_precondition(state, Some(&path))
+            } else {
+                Ok(())
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Mirrors the local read-state updates after a remote tool run completes successfully.
+pub(crate) fn apply_remote_tool_state_update(
+    state: &mut AppState,
+    tool_id: &str,
+    input: &Value,
+) -> Result<()> {
+    match tool_id {
+        "Read" => record_read_from_input(state, input),
+        "Write" | "Edit" => {
+            if let Some(path) = input_file_path(input, "file_path")? {
+                mark_fully_read(state, &path)?;
+            }
+            Ok(())
+        }
+        "NotebookEdit" => {
+            if let Some(path) = input_file_path(input, "notebook_path")? {
+                mark_fully_read(state, &path)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn input_file_path(input: &Value, field: &str) -> Result<Option<PathBuf>> {
     Ok(input.get(field).and_then(Value::as_str).map(PathBuf::from))
 }
@@ -339,6 +389,10 @@ fn is_full_read_request(input: &Value) -> bool {
     !read_field_is_present(input, "offset")
         && !read_field_is_present(input, "limit")
         && !read_pages_field_is_present(input)
+}
+
+fn should_use_local_read_shortcut(state: &AppState) -> bool {
+    state.config.remote_tool_runner.is_none()
 }
 
 fn clone_read_state(state: &AppState) -> HashMap<PathBuf, write::ClaudeReadSnapshot> {
@@ -435,6 +489,9 @@ fn enforce_read_precondition(state: &AppState, path: Option<&Path>) -> Result<()
     };
     if snapshot.is_partial_view {
         bail!("File has not been read yet. Read it first before writing to it.");
+    }
+    if state.config.remote_tool_runner.is_some() {
+        return Ok(());
     }
     let timestamp_ms = file_timestamp_ms(path)?;
     if timestamp_ms > snapshot.timestamp_ms {

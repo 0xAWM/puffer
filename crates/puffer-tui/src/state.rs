@@ -7,7 +7,7 @@ use crate::text_overlay::TextOverlay;
 use crate::usage::UsageOverlay;
 use puffer_core::{
     CommandSpec, PermissionPromptAction, PermissionPromptRequest, ToolCallRequest, ToolInvocation,
-    TurnExecution, TurnUsageReport,
+    ToolOutputDelta, TurnExecution, TurnUsageReport,
 };
 use puffer_provider_registry::{AuthStore, ExternalImportCandidate};
 use puffer_session_store::SessionSummary;
@@ -88,6 +88,7 @@ pub(crate) enum PendingSubmitEvent {
     TextDelta(String),
     ToolCallsRequested(Vec<ToolCallRequest>),
     ToolInvocations(Vec<ToolInvocation>),
+    ToolOutputDelta(ToolOutputDelta),
     ReflectionCheckpoint(String),
     RetryAttempt {
         attempt: usize,

@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package puffer.remote_tools.v1;
+
+service ToolRunner {
+  rpc DescribeCapabilities(DescribeCapabilitiesRequest) returns (DescribeCapabilitiesResponse);
+  rpc ExecuteTool(ExecuteToolRequest) returns (stream ExecuteToolEvent);
+}
+
+message DescribeCapabilitiesRequest {}
+
+message DescribeCapabilitiesResponse {
+  string version = 1;
+  repeated string supported_tools = 2;
+  bool streams_stdout_stderr = 3;
+}
+
+message ExecuteToolRequest {
+  string session_id = 1;
+  string call_id = 2;
+  string tool_id = 3;
+  string input_json = 4;
+  string cwd = 5;
+  repeated string working_dirs = 6;
+  string sandbox_mode = 7;
+}
+
+message ExecuteToolEvent {
+  oneof payload {
+    StreamChunk stdout = 1;
+    StreamChunk stderr = 2;
+    ExecuteToolCompleted completed = 3;
+    ExecuteToolFailed failed = 4;
+  }
+}
+
+message StreamChunk {
+  string text = 1;
+}
+
+message ExecuteToolCompleted {
+  string tool_id = 1;
+  bool success = 2;
+  string stdout = 3;
+  string stderr = 4;
+  string metadata_json = 5;
+}
+
+message ExecuteToolFailed {
+  string message = 1;
+}

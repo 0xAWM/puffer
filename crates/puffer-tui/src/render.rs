@@ -751,7 +751,7 @@ fn render_overlay(frame: &mut Frame<'_>, viewport: Rect, overlay: &OverlayState)
     frame.render_widget(
         List::new(rows).block(
             Block::default()
-                .title(overlay_title(overlay))
+                .title(overlay_title(overlay).into_owned())
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
                 .border_style(accent_border_style()),

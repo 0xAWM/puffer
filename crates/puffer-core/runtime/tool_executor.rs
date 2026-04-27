@@ -4,6 +4,7 @@ use super::hook_support::{run_tool_end_hooks, run_tool_start_hooks};
 use super::permission_prompt::{
     build_permission_prompt_request, prompt_for_permission, PermissionPromptAction,
 };
+use super::remote_tool_executor::{maybe_execute_remote_tool_call, remote_tool_parallel_safe};
 use super::structured_output_support::{
     requested_structured_output_definition_for_request, StructuredOutputConfig,
 };
@@ -43,6 +44,7 @@ pub(super) fn execute_tool_call(
     cwd: &Path,
     backend: ToolExecutionBackend<'_>,
     tool_filter: Option<&RequestToolFilter>,
+    call_id: Option<&str>,
     tool_id: &str,
     input: Value,
 ) -> Result<ToolExecutionResult> {
@@ -125,7 +127,11 @@ pub(super) fn execute_tool_call(
     };
     let hook_input = input.clone();
     run_tool_start_hooks(resources, cwd, tool_id, &hook_input);
-    let result = if definition.handler == "runtime:agent" {
+    let result = if let Some(result) =
+        maybe_execute_remote_tool_call(state, call_id, tool_id, input.clone())?
+    {
+        result
+    } else if definition.handler == "runtime:agent" {
         let output = execute_agent_tool(state, resources, providers, auth_store, cwd, input)?;
         successful_runtime_tool(tool_id, output)
     } else {
@@ -168,11 +174,11 @@ fn successful_runtime_tool(tool_id: &str, stdout: String) -> ToolExecutionResult
 /// These tools perform pure IO (filesystem reads, HTTP requests, process spawning)
 /// and don't read or write any mutable application state. This classification
 /// enables parallel execution when the model requests multiple tool calls.
-pub(super) fn is_parallel_safe_tool(tool_id: &str) -> bool {
+pub(super) fn is_parallel_safe_tool(state: &AppState, tool_id: &str) -> bool {
     matches!(
         tool_id,
         "Glob" | "Grep" | "WebFetch" | "WebSearch" | "ToolSearch" | "Skill" | "Bash"
-    )
+    ) && remote_tool_parallel_safe(state, tool_id)
 }
 
 /// The result of pre-resolving permission for a tool call.

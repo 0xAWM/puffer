@@ -38,6 +38,10 @@ pub use runtime::background_tasks;
 pub use runtime::claude_tools::execute_workflow_tool;
 pub use runtime::execute_user_prompt as execute_user_turn;
 pub use runtime::install_subscription_manager;
+pub use runtime::remote_tools::{
+    execute_remote_tool, remote_tool_capabilities_dto, remote_tool_runner_capabilities,
+    remote_tool_runner_supported_tools, RemoteToolRunnerCapabilities,
+};
 pub use runtime::subscription_manager;
 pub use runtime::teammate_loop;
 pub use runtime::{
@@ -49,8 +53,9 @@ pub use runtime::{
     shutdown_runtime_services, with_permission_prompt_handler, with_user_question_prompt_handler,
     CodeJudgeConfig, LlmJudgeConfig, LlmJudgeContextScope, LlmJudgeMode, LlmJudgePromptCacheMode,
     PermissionPromptAction, PermissionPromptRequest, ReflectionConfig, ReflectionLanguage,
-    ReflectionTraceEvent, StructuredOutputConfig, ToolCallRequest, ToolInvocation, TurnExecution,
-    TurnStreamEvent, TurnUsageReport, UserQuestionPromptRequest, UserQuestionPromptResponse,
+    ReflectionTraceEvent, StructuredOutputConfig, ToolCallRequest, ToolInvocation, ToolOutputDelta,
+    ToolOutputStream, TurnExecution, TurnStreamEvent, TurnUsageReport, UserQuestionPromptRequest,
+    UserQuestionPromptResponse,
 };
 pub use state::{AppState, MessageRole, RenderedMessage, TaskRecord, TaskStatus};
 

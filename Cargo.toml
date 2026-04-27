@@ -12,6 +12,7 @@ members = [
     "crates/puffer-core",
     "crates/puffer-provider-openai",
     "crates/puffer-provider-registry",
+    "crates/puffer-remote-tools",
     "crates/puffer-resources",
     "crates/puffer-session-store",
     "crates/puffer-subscriber-email",
@@ -19,6 +20,7 @@ members = [
     "crates/puffer-subscriber-telegram-user",
     "crates/puffer-subscriptions",
     "crates/puffer-test-support",
+    "crates/puffer-tool-runner",
     "crates/puffer-tools",
     "crates/puffer-transport-anthropic",
     "crates/puffer-tui",
@@ -59,6 +61,9 @@ regex = "1.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
 time = { version = "0.3.44", features = ["formatting", "local-offset", "parsing"] }
 toml = "0.9.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tonic = { version = "0.12", features = ["transport"] }
+tonic-build = "0.12"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 url = "2.5.7"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }

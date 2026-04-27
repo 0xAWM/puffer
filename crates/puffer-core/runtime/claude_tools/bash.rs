@@ -2,8 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
+use std::io::{BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -63,6 +65,13 @@ pub struct ClaudeBashExecution {
     pub output: ClaudeBashOutput,
 }
 
+/// Identifies the shell stream that emitted one streamed Bash chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BashOutputStream {
+    Stdout,
+    Stderr,
+}
+
 /// Returns the model-facing description text used for one `Bash` invocation.
 pub fn tool_description(input: &ClaudeBashInput) -> String {
     input
@@ -95,6 +104,66 @@ pub fn execute(
         return execute_background(cwd, session_id, input);
     }
     execute_foreground(cwd, input)
+}
+
+/// Parses JSON input and executes a Claude-style `Bash` tool invocation while streaming output.
+pub(crate) fn execute_streaming_from_value<F>(
+    cwd: &Path,
+    session_id: &Uuid,
+    input: Value,
+    on_chunk: F,
+) -> Result<ClaudeBashExecution>
+where
+    F: FnMut(BashOutputStream, String),
+{
+    let typed: ClaudeBashInput =
+        serde_json::from_value(input).context("invalid Bash tool input payload")?;
+    execute_streaming(cwd, session_id, typed, on_chunk)
+}
+
+/// Executes a Claude-style `Bash` tool invocation while streaming stdout/stderr chunks.
+pub(crate) fn execute_streaming<F>(
+    cwd: &Path,
+    session_id: &Uuid,
+    input: ClaudeBashInput,
+    mut on_chunk: F,
+) -> Result<ClaudeBashExecution>
+where
+    F: FnMut(BashOutputStream, String),
+{
+    if input.run_in_background {
+        return execute_background(cwd, session_id, input);
+    }
+    let timeout_ms = input
+        .timeout
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .clamp(1, MAX_TIMEOUT_MS);
+    let streamed = run_bash_command_streaming(cwd, &input.command, timeout_ms, &mut on_chunk)?;
+    let mut stderr = streamed.stderr;
+    if streamed.timed_out {
+        if !stderr.trim().is_empty() {
+            stderr.push('\n');
+        }
+        stderr.push_str(&format!("command timed out after {timeout_ms}ms"));
+    }
+    let stdout = truncate_output(streamed.stdout);
+    let success = streamed.status.success() && !streamed.timed_out;
+    let no_output_expected = success && stdout.trim().is_empty() && stderr.trim().is_empty();
+    Ok(ClaudeBashExecution {
+        success,
+        output: ClaudeBashOutput {
+            stdout,
+            stderr,
+            interrupted: streamed.timed_out,
+            background_task_id: None,
+            output_file: None,
+            backgrounded_by_user: None,
+            assistant_auto_backgrounded: None,
+            dangerously_disable_sandbox: Some(input.dangerously_disable_sandbox),
+            return_code_interpretation: classify_return_code(streamed.status.code()),
+            no_output_expected: Some(no_output_expected),
+        },
+    })
 }
 
 fn execute_background(
@@ -227,6 +296,13 @@ struct TimedCommandOutput {
     timed_out: bool,
 }
 
+struct StreamedCommandOutput {
+    stdout: String,
+    stderr: String,
+    status: std::process::ExitStatus,
+    timed_out: bool,
+}
+
 fn unique_output_nonce() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -286,6 +362,104 @@ fn run_bash_command(cwd: &Path, command: &str, timeout_ms: u64) -> Result<TimedC
             });
         }
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn run_bash_command_streaming<F>(
+    cwd: &Path,
+    command: &str,
+    timeout_ms: u64,
+    on_chunk: &mut F,
+) -> Result<StreamedCommandOutput>
+where
+    F: FnMut(BashOutputStream, String),
+{
+    let mut child = Command::new(puffer_tools::detected_shell())
+        .arg("-lc")
+        .arg(command)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to execute bash command in {}", cwd.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture bash stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture bash stderr"))?;
+    let (tx, rx) = mpsc::channel();
+    let stdout_tx = tx.clone();
+    let stdout_handle =
+        thread::spawn(move || read_stream(stdout, BashOutputStream::Stdout, stdout_tx));
+    let stderr_handle = thread::spawn(move || read_stream(stderr, BashOutputStream::Stderr, tx));
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut stdout_text = String::new();
+    let mut stderr_text = String::new();
+    let mut timed_out = false;
+
+    loop {
+        while let Ok((stream, text)) = rx.try_recv() {
+            match stream {
+                BashOutputStream::Stdout => stdout_text.push_str(&text),
+                BashOutputStream::Stderr => stderr_text.push_str(&text),
+            }
+            on_chunk(stream, text);
+        }
+        if child
+            .try_wait()
+            .with_context(|| format!("failed to poll bash command in {}", cwd.display()))?
+            .is_some()
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let status = child
+        .wait()
+        .with_context(|| format!("failed to wait for bash command in {}", cwd.display()))?;
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+    while let Ok((stream, text)) = rx.try_recv() {
+        match stream {
+            BashOutputStream::Stdout => stdout_text.push_str(&text),
+            BashOutputStream::Stderr => stderr_text.push_str(&text),
+        }
+        on_chunk(stream, text);
+    }
+    Ok(StreamedCommandOutput {
+        stdout: stdout_text,
+        stderr: stderr_text,
+        status,
+        timed_out,
+    })
+}
+
+fn read_stream<T>(stream: T, kind: BashOutputStream, tx: mpsc::Sender<(BashOutputStream, String)>)
+where
+    T: Read,
+{
+    let mut reader = BufReader::new(stream);
+    let mut buffer = [0u8; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+                if tx.send((kind, text)).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
     }
 }
 
@@ -389,6 +563,32 @@ mod tests {
         assert!(result.output.interrupted);
         assert!(result.output.stderr.contains("timed out after"));
         assert_eq!(result.output.dangerously_disable_sandbox, Some(true));
+    }
+
+    #[test]
+    fn execute_streaming_emits_output_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut chunks = Vec::new();
+        let result = execute_streaming(
+            temp.path(),
+            &test_session_id(),
+            ClaudeBashInput {
+                command: "printf hello; printf world >&2".to_string(),
+                timeout: Some(1_000),
+                description: None,
+                run_in_background: false,
+                dangerously_disable_sandbox: false,
+            },
+            |stream, text| chunks.push((stream, text)),
+        )
+        .unwrap();
+        assert!(result.success);
+        assert!(chunks
+            .iter()
+            .any(|(stream, text)| *stream == BashOutputStream::Stdout && text.contains("hello")));
+        assert!(chunks
+            .iter()
+            .any(|(stream, text)| *stream == BashOutputStream::Stderr && text.contains("world")));
     }
 
     #[test]

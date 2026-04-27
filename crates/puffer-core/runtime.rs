@@ -13,6 +13,7 @@ use puffer_transport_anthropic::{
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::time::Duration;
 
 #[cfg(test)]
@@ -30,12 +31,15 @@ mod openai_sse;
 mod openai_ws;
 mod permission_prompt;
 mod reflection;
+mod remote_tool_executor;
+pub mod remote_tools;
 mod request_tool_filter;
 mod side_question;
 mod structured_output_support;
 mod system_prompt;
 pub mod teammate_loop;
 mod tool_executor;
+mod tool_stream;
 
 mod debug_context;
 
@@ -161,6 +165,7 @@ pub enum TurnStreamEvent {
     TextDelta(String),
     ToolCallsRequested(Vec<ToolCallRequest>),
     ToolInvocations(Vec<ToolInvocation>),
+    ToolOutputDelta(ToolOutputDelta),
     ReflectionTrace(ReflectionTraceEvent),
     ReflectionCheckpoint(String),
     /// A transport-level retry is about to be attempted.
@@ -171,6 +176,22 @@ pub enum TurnStreamEvent {
     },
     /// Per-turn token usage (including cache hit data).
     Usage(TurnUsageReport),
+}
+
+/// Identifies which output stream emitted one streamed tool chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOutputStream {
+    Stdout,
+    Stderr,
+}
+
+/// Describes one streamed stdout/stderr chunk from a running tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutputDelta {
+    pub call_id: String,
+    pub tool_id: String,
+    pub stream: ToolOutputStream,
+    pub text: String,
 }
 
 /// Executes one user prompt against the currently selected provider and model.
@@ -335,27 +356,33 @@ pub fn execute_user_prompt_streaming_with_permissions<F, P>(
     auth_store: &mut AuthStore,
     input: &str,
     structured_output: Option<&StructuredOutputConfig>,
-    mut on_event: F,
+    on_event: F,
     on_permission: P,
 ) -> Result<TurnExecution>
 where
     F: FnMut(TurnStreamEvent),
     P: FnMut(PermissionPromptRequest) -> PermissionPromptAction + 'static,
 {
+    let on_event = RefCell::new(on_event);
     with_permission_prompt_handler(on_permission, || {
-        execute_user_prompt_streaming_with_options(
-            state,
-            resources,
-            providers,
-            auth_store,
-            input,
-            TurnRequestOptions {
-                structured_output,
-                tool_filter: None,
-                reflection: None,
-            },
-            &mut on_event,
-        )
+        let mut handle_tool_delta =
+            |delta| (on_event.borrow_mut())(TurnStreamEvent::ToolOutputDelta(delta));
+        tool_stream::with_tool_stream_handler(&mut handle_tool_delta, || {
+            let mut forward_event = |event| (on_event.borrow_mut())(event);
+            execute_user_prompt_streaming_with_options(
+                state,
+                resources,
+                providers,
+                auth_store,
+                input,
+                TurnRequestOptions {
+                    structured_output,
+                    tool_filter: None,
+                    reflection: None,
+                },
+                &mut forward_event,
+            )
+        })
     })
 }
 
@@ -1395,6 +1422,7 @@ fn execute_anthropic_tool_calls(
                 structured_output,
             },
             tool_filter,
+            Some(tool_use_id),
             tool_id,
             input.clone(),
         )?;

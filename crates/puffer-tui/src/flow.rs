@@ -304,6 +304,9 @@ pub(crate) fn handle_prompt_submit(
                 TurnStreamEvent::ToolInvocations(invocations) => {
                     let _ = event_sender.send(PendingSubmitEvent::ToolInvocations(invocations));
                 }
+                TurnStreamEvent::ToolOutputDelta(delta) => {
+                    let _ = event_sender.send(PendingSubmitEvent::ToolOutputDelta(delta));
+                }
                 TurnStreamEvent::ReflectionCheckpoint(summary) => {
                     let _ = event_sender.send(PendingSubmitEvent::ReflectionCheckpoint(summary));
                 }
@@ -442,6 +445,9 @@ pub(crate) fn poll_pending_submit(
                 pending.pending_tool_calls.drain(0..completed);
                 pending.rendered_tool_invocations += invocations.len();
                 append_tool_messages(state, session_store, &invocations)?;
+            }
+            PendingSubmitEvent::ToolOutputDelta(delta) => {
+                pending.status_hint = Some(render_tool_output_hint(&delta));
             }
             PendingSubmitEvent::ReflectionCheckpoint(summary) => {
                 pending.status_hint = Some(summary);
@@ -693,6 +699,28 @@ fn finalize_assistant_text(
         },
     )?;
     Ok(())
+}
+
+fn render_tool_output_hint(delta: &puffer_core::ToolOutputDelta) -> String {
+    let prefix = match delta.stream {
+        puffer_core::ToolOutputStream::Stdout => "stdout",
+        puffer_core::ToolOutputStream::Stderr => "stderr",
+    };
+    let compact = delta
+        .text
+        .lines()
+        .last()
+        .unwrap_or(delta.text.as_str())
+        .trim();
+    let mut shortened = compact.chars().take(72).collect::<String>();
+    if compact.chars().count() > 72 {
+        shortened.push_str("...");
+    }
+    if shortened.is_empty() {
+        format!("{} {prefix}", delta.tool_id)
+    } else {
+        format!("{} {prefix}: {}", delta.tool_id, shortened)
+    }
 }
 
 fn submit_command_name(submitted: &str) -> &str {
