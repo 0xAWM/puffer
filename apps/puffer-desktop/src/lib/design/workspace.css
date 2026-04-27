@@ -68,7 +68,7 @@
 }
 .pf-pw-project-title .name {
   font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   display: flex; align-items: center; gap: 8px;
   white-space: nowrap;
   overflow: hidden;
@@ -92,7 +92,7 @@
 .pf-pw-project-counts {
   display: inline-flex; align-items: center; gap: 10px;
   font-size: 11.5px; color: var(--muted-foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   flex-shrink: 0;
 }
 .pf-pw-project-counts .count {
@@ -139,7 +139,7 @@
 }
 .pf-pw-agent .status-pill {
   font-size: 10px; font-weight: 600;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   padding: 2px 7px; border-radius: 999px;
   background: var(--muted); color: var(--muted-foreground);
   text-transform: lowercase;
@@ -162,7 +162,7 @@
 .pf-pw-agent .activity {
   font-size: 10.5px;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   white-space: nowrap;
   flex: 0 0 auto;
 }
@@ -319,7 +319,7 @@
   gap: 5px;
   font-size: 11.5px;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
 }
 .pf-fpb-counts .count .pip {
   width: 6px;
@@ -368,7 +368,7 @@
   font-weight: 600;
 }
 .pf-fpb-tab .n {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   padding: 1px 6px;
   border-radius: 999px;
@@ -425,7 +425,7 @@
   font-size: 11px;
 }
 .pf-fpb-col > .head .n {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   padding: 1px 6px;
   border-radius: 999px;
@@ -549,7 +549,7 @@
 }
 .pf-pmem-list-head .n {
   margin-left: auto;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   font-weight: 500;
   padding: 1px 6px;
@@ -599,7 +599,7 @@
 .pf-pmem-file .time {
   font-size: 10.5px;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   flex-shrink: 0;
 }
 .pf-pmem-detail {
@@ -836,7 +836,7 @@
 .pf-modal-seg-btn[data-active="true"] svg { color: var(--puffer-accent); }
 .pf-modal-seg-body { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
 .pf-modal-seg-title { font-size: 13px; font-weight: 600; }
-.pf-modal-seg-sub { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); }
+.pf-modal-seg-sub { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-sans); }
 
 .pf-modal-body {
   padding: 16px 20px 4px;

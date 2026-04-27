@@ -343,7 +343,7 @@
           <div class="label">App name</div>
           <div class="desc">From the active Puffer config.</div>
         </div>
-        <div style="justify-self: end; font-family: var(--font-mono); font-size: 12.5px; color: var(--muted-foreground);">
+        <div style="justify-self: end; font-family: var(--font-sans); font-size: 12.5px; color: var(--muted-foreground);">
           {props.snapshot?.config.appName ?? "—"}
         </div>
       </div>
@@ -733,7 +733,7 @@
                 {#if s.target}· {s.target}{/if}
               </div>
             </div>
-            <div style="color: var(--muted-foreground); font-family: var(--font-mono); font-size: 11px;" title={s.sourcePath ?? ""}>
+            <div style="color: var(--muted-foreground); font-family: var(--font-sans); font-size: 11px;" title={s.sourcePath ?? ""}>
               {s.sourceKind}
             </div>
             <input type="checkbox" class="sc-switch" checked disabled />
@@ -934,6 +934,7 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-size: 10px;
+    font-family: var(--font-sans);
   }
   .pf-path-value {
     color: var(--foreground);
@@ -972,7 +973,7 @@
     align-items: center;
     gap: 5px;
     padding: 2px 8px;
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: 10.5px;
     border-radius: 999px;
   }
@@ -1039,7 +1040,7 @@
     font-size: 11px;
     cursor: pointer;
     color: var(--foreground);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-weight: 500;
   }
   .pf-choice-pill:hover {
