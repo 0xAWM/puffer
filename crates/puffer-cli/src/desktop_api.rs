@@ -6,6 +6,7 @@ use puffer_provider_registry::{
 };
 use puffer_resources::LoadedResources;
 use puffer_session_store::{GitDiffSnapshot, SessionRecord, SessionStore, TranscriptEvent};
+use puffer_workflow::WorkflowStore;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -149,6 +150,21 @@ pub(crate) fn run_desktop_api(
                 &session_store,
             )?;
             println!("{}", serde_json::to_string_pretty(&snapshot)?);
+        }
+        DesktopApiCommand::WorkflowList => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!("{}", serde_json::to_string_pretty(&store.snapshot()?)?);
+        }
+        DesktopApiCommand::WorkflowRunsList { workflow_slug } => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&store.list_runs_for(&workflow_slug)?)?
+            );
+        }
+        DesktopApiCommand::WorkflowRunsShow { idx } => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!("{}", serde_json::to_string_pretty(&store.get_run(idx)?)?);
         }
     }
     Ok(())

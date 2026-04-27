@@ -22,6 +22,7 @@ members = [
     "crates/puffer-tools",
     "crates/puffer-transport-anthropic",
     "crates/puffer-tui",
+    "crates/puffer-workflow",
 ]
 default-members = ["crates/puffer-cli"]
 resolver = "2"

@@ -297,6 +297,68 @@ export type SettingsSnapshot = {
   providers: ProviderSummary[];
 };
 
+export type WorkflowTrigger =
+  | { type: "cron"; cron: string }
+  | {
+      type: "subscription";
+      source_topic: string;
+      pattern?: string | null;
+      classify_prompt?: string | null;
+    };
+
+export type WorkflowPipelineNode = {
+  id: string;
+  type?: string | null;
+  agent?: string | null;
+  prompt: string;
+  model?: string | null;
+  tools?: string[];
+  env?: Record<string, string>;
+  depends_on?: string[];
+};
+
+export type WorkflowDefinition = {
+  schema: string;
+  slug: string;
+  enabled: boolean;
+  trigger: WorkflowTrigger;
+  pipeline: {
+    name: string;
+    working_dir?: string | null;
+    concurrency?: number | null;
+    nodes: WorkflowPipelineNode[];
+  };
+};
+
+export type WorkflowRunStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+
+export type WorkflowRunNode = {
+  id: string;
+  status: WorkflowRunStatus;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  output?: string | null;
+  error?: string | null;
+};
+
+export type WorkflowRun = {
+  idx: number;
+  workflow_slug: string;
+  run_id: string;
+  trigger: Record<string, unknown>;
+  status: WorkflowRunStatus;
+  started_at_ms: number;
+  ended_at_ms?: number | null;
+  nodes: WorkflowRunNode[];
+  error?: string | null;
+  trigger_key?: string | null;
+};
+
+export type WorkflowSnapshot = {
+  workflows: WorkflowDefinition[];
+  runs: WorkflowRun[];
+};
+
 export type ExternalCredential = {
   providerId: string;
   source: "claude" | "codex";

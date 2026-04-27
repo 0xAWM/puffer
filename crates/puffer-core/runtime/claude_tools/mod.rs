@@ -510,6 +510,9 @@ pub fn execute_workflow_tool(
         "SubscriptionPause" => {
             workflow::subscription_pause::execute_subscription_pause(state, cwd, input)
         }
+        "WorkflowRegister" => {
+            workflow::workflow_register::execute_workflow_register(state, cwd, input)
+        }
         "TaskCreate" => workflow::task_create::execute_task_create(state, cwd, input),
         "TaskGet" => workflow::task_get::execute_task_get(state, cwd, input),
         "TaskList" => workflow::task_list::execute_task_list(state, cwd, input),

@@ -34,6 +34,7 @@ pub mod team_create;
 pub mod team_delete;
 pub mod telegram_login;
 pub mod todo_write;
+pub mod workflow_register;
 
 pub(crate) mod store;
 mod support;

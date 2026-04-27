@@ -51,6 +51,7 @@ use puffer_transport_anthropic::{
     parse_authorization_input as parse_anthropic_authorization_input, ANTHROPIC_API_BASE_URL,
     ANTHROPIC_MANUAL_REDIRECT_URL,
 };
+use puffer_workflow::WorkflowStore;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -301,7 +302,10 @@ impl DaemonState {
 /// persist events that carry transcript- or progress-level state; pure
 /// fire-and-forget UI pings (like `hello`) aren't useful to replay.
 fn is_replay_channel(event: &str) -> bool {
-    event.starts_with("session:") || event.starts_with("workspace:") || event.starts_with("clone:")
+    event.starts_with("session:")
+        || event.starts_with("workspace:")
+        || event.starts_with("clone:")
+        || event.starts_with("workflow:")
 }
 
 impl DaemonState {
@@ -602,7 +606,7 @@ async fn dispatch_request(
         }
         "list_permissions" => respond!(handle_list_permissions(&state)),
         "save_permissions" => respond!(handle_save_permissions(&state, &params)),
-        "update_config" => respond!(handle_update_config(&state, &params)),
+        "update_config" => respond!(detached!(|s, p| handle_update_config(&s, &p))),
         "create_pull_request" => respond!(handle_create_pull_request(&state, &params)),
         "merge_pull_request" => respond!(handle_merge_pull_request(&state, &params)),
         "create_session" => respond!(handle_create_session(&state, &params)),
@@ -620,6 +624,9 @@ async fn dispatch_request(
         ))),
         "fs_watch" => respond!(crate::daemon_fs_watch::handle_fs_watch(&state, &params)),
         "fs_unwatch" => respond!(crate::daemon_fs_watch::handle_fs_unwatch(&state, &params)),
+        "workflow_list" => respond!(handle_workflow_list(&state)),
+        "workflow_runs_list" => respond!(handle_workflow_runs_list(&state, &params)),
+        "workflow_run_show" => respond!(handle_workflow_run_show(&state, &params)),
 
         "run_agent_turn" => {
             let tx_clone = tx.clone();
@@ -738,6 +745,30 @@ fn handle_load_settings_snapshot(state: &DaemonState) -> Result<Value> {
         &inputs.session_store,
     )?;
     Ok(serde_json::to_value(snapshot)?)
+}
+
+fn handle_workflow_list(state: &DaemonState) -> Result<Value> {
+    let store = WorkflowStore::new(&state.paths.workspace_config_dir);
+    Ok(serde_json::to_value(store.snapshot()?)?)
+}
+
+fn handle_workflow_runs_list(state: &DaemonState, params: &Value) -> Result<Value> {
+    let slug = params
+        .get("workflowSlug")
+        .or_else(|| params.get("workflow_slug"))
+        .and_then(Value::as_str)
+        .context("missing workflowSlug")?;
+    let store = WorkflowStore::new(&state.paths.workspace_config_dir);
+    Ok(serde_json::to_value(store.list_runs_for(slug)?)?)
+}
+
+fn handle_workflow_run_show(state: &DaemonState, params: &Value) -> Result<Value> {
+    let idx = params
+        .get("idx")
+        .and_then(Value::as_u64)
+        .context("missing idx")?;
+    let store = WorkflowStore::new(&state.paths.workspace_config_dir);
+    Ok(serde_json::to_value(store.get_run(idx)?)?)
 }
 
 /// Stores an API key credential in the workspace auth store and returns

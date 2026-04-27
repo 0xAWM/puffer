@@ -46,7 +46,8 @@
     createSession,
     loadDefaultWorkspace,
     loadDesktopPins,
-    setDesktopPin
+    setDesktopPin,
+    updateConfig
   } from "./lib/api/desktop";
   import {
     subscribeSessionEvents,
@@ -381,6 +382,22 @@
       if (skipOnboarding) onboarding = false;
     } finally {
       settingsLoading = false;
+    }
+  }
+
+  /** Patches the workspace's default routing so the next agent turn uses
+   *  the picked (provider, model). The daemon's `update_config` reloads
+   *  its in-memory PufferConfig under lock so subsequent turns pick this
+   *  up without restarting. */
+  async function handleModelChange(providerId: string, modelId: string) {
+    try {
+      settingsSnapshot = await updateConfig({
+        defaultProvider: providerId,
+        defaultModel: modelId
+      });
+      statusMessage = `Switched to ${providerId} · ${modelId}.`;
+    } catch (error) {
+      statusMessage = `Failed to switch model: ${error}`;
     }
   }
 
@@ -1140,11 +1157,14 @@
                 turnStartedAtMs={turnStartedAtMs}
                 turnThinking={turnThinking}
                 turnStatusHint={turnStatusHint}
+                settingsSnapshot={settingsSnapshot}
                 onBack={onCloseAgent}
                 onSubmitMessage={submitMessage}
                 onResolvePermission={resolvePermission}
                 onResolveUserQuestion={resolveUserQuestion}
                 onCancelTurn={() => { if (currentTurnId) void cancelTurn(currentTurnId); }}
+                onModelChange={(providerId, modelId) =>
+                  void handleModelChange(providerId, modelId)}
               />
             {:else if openProjectId && sortedGroups.find((g) => g.id === openProjectId)}
               <ProjectDetail

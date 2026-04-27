@@ -25,7 +25,8 @@ mod spec;
 mod store;
 
 pub use action::{
-    install_outbound, ActionDispatcher, ActionResult, BuiltinActionDispatcher, Outbound,
+    install_outbound, install_workflow_runner, ActionDispatcher, ActionResult,
+    BuiltinActionDispatcher, Outbound, WorkflowActionRunner,
 };
 pub use classify::{Classifier, ClassifyDecision, NullClassifier, RemoteClassifier};
 pub use manager::{SubscriptionManager, SubscriptionManagerBuilder};

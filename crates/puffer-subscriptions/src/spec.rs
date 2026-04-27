@@ -103,6 +103,11 @@ pub enum ActionSpec {
         #[serde(default)]
         template: Option<String>,
     },
+    /// Trigger a registered native Puffer workflow.
+    RunWorkflow {
+        /// Workflow slug to run.
+        slug: String,
+    },
     /// Catch-all for future variants the agent may write before all
     /// dispatchers are implemented; treated as a no-op with a warning.
     #[serde(other)]
@@ -141,6 +146,11 @@ pub fn validate_spec(spec: &SubscriptionSpec) -> Result<(), String> {
             }
             if target.trim().is_empty() {
                 return Err("forward_message.target must not be empty".into());
+            }
+        }
+        ActionSpec::RunWorkflow { slug } => {
+            if slug.trim().is_empty() {
+                return Err("run_workflow.slug must not be empty".into());
             }
         }
         ActionSpec::Unknown => {
