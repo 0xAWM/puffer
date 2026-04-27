@@ -1286,7 +1286,7 @@
     left: 12px;
     font-size: 11px;
     color: var(--muted-foreground);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     max-width: 60vw;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1310,7 +1310,7 @@
     border-radius: 999px;
     box-shadow: var(--shadow-md);
     z-index: 80;
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
   }
   .connection-banner .dot {
     width: 8px;
