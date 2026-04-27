@@ -211,7 +211,7 @@ where
     let instructions = openai_request_instructions(state, resources, Some(&system_prompt))?;
     let mut items = transcript_to_items(state, input);
 
-    let context_reminder = build_context_reminder_message();
+    let context_reminder = build_context_reminder_message(state);
     super::conversation::insert_context_reminder_preserving_legacy_leading_system(
         &mut items,
         &context_reminder,
@@ -495,7 +495,7 @@ where
         if compacted {
             previous_response_id = None;
             continuation_start = None;
-            inject_post_compact_context(&mut items, &cwd);
+            inject_post_compact_context(&mut items, state);
         }
     }
 }

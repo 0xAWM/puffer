@@ -612,7 +612,7 @@ fn execute_anthropic(
 
     // System reminder (currentDate + gitStatus) — now in system blocks, not prepended to messages.
     let git_status = git_status_context();
-    let system_reminder = build_system_reminder(&git_status);
+    let system_reminder = build_system_reminder(state, &git_status);
 
     // Anthropic summary function: uses Anthropic Messages API.
     let summary_url = request.url.clone();
@@ -626,7 +626,7 @@ fn execute_anthropic(
     let compacted =
         compact_conversation_with(&mut items, provider, &model_id, None, &anthropic_summary_fn);
     if compacted {
-        inject_post_compact_context(&mut items, &cwd);
+        inject_post_compact_context(&mut items, state);
     }
 
     // Resolve thinking/reasoning support.
@@ -758,7 +758,7 @@ fn execute_anthropic(
                 &anthropic_summary_fn,
             );
             if compacted {
-                inject_post_compact_context(&mut items, &cwd);
+                inject_post_compact_context(&mut items, state);
             }
             continue;
         }
@@ -841,7 +841,7 @@ where
 
     // System reminder (currentDate + gitStatus) — now in system blocks.
     let git_status = git_status_context();
-    let system_reminder = build_system_reminder(&git_status);
+    let system_reminder = build_system_reminder(state, &git_status);
 
     // Anthropic summary function.
     let summary_url = request.url.clone();
@@ -855,7 +855,7 @@ where
     let compacted =
         compact_conversation_with(&mut items, provider, &model_id, None, &anthropic_summary_fn);
     if compacted {
-        inject_post_compact_context(&mut items, &cwd);
+        inject_post_compact_context(&mut items, state);
     }
 
     let model_supports_thinking = provider
@@ -989,7 +989,7 @@ where
                 &anthropic_summary_fn,
             );
             if compacted {
-                inject_post_compact_context(&mut items, &cwd);
+                inject_post_compact_context(&mut items, state);
             }
             continue;
         }

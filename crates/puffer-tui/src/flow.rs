@@ -336,11 +336,23 @@ pub(crate) fn handle_prompt_submit(
             },
         )
         .map_err(|error| error.to_string());
+        if let Ok(turn) = &outcome {
+            worker_state.push_message(MessageRole::Assistant, turn.assistant_text.clone());
+            if puffer_core::project_memory_turn_completed(&mut worker_state) {
+                puffer_core::spawn_project_memory_review(
+                    &worker_state,
+                    &worker_resources,
+                    &worker_providers,
+                    &worker_auth_store,
+                );
+            }
+        }
         let _ = sender.send(PendingSubmitEvent::Finished(PendingSubmitResult {
             outcome,
             auth_store: worker_auth_store,
             session_tool_permissions: worker_state.session_tool_permissions.clone(),
             session_allow_all: worker_state.session_allow_all,
+            project_memory_review_turns: worker_state.project_memory_review_turns,
         }));
     });
     tui.pending_submit = Some(PendingSubmit {
@@ -420,8 +432,9 @@ pub(crate) fn poll_pending_submit(
             Err(TryRecvError::Disconnected) => PendingSubmitEvent::Finished(PendingSubmitResult {
                 outcome: Err("background request disconnected".to_string()),
                 auth_store: auth_store.clone(),
-                session_tool_permissions: std::collections::HashMap::new(),
+                session_tool_permissions: Default::default(),
                 session_allow_all: false,
+                project_memory_review_turns: state.project_memory_review_turns,
             }),
         };
         match event {
@@ -477,6 +490,7 @@ pub(crate) fn poll_pending_submit(
                 if result.session_allow_all {
                     state.session_allow_all = true;
                 }
+                state.project_memory_review_turns = result.project_memory_review_turns;
                 match result.outcome {
                     Ok(turn) => {
                         if rendered_tool_invocations < turn.tool_invocations.len() {
@@ -618,6 +632,9 @@ pub(crate) fn handle_submit(
                     text: turn.assistant_text,
                 },
             )?;
+            if puffer_core::project_memory_turn_completed(state) {
+                puffer_core::spawn_project_memory_review(state, resources, providers, auth_store);
+            }
         }
         Err(error) => {
             let message = format!("Provider request failed: {error}");

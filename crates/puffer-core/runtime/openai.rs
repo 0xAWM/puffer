@@ -154,7 +154,7 @@ fn execute_openai_once(
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern: dynamic context lives in `input`,
     // not `instructions`, so `instructions` stays static and cacheable).
-    let context_reminder = build_context_reminder_message();
+    let context_reminder = build_context_reminder_message(state);
     super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(
         &mut items,
         &context_reminder,
@@ -305,7 +305,7 @@ fn execute_openai_once(
         if compacted {
             previous_response_id = None;
             continuation_start = None;
-            inject_post_compact_context(&mut items, &cwd);
+            inject_post_compact_context(&mut items, state);
         }
     }
 }
@@ -407,7 +407,7 @@ where
 
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern).
-    let context_reminder = build_context_reminder_message();
+    let context_reminder = build_context_reminder_message(state);
     super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(
         &mut items,
         &context_reminder,
@@ -614,7 +614,7 @@ where
         if compacted {
             previous_response_id = None;
             continuation_start = None;
-            inject_post_compact_context(&mut items, &cwd);
+            inject_post_compact_context(&mut items, state);
         }
     }
 }
@@ -696,7 +696,7 @@ fn execute_openai_completions_once(
             .collect::<std::collections::BTreeSet<_>>(),
     )?;
     let plan_mode_context = crate::plan_mode::take_plan_mode_context_message(state, resources)?;
-    let system_reminder = build_system_reminder(&super::git_status_context());
+    let system_reminder = build_system_reminder(state, &super::git_status_context());
 
     // Unified: all internal logic on Vec<ConversationItem>.
     let mut items = transcript_to_items(state, input);
@@ -812,7 +812,7 @@ fn execute_openai_completions_once(
             None, // Chat Completions doesn't return input_tokens
         );
         if compacted {
-            inject_post_compact_context(&mut items, &cwd);
+            inject_post_compact_context(&mut items, state);
         }
     }
 }
@@ -1164,20 +1164,11 @@ fn openai_request_instructions(
 /// (in `instructions`) from dynamic context (in `input` messages).
 /// The `<system-reminder>` XML tag helps the model distinguish
 /// system-injected context from user-authored messages.
-fn build_context_reminder_message() -> String {
-    let now = time::OffsetDateTime::now_utc();
-    let date_str = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
-    let git_status = super::git_status_context();
-
-    let mut parts = Vec::new();
-    parts.push(format!("# currentDate\nToday's date is {date_str}."));
-    if !git_status.is_empty() {
-        parts.push(format!("# gitStatus\n{git_status}"));
-    }
-
+fn build_context_reminder_message(state: &AppState) -> String {
+    let reminder = self::conversation::build_system_reminder(state, &super::git_status_context());
     format!(
         "<system-reminder>\n{}\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>",
-        parts.join("\n\n")
+        reminder
     )
 }
 
