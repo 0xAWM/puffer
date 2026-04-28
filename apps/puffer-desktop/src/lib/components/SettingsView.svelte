@@ -648,7 +648,7 @@
     border-radius: 16px;
     background: rgba(247, 243, 235, 0.82);
     border: 1px solid rgba(111, 101, 89, 0.14);
-    font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+    font-family: var(--font-mono);
     font-size: 0.8rem;
     line-height: 1.55;
     white-space: pre-wrap;
@@ -656,7 +656,7 @@
   }
 
   code {
-    font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+    font-family: var(--font-mono);
     font-size: 0.82rem;
     padding: 0.08rem 0.28rem;
     border-radius: 8px;

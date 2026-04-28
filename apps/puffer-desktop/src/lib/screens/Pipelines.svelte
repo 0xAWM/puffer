@@ -350,7 +350,7 @@
                     {#if edge.label}
                       <g transform="translate({midX}, {midY})">
                         <rect x="-32" y="-9" width="64" height="18" rx="9" fill="var(--background)" class="pf-pipe-edge-pill"></rect>
-                        <text x="0" y="4" text-anchor="middle" font-size="10.5" font-family="var(--font-mono)" class="pf-pipe-edge-text">
+                        <text x="0" y="4" text-anchor="middle" font-size="10.5" font-family="var(--font-sans)" class="pf-pipe-edge-text">
                           {edge.label}
                         </text>
                       </g>

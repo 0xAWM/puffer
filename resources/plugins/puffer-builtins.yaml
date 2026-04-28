@@ -11,6 +11,7 @@ commands:
 skills:
   - project-memory
   - reviewer
+  - browser
 mcp_servers:
   - id: filesystem
     display_name: Filesystem
