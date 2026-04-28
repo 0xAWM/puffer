@@ -1,5 +1,6 @@
 use crate::AppState;
 use anyhow::{anyhow, Result};
+use glob::Pattern;
 use puffer_config::{resolve_project_memory, ConfigPaths, ResolvedProjectMemory};
 use puffer_provider_registry::{AuthStore, ProviderRegistry};
 use puffer_resources::LoadedResources;
@@ -13,11 +14,19 @@ use std::time::Duration;
 
 const ENTRY_DELIMITER: &str = "\n§\n";
 const PROJECT_MEMORY_TOOL_ID: &str = "Memory";
+const PROJECT_MEMORY_READ_TOOL_ID: &str = "Read";
+const PROJECT_MEMORY_SKILL_TOOL_ID: &str = "Skill";
 const PROJECT_MEMORY_SKILL_NAME: &str = "project-memory";
 const LOCK_RETRY_MS: u64 = 25;
 const LOCK_RETRY_ATTEMPTS: usize = 80;
 const MEMORY_REVIEW_PROMPT: &str = "Review the conversation above and decide whether the active project's MEMORY.md should be updated. Save only durable project knowledge: stable structure, confirmed workflow rules, environment quirks relevant to this project, and recurring user corrections that matter for future work in this project. Do not save temporary task progress, one-off debugging state, speculative ideas, or transient file paths. If something is worth saving, use the Memory tool. If nothing is worth saving, stop.";
 const MEMORY_FLUSH_PROMPT: &str = "The conversation is about to be compacted. Save any durable project facts worth preserving into the active project's MEMORY.md. Prioritize stable project conventions, recurring workflow rules, and user corrections that apply to this project. Do not save temporary task progress. If nothing is worth saving, stop.";
+
+struct ProjectMemorySideTurn {
+    state: AppState,
+    resources: LoadedResources,
+    filter: Option<crate::runtime::RequestToolFilter>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectMemoryContext {
@@ -135,19 +144,16 @@ pub fn flush_project_memory(
     if !state.memory_enabled() || !state.memory_flush_enabled() || state.project_memory.is_none() {
         return Ok(());
     }
-    let mut side_state = state.clone();
-    let mut side_resources = resources.clone();
-    side_resources
-        .tools
-        .retain(|tool| tool.value.id == PROJECT_MEMORY_TOOL_ID);
-    let filter = crate::runtime::build_request_tool_filter(&[PROJECT_MEMORY_TOOL_ID.to_string()])?;
+    let Some(mut side_turn) = prepare_project_memory_side_turn(state, resources)? else {
+        return Ok(());
+    };
     let _ = crate::runtime::execute_user_prompt_with_tool_filter(
-        &mut side_state,
-        &side_resources,
+        &mut side_turn.state,
+        &side_turn.resources,
         providers,
         auth_store,
         MEMORY_FLUSH_PROMPT,
-        filter.as_ref(),
+        side_turn.filter.as_ref(),
     )?;
     Ok(())
 }
@@ -161,26 +167,19 @@ pub fn spawn_project_memory_review(
     if !state.memory_enabled() || !state.memory_review_enabled() || state.project_memory.is_none() {
         return;
     }
-    let mut side_state = state.clone();
-    let mut side_resources = resources.clone();
+    let Ok(Some(mut side_turn)) = prepare_project_memory_side_turn(state, resources) else {
+        return;
+    };
     let providers = providers.clone();
     let mut auth_store = auth_store.clone();
-    side_resources
-        .tools
-        .retain(|tool| tool.value.id == PROJECT_MEMORY_TOOL_ID);
     thread::spawn(move || {
-        let Ok(filter) =
-            crate::runtime::build_request_tool_filter(&[PROJECT_MEMORY_TOOL_ID.to_string()])
-        else {
-            return;
-        };
         let _ = crate::runtime::execute_user_prompt_with_tool_filter(
-            &mut side_state,
-            &side_resources,
+            &mut side_turn.state,
+            &side_turn.resources,
             &providers,
             &mut auth_store,
             MEMORY_REVIEW_PROMPT,
-            filter.as_ref(),
+            side_turn.filter.as_ref(),
         );
     });
 }
@@ -231,6 +230,49 @@ pub(crate) fn project_memory_skill_reminder(state: &AppState) -> Option<String> 
         PROJECT_MEMORY_SKILL_NAME,
         context.memory_file.display(),
     ))
+}
+
+fn prepare_project_memory_side_turn(
+    state: &AppState,
+    resources: &LoadedResources,
+) -> Result<Option<ProjectMemorySideTurn>> {
+    let Some(context) = state.project_memory.as_ref() else {
+        return Ok(None);
+    };
+    let memory_parent = context
+        .memory_file
+        .parent()
+        .ok_or_else(|| anyhow!("project memory path has no parent directory"))?
+        .to_path_buf();
+    let read_scope = Pattern::escape(&context.memory_file.to_string_lossy());
+    let mut side_state = state.clone();
+    if !side_state
+        .working_dirs
+        .iter()
+        .any(|path| path == &memory_parent)
+    {
+        side_state.working_dirs.push(memory_parent);
+    }
+    let mut side_resources = resources.clone();
+    side_resources.tools.retain(|tool| {
+        matches!(
+            tool.value.id.as_str(),
+            PROJECT_MEMORY_TOOL_ID | PROJECT_MEMORY_READ_TOOL_ID | PROJECT_MEMORY_SKILL_TOOL_ID
+        )
+    });
+    side_resources
+        .skills
+        .retain(|skill| skill.value.name == PROJECT_MEMORY_SKILL_NAME);
+    let filter = crate::runtime::build_request_tool_filter(&[
+        PROJECT_MEMORY_SKILL_TOOL_ID.to_string(),
+        format!("{PROJECT_MEMORY_READ_TOOL_ID}({read_scope})"),
+        PROJECT_MEMORY_TOOL_ID.to_string(),
+    ])?;
+    Ok(Some(ProjectMemorySideTurn {
+        state: side_state,
+        resources: side_resources,
+        filter,
+    }))
 }
 
 fn add_entry(
@@ -493,7 +535,9 @@ mod tests {
     use crate::runtime::claude_tools::{execute_tool, ProviderToolContext};
     use puffer_config::MemoryConfig;
     use puffer_provider_registry::{AuthStore, ModelDescriptor, ProviderDescriptor};
-    use puffer_resources::{LoadedItem, LoadedResources, SourceInfo, SourceKind, ToolSpec};
+    use puffer_resources::{
+        LoadedItem, LoadedResources, SkillSpec, SourceInfo, SourceKind, ToolSpec,
+    };
     use puffer_session_store::SessionMetadata;
     use puffer_tools::ToolRegistry;
     use serde_json::{json, Value};
@@ -588,10 +632,124 @@ mod tests {
         let auth_store = AuthStore::default();
 
         spawn_project_memory_review(&state, &resources, &providers, &auth_store);
-
         wait_for_memory_entry(&memory_file, "reviewed durable fact");
         let contents = std::fs::read_to_string(&memory_file).unwrap();
         assert!(contents.contains("reviewed durable fact"));
+    }
+
+    #[test]
+    fn project_memory_side_turn_uses_skill_and_restricts_read_to_memory_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let memory_dir = temp.path().join("project-memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        let memory_file = memory_dir.join("MEMORY.md");
+        let sibling_file = memory_dir.join("secret.txt");
+        std::fs::write(&memory_file, "original durable fact").unwrap();
+        std::fs::write(&sibling_file, "do not read this").unwrap();
+        let mut state = project_memory_state(temp.path(), &memory_file);
+        state.current_provider = Some("local-anthropic".to_string());
+        state.current_model = Some("local-anthropic/claude-sonnet-4-5".to_string());
+        let resources = memory_tool_resources();
+        let mut side_turn = prepare_project_memory_side_turn(&state, &resources)
+            .unwrap()
+            .expect("project memory side turn");
+        assert_eq!(side_turn.resources.skills.len(), 1);
+        assert_eq!(side_turn.resources.skills[0].value.name, "project-memory");
+        let mut providers = ProviderRegistry::new();
+        providers.register(local_provider(spawn_json_server(vec![
+            json!({
+                "id": "msg_skill",
+                "model": "claude-sonnet-4-5",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_skill_1",
+                    "name": "Skill",
+                    "input": {"skill": "project-memory", "args": memory_file.display().to_string()}
+                }],
+                "stop_reason": "tool_use"
+            }),
+            json!({
+                "id": "msg_read_denied",
+                "model": "claude-sonnet-4-5",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_read_1",
+                    "name": "Read",
+                    "input": {"file_path": sibling_file.display().to_string()}
+                }],
+                "stop_reason": "tool_use"
+            }),
+            json!({
+                "id": "msg_read_allowed",
+                "model": "claude-sonnet-4-5",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_read_2",
+                    "name": "Read",
+                    "input": {"file_path": memory_file.display().to_string()}
+                }],
+                "stop_reason": "tool_use"
+            }),
+            json!({
+                "id": "msg_memory_replace",
+                "model": "claude-sonnet-4-5",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_memory_1",
+                    "name": "Memory",
+                    "input": {
+                        "action": "replace",
+                        "old_text": "original durable fact",
+                        "content": "updated durable fact"
+                    }
+                }],
+                "stop_reason": "tool_use"
+            }),
+            json!({
+                "id": "msg_review_done",
+                "model": "claude-sonnet-4-5",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review complete"}],
+                "stop_reason": "end_turn"
+            }),
+        ])));
+        let mut auth_store = AuthStore::default();
+        let turn = crate::runtime::execute_user_prompt_with_tool_filter(
+            &mut side_turn.state,
+            &side_turn.resources,
+            &providers,
+            &mut auth_store,
+            MEMORY_REVIEW_PROMPT,
+            side_turn.filter.as_ref(),
+        )
+        .expect("execute side turn");
+        assert_eq!(turn.assistant_text, "review complete");
+        assert_eq!(turn.tool_invocations.len(), 4);
+        assert_eq!(turn.tool_invocations[0].tool_id, "Skill");
+        assert!(turn.tool_invocations[0].success);
+        assert!(turn.tool_invocations[0]
+            .output
+            .contains("<command-name>project-memory</command-name>"));
+        assert_eq!(turn.tool_invocations[1].tool_id, "Read");
+        assert!(!turn.tool_invocations[1].success);
+        assert!(turn.tool_invocations[1]
+            .output
+            .contains("slash command tool scope denied this tool call"));
+        assert_eq!(turn.tool_invocations[2].tool_id, "Read");
+        assert!(turn.tool_invocations[2].success);
+        assert!(turn.tool_invocations[2]
+            .output
+            .contains("original durable fact"));
+        assert_eq!(turn.tool_invocations[3].tool_id, "Memory");
+        assert!(turn.tool_invocations[3].success);
+        assert_eq!(
+            std::fs::read_to_string(&memory_file).unwrap(),
+            "updated durable fact"
+        );
     }
 
     #[test]
@@ -684,31 +842,107 @@ mod tests {
 
     fn memory_tool_resources() -> LoadedResources {
         LoadedResources {
-            tools: vec![LoadedItem {
-                value: ToolSpec {
-                    id: "Memory".to_string(),
-                    name: "Memory".to_string(),
-                    description: "Project memory tool".to_string(),
-                    handler: "runtime:project_memory".to_string(),
-                    approval_policy: Some("auto".to_string()),
-                    sandbox_policy: Some("workspace-write".to_string()),
-                    input_schema: Some(json!({
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string"},
-                            "content": {"type": "string"},
-                            "old_text": {"type": "string"}
-                        },
-                        "required": ["action"]
-                    })),
-                    ..ToolSpec::default()
-                },
-                source_info: SourceInfo {
-                    path: PathBuf::from("memory.yaml"),
-                    kind: SourceKind::Builtin,
-                },
-            }],
+            tools: vec![memory_tool_spec(), skill_tool_spec(), read_tool_spec()],
+            skills: vec![project_memory_skill_spec()],
             ..LoadedResources::default()
+        }
+    }
+
+    fn memory_tool_spec() -> LoadedItem<ToolSpec> {
+        LoadedItem {
+            value: ToolSpec {
+                id: "Memory".to_string(),
+                name: "Memory".to_string(),
+                description: "Project memory tool".to_string(),
+                handler: "runtime:project_memory".to_string(),
+                approval_policy: Some("auto".to_string()),
+                sandbox_policy: Some("workspace-write".to_string()),
+                input_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "content": {"type": "string"},
+                        "old_text": {"type": "string"}
+                    },
+                    "required": ["action"]
+                })),
+                ..ToolSpec::default()
+            },
+            source_info: SourceInfo {
+                path: PathBuf::from("memory.yaml"),
+                kind: SourceKind::Builtin,
+            },
+        }
+    }
+
+    fn skill_tool_spec() -> LoadedItem<ToolSpec> {
+        LoadedItem {
+            value: ToolSpec {
+                id: "Skill".to_string(),
+                name: "Skill".to_string(),
+                description: "Skill tool".to_string(),
+                handler: "runtime:skill".to_string(),
+                approval_policy: Some("auto".to_string()),
+                sandbox_policy: Some("read-only".to_string()),
+                input_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "skill": {"type": "string"},
+                        "args": {"type": "string"}
+                    },
+                    "required": ["skill"]
+                })),
+                ..ToolSpec::default()
+            },
+            source_info: SourceInfo {
+                path: PathBuf::from("skill.yaml"),
+                kind: SourceKind::Builtin,
+            },
+        }
+    }
+
+    fn read_tool_spec() -> LoadedItem<ToolSpec> {
+        LoadedItem {
+            value: ToolSpec {
+                id: "Read".to_string(),
+                name: "Read".to_string(),
+                description: "Read tool".to_string(),
+                handler: "runtime:claude_read".to_string(),
+                approval_policy: Some("auto".to_string()),
+                sandbox_policy: Some("read-only".to_string()),
+                input_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string"},
+                        "offset": {"type": "integer"},
+                        "limit": {"type": "integer"},
+                        "pages": {"type": "string"}
+                    },
+                    "required": ["file_path"]
+                })),
+                ..ToolSpec::default()
+            },
+            source_info: SourceInfo {
+                path: PathBuf::from("read.yaml"),
+                kind: SourceKind::Builtin,
+            },
+        }
+    }
+
+    fn project_memory_skill_spec() -> LoadedItem<SkillSpec> {
+        LoadedItem {
+            value: SkillSpec {
+                name: "project-memory".to_string(),
+                description: "Load durable project memory".to_string(),
+                content: "Load the active project's durable memory from `$ARGUMENTS`.\n\n1. Use `Read` on `$ARGUMENTS`.\n2. Treat the file contents as durable project-specific context for the current task.\n3. If the file is missing or empty, continue without inventing memory.\n4. If you learn a durable new fact, use the Memory tool to add, replace, or remove entries. Do not edit `MEMORY.md` directly.".to_string(),
+                allowed_tools: vec!["Read".to_string(), "Memory".to_string()],
+                argument_hint: Some("<memory-file>".to_string()),
+                ..SkillSpec::default()
+            },
+            source_info: SourceInfo {
+                path: PathBuf::from("skills/project-memory/SKILL.md"),
+                kind: SourceKind::Builtin,
+            },
         }
     }
 

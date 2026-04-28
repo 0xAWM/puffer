@@ -14,6 +14,7 @@ use puffer_resources::{
 };
 use puffer_session_store::SessionStore;
 use serde_json::{json, Value};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -613,8 +614,36 @@ struct TestFixture {
     session_store: SessionStore,
 }
 
+struct ScopedPufferHome {
+    old_home: Option<OsString>,
+}
+
+impl ScopedPufferHome {
+    fn set(path: &std::path::Path) -> Self {
+        let old_home = std::env::var_os("PUFFER_HOME");
+        std::env::set_var("PUFFER_HOME", path);
+        Self { old_home }
+    }
+}
+
+impl Drop for ScopedPufferHome {
+    fn drop(&mut self) {
+        if let Some(value) = self.old_home.take() {
+            std::env::set_var("PUFFER_HOME", value);
+        } else {
+            std::env::remove_var("PUFFER_HOME");
+        }
+    }
+}
+
 fn sample_state() -> TestFixture {
     let tempdir = tempdir().unwrap();
+    let _lock = crate::test_locks::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempdir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let _home = ScopedPufferHome::set(&home);
     let paths = ConfigPaths::discover(tempdir.path());
     ensure_workspace_dirs(&paths).unwrap();
     let session_store = SessionStore::from_paths(&paths).unwrap();
