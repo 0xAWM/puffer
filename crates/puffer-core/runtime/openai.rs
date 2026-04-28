@@ -1507,3 +1507,103 @@ where
         raw_response: raw,
     })
 }
+
+/// Adapter for the OpenAI Responses API family — covers `openai-responses`,
+/// `azure-openai-responses`, and `openai-codex-responses`. The streaming
+/// implementation switches between the websocket and SSE transports based
+/// on `openai_websocket_enabled()`, so the loop never branches on transport.
+pub(crate) struct OpenAIResponsesAdapter;
+
+impl super::provider_adapter::ProviderAdapter for OpenAIResponsesAdapter {
+    fn api_id(&self) -> &'static str {
+        // The adapter handles three aliases; the canonical id used in
+        // error messages is the most common one.
+        "openai-responses"
+    }
+
+    fn execute_turn(
+        &self,
+        state: &mut AppState,
+        resources: &LoadedResources,
+        providers: &ProviderRegistry,
+        provider: &ProviderDescriptor,
+        model_id: String,
+        auth_store: &mut AuthStore,
+        input: &str,
+        options: super::TurnRequestOptions<'_>,
+    ) -> Result<super::TurnExecution> {
+        execute_openai(
+            state, resources, providers, provider, model_id, auth_store, input, options,
+        )
+    }
+
+    fn execute_turn_streaming(
+        &self,
+        state: &mut AppState,
+        resources: &LoadedResources,
+        providers: &ProviderRegistry,
+        provider: &ProviderDescriptor,
+        model_id: String,
+        auth_store: &mut AuthStore,
+        input: &str,
+        options: super::TurnRequestOptions<'_>,
+        on_event: &mut dyn FnMut(super::TurnStreamEvent),
+    ) -> Result<super::TurnExecution> {
+        // Wrap the unsized `dyn FnMut` in a sized closure so the generic
+        // `<F: FnMut(...)>` callees remain unchanged.
+        let mut wrapped = |event: super::TurnStreamEvent| on_event(event);
+        if openai_websocket_enabled() {
+            execute_openai_websocket_streaming(
+                state,
+                resources,
+                providers,
+                provider,
+                model_id,
+                auth_store,
+                input,
+                options,
+                &mut wrapped,
+            )
+        } else {
+            execute_openai_streaming(
+                state,
+                resources,
+                providers,
+                provider,
+                model_id,
+                auth_store,
+                input,
+                options,
+                &mut wrapped,
+            )
+        }
+    }
+}
+
+/// Adapter for OpenAI Chat Completions (`openai-completions`). No
+/// streaming implementation today — the default trait impl falls back
+/// to the non-streaming path, matching the prior dispatcher's
+/// behavior.
+pub(crate) struct OpenAICompletionsAdapter;
+
+impl super::provider_adapter::ProviderAdapter for OpenAICompletionsAdapter {
+    fn api_id(&self) -> &'static str {
+        "openai-completions"
+    }
+
+    fn execute_turn(
+        &self,
+        state: &mut AppState,
+        resources: &LoadedResources,
+        providers: &ProviderRegistry,
+        provider: &ProviderDescriptor,
+        model_id: String,
+        auth_store: &mut AuthStore,
+        input: &str,
+        options: super::TurnRequestOptions<'_>,
+    ) -> Result<super::TurnExecution> {
+        execute_openai_completions(
+            state, resources, providers, provider, model_id, auth_store, input, options,
+        )
+    }
+}
