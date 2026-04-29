@@ -6,6 +6,8 @@ use super::{
 use crate::permissions::load_runtime_permission_context;
 use crate::workspace_paths;
 pub(crate) mod conversation;
+mod completions_session;
+mod responses_session;
 mod support;
 mod websocket;
 
@@ -66,246 +68,6 @@ pub(super) struct OpenAIToolResults {
     pub(super) invocations: Vec<ToolInvocation>,
 }
 
-pub(super) fn execute_openai(
-    state: &mut AppState,
-    resources: &LoadedResources,
-    providers: &ProviderRegistry,
-    provider: &ProviderDescriptor,
-    model_id: String,
-    auth_store: &mut AuthStore,
-    input: &str,
-    options: super::TurnRequestOptions<'_>,
-) -> Result<super::TurnExecution> {
-    let structured_output = options.structured_output;
-    let use_native = prefer_native_structured_output(state, provider, &model_id, structured_output);
-    match execute_openai_once(
-        state,
-        resources,
-        providers,
-        provider,
-        model_id.clone(),
-        auth_store,
-        input,
-        options.clone(),
-        use_native,
-    ) {
-        Ok(turn) => Ok(turn),
-        Err(error) if use_native && is_openai_structured_output_error(&error) => {
-            state.mark_native_structured_output_unsupported(
-                OPENAI_STRUCTURED_OUTPUT_FAMILY,
-                provider.id.as_str(),
-                &model_id,
-                structured_output_endpoint_id(provider),
-            );
-            execute_openai_once(
-                state, resources, providers, provider, model_id, auth_store, input, options, false,
-            )
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn execute_openai_once(
-    state: &mut AppState,
-    resources: &LoadedResources,
-    providers: &ProviderRegistry,
-    provider: &ProviderDescriptor,
-    model_id: String,
-    auth_store: &mut AuthStore,
-    input: &str,
-    options: super::TurnRequestOptions<'_>,
-    use_native: bool,
-) -> Result<super::TurnExecution> {
-    use self::conversation::{
-        append_reasoning_items, append_tool_results, compact_conversation,
-        inject_post_compact_context, items_to_responses_input, transcript_to_items,
-        ConversationItem,
-    };
-
-    let structured_output = options.structured_output;
-    let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
-    let registry = ToolRegistry::from_resources(resources);
-    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
-    let text = openai_responses_text_config(structured_output, use_native);
-    let tools = openai_tool_definitions_for_request(
-        &registry,
-        structured_output,
-        use_native,
-        Some(&permission_context),
-        options.tool_filter,
-    )?;
-    let system_prompt = render_runtime_system_prompt(
-        state,
-        resources,
-        &model_id,
-        &tools
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<std::collections::BTreeSet<_>>(),
-    )?;
-    let instructions = openai_request_instructions(state, resources, Some(&system_prompt))?;
-    // Unified: all internal logic on Vec<ConversationItem>.
-    let mut items = transcript_to_items(state, input);
-    let mut reflection = options
-        .reflection
-        .map(|config| super::reflection::ReflectionTracker::new(input, config));
-    let mut reflection_traces: Vec<super::ReflectionTraceEvent> = Vec::new();
-
-    // Inject dynamic context as a user message at the start of the input
-    // array (matching Codex/CC pattern: dynamic context lives in `input`,
-    // not `instructions`, so `instructions` stays static and cacheable).
-    let context_reminder = build_context_reminder_message();
-    items.insert(0, ConversationItem::user_message(&context_reminder));
-
-    let mut invocations = Vec::new();
-    let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
-    let supports_response_threading =
-        openai_supports_response_threading(provider, &execution.request_config.base_url);
-    let mut previous_response_id = None;
-    // Index where "continuation" items start — used for previous_response_id optimization.
-    // When previous_response_id is set, only items[start..] are sent as wire input.
-    let mut continuation_start: Option<usize> = None;
-
-    loop {
-        // Wire boundary: ConversationItem → Responses API input.
-        let wire_input = match (
-            supports_response_threading,
-            previous_response_id.as_ref(),
-            continuation_start,
-        ) {
-            (true, Some(_), Some(start)) => items_to_responses_input(&items[start..]),
-            _ => items_to_responses_input(&items),
-        };
-
-        let response =
-            send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
-                let mut body = build_codex_openai_request_body(
-                    state,
-                    &model_id,
-                    &instructions,
-                    wire_input.clone(),
-                    &tools,
-                    supports_reasoning,
-                    text.clone(),
-                    false,
-                );
-                let previous_response_id = if supports_response_threading {
-                    previous_response_id.as_deref()
-                } else {
-                    None
-                };
-                apply_previous_response_id(&mut body, previous_response_id);
-                build_json_post_request(
-                    request_config,
-                    openai_responses_path(&request_config.base_url),
-                    &body,
-                )
-            })?;
-
-        // Parse typed struct directly from Value — no String roundtrip.
-        let input_tokens = response
-            .pointer("/usage/input_tokens")
-            .and_then(Value::as_u64)
-            .map(|v| v as usize);
-        if let Some(tokens) = input_tokens {
-            state.last_input_tokens = Some(tokens as u32);
-        }
-        let cached_tokens = response
-            .pointer("/usage/input_tokens_details/cached_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        if let Some(input) = input_tokens {
-            state.update_cache_stats(input as u64, cached_tokens);
-        }
-        let parsed: OpenAIResponsesResponse = serde_json::from_value(response.clone())
-            .context("failed to parse OpenAI Responses payload")?;
-        previous_response_id = if supports_response_threading {
-            parsed.id.clone()
-        } else {
-            None
-        };
-        let tool_calls = extract_responses_tool_calls(&parsed)?;
-        if tool_calls.is_empty() {
-            let assistant_text = parse_openai_assistant_text(&parsed, &response, state)?;
-            run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
-            return Ok(super::TurnExecution {
-                assistant_text,
-                tool_invocations: invocations,
-                reflection_traces,
-            });
-        }
-
-        // Add assistant text from this round (if any) to maintain full history.
-        let assistant_text = extract_responses_text(&parsed);
-        if !assistant_text.trim().is_empty() {
-            items.push(ConversationItem::assistant_message(&assistant_text));
-        }
-        // Preserve the model's reasoning chain so the next turn can resume it
-        // instead of re-thinking from scratch. Without this, high-effort
-        // reasoning models spend minutes per turn on repeated work.
-        let reasoning_raw: Vec<Value> = response
-            .pointer("/output")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        append_reasoning_items(&mut items, &reasoning_raw);
-        // Record where continuation starts (tool calls + outputs for next request).
-        continuation_start = Some(items.len());
-
-        let cwd = state.cwd.clone();
-        let tool_results = execute_openai_tool_calls(
-            state,
-            resources,
-            providers,
-            auth_store,
-            &tool_calls,
-            &registry,
-            &cwd,
-            &execution.request_config,
-            &model_id,
-            structured_output,
-            options.tool_filter,
-        )?;
-
-        // Shared: append tool calls + outputs to canonical items.
-        append_tool_results(&mut items, &tool_results.invocations);
-        if let Some(observation) = reflection.as_mut().and_then(|tracker| {
-            tracker.observe_batch_with_judge(
-                &tool_results.invocations,
-                &items,
-                state,
-                resources,
-                providers,
-                auth_store,
-            )
-        }) {
-            reflection_traces.extend(observation.trace_events);
-            if let Some(checkpoint) = observation.checkpoint {
-                items.push(ConversationItem::user_message(checkpoint.prompt));
-            }
-        }
-        invocations.extend(tool_results.invocations);
-
-        // Shared: unified compaction.
-        let compacted = compact_conversation(
-            &mut items,
-            provider,
-            &model_id,
-            &execution.request_config,
-            input_tokens,
-        );
-        if compacted {
-            previous_response_id = None;
-            continuation_start = None;
-            inject_post_compact_context(&mut items, &cwd);
-        }
-    }
-}
 
 pub(super) fn execute_openai_streaming<F>(
     state: &mut AppState,
@@ -613,203 +375,6 @@ where
     }
 }
 
-pub(super) fn execute_openai_completions(
-    state: &mut AppState,
-    resources: &LoadedResources,
-    providers: &ProviderRegistry,
-    provider: &ProviderDescriptor,
-    model_id: String,
-    auth_store: &mut AuthStore,
-    input: &str,
-    options: super::TurnRequestOptions<'_>,
-) -> Result<super::TurnExecution> {
-    let structured_output = options.structured_output;
-    let use_native = prefer_native_structured_output(state, provider, &model_id, structured_output);
-    match execute_openai_completions_once(
-        state,
-        resources,
-        providers,
-        provider,
-        model_id.clone(),
-        auth_store,
-        input,
-        options.clone(),
-        use_native,
-    ) {
-        Ok(turn) => Ok(turn),
-        Err(error) if use_native && is_openai_structured_output_error(&error) => {
-            state.mark_native_structured_output_unsupported(
-                OPENAI_STRUCTURED_OUTPUT_FAMILY,
-                provider.id.as_str(),
-                &model_id,
-                structured_output_endpoint_id(provider),
-            );
-            execute_openai_completions_once(
-                state, resources, providers, provider, model_id, auth_store, input, options, false,
-            )
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn execute_openai_completions_once(
-    state: &mut AppState,
-    resources: &LoadedResources,
-    providers: &ProviderRegistry,
-    provider: &ProviderDescriptor,
-    model_id: String,
-    auth_store: &mut AuthStore,
-    input: &str,
-    options: super::TurnRequestOptions<'_>,
-    use_native: bool,
-) -> Result<super::TurnExecution> {
-    use self::conversation::{
-        append_tool_results, build_system_reminder, compact_conversation,
-        inject_post_compact_context, items_to_chat_messages, transcript_to_items, ConversationItem,
-    };
-
-    let structured_output = options.structured_output;
-    let mut execution = resolve_openai_execution_config(state, auth_store, provider)?;
-    let registry = ToolRegistry::from_resources(resources);
-    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
-    let response_format = openai_chat_response_format(structured_output, use_native);
-    let tools = openai_chat_completion_tools_for_request(
-        &registry,
-        structured_output,
-        use_native,
-        Some(&permission_context),
-        options.tool_filter,
-    )?;
-    let system_prompt = render_runtime_system_prompt(
-        state,
-        resources,
-        &model_id,
-        &tools
-            .iter()
-            .map(|tool| tool.function.name.clone())
-            .collect::<std::collections::BTreeSet<_>>(),
-    )?;
-    let plan_mode_context = crate::plan_mode::take_plan_mode_context_message(state, resources)?;
-    let system_reminder = build_system_reminder(&super::git_status_context());
-
-    // Unified: all internal logic on Vec<ConversationItem>.
-    let mut items = transcript_to_items(state, input);
-    let mut reflection = options
-        .reflection
-        .map(|config| super::reflection::ReflectionTracker::new(input, config));
-    let mut reflection_traces: Vec<super::ReflectionTraceEvent> = Vec::new();
-    let mut invocations = Vec::new();
-
-    loop {
-        // Check for background tasks that completed since the last turn.
-        let completed = super::claude_tools::workflow::drain_completed_shell_tasks(
-            &state.cwd,
-            &state.session.id,
-        );
-        if !completed.is_empty() {
-            let notice = format!(
-                "<system-reminder>\n{}\nUse TaskOutput to retrieve the full output if needed.\n</system-reminder>",
-                completed.join("\n")
-            );
-            items.push(ConversationItem::user_message(&notice));
-        }
-
-        // Wire boundary: ConversationItem → Chat Completions messages.
-        let messages = items_to_chat_messages(
-            &items,
-            Some(&system_prompt),
-            plan_mode_context.as_deref(),
-            Some(&system_reminder),
-        );
-        let response =
-            send_openai_request_with_refresh(auth_store, &mut execution, |request_config| {
-                build_chat_completions_request(
-                    request_config,
-                    &OpenAIChatCompletionsRequest {
-                        model: model_id.clone(),
-                        messages: messages.clone(),
-                        tools: tools.clone(),
-                        tool_choice: if tools.is_empty() {
-                            None
-                        } else {
-                            Some(OpenAIResponsesToolChoiceMode::Auto)
-                        },
-                        response_format: response_format.clone(),
-                    },
-                )
-            })?;
-        let parsed = parse_chat_completions_response(&serde_json::to_string(&response)?)?;
-        let tool_calls = extract_chat_completions_tool_calls(&parsed)?;
-        if tool_calls.is_empty() {
-            let text = extract_chat_completions_text(&parsed);
-            let assistant_text = if text.trim().is_empty() {
-                parse_openai_text(&response)
-                    .or_else(|_| parse_openai_text_fallback(&response, state))?
-            } else {
-                text
-            };
-            run_turn_hooks(resources, &state.cwd, &assistant_text, invocations.len());
-            return Ok(super::TurnExecution {
-                assistant_text,
-                tool_invocations: invocations,
-                reflection_traces,
-            });
-        }
-
-        // Preserve assistant text from this round (the model may emit text
-        // alongside tool calls, e.g. "Let me check that file.").
-        let assistant_text = extract_chat_completions_text(&parsed);
-        if !assistant_text.trim().is_empty() {
-            items.push(ConversationItem::assistant_message(&assistant_text));
-        }
-
-        let cwd = state.cwd.clone();
-        let tool_results = execute_openai_tool_calls(
-            state,
-            resources,
-            providers,
-            auth_store,
-            &tool_calls,
-            &registry,
-            &cwd,
-            &execution.request_config,
-            &model_id,
-            structured_output,
-            options.tool_filter,
-        )?;
-
-        // Shared: append tool calls + outputs to canonical items.
-        append_tool_results(&mut items, &tool_results.invocations);
-        if let Some(observation) = reflection.as_mut().and_then(|tracker| {
-            tracker.observe_batch_with_judge(
-                &tool_results.invocations,
-                &items,
-                state,
-                resources,
-                providers,
-                auth_store,
-            )
-        }) {
-            reflection_traces.extend(observation.trace_events);
-            if let Some(checkpoint) = observation.checkpoint {
-                items.push(ConversationItem::user_message(checkpoint.prompt));
-            }
-        }
-        invocations.extend(tool_results.invocations);
-
-        // Shared: unified compaction (previously missing post-compact context).
-        let compacted = compact_conversation(
-            &mut items,
-            provider,
-            &model_id,
-            &execution.request_config,
-            None, // Chat Completions doesn't return input_tokens
-        );
-        if compacted {
-            inject_post_compact_context(&mut items, &cwd);
-        }
-    }
-}
 
 pub(super) fn execute_openai_tool_calls(
     state: &mut AppState,
@@ -1096,7 +661,7 @@ fn execute_openai_tool_calls_serial(
     })
 }
 
-fn parse_openai_text(response: &Value) -> Result<String> {
+pub(super) fn parse_openai_text(response: &Value) -> Result<String> {
     if let Some(text) = response.get("output_text").and_then(Value::as_str) {
         return Ok(text.to_string());
     }
@@ -1125,7 +690,7 @@ fn parse_openai_text(response: &Value) -> Result<String> {
     Ok(parts.join("\n"))
 }
 
-fn openai_request_instructions(
+pub(super) fn openai_request_instructions(
     state: &mut AppState,
     resources: &LoadedResources,
     system_prompt: Option<&str>,
@@ -1158,7 +723,7 @@ fn openai_request_instructions(
 /// (in `instructions`) from dynamic context (in `input` messages).
 /// The `<system-reminder>` XML tag helps the model distinguish
 /// system-injected context from user-authored messages.
-fn build_context_reminder_message() -> String {
+pub(super) fn build_context_reminder_message() -> String {
     let now = time::OffsetDateTime::now_utc();
     let date_str = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
     let git_status = super::git_status_context();
@@ -1356,7 +921,7 @@ where
     parse_http_json_response(&retry.url, false, retry_response)
 }
 
-fn send_openai_request_with_refresh_streaming<F, G>(
+pub(super) fn send_openai_request_with_refresh_streaming<F, G>(
     auth_store: &mut AuthStore,
     execution: &mut OpenAIExecutionConfig,
     build_request: F,
@@ -1532,9 +1097,47 @@ impl super::provider_adapter::ProviderAdapter for OpenAIResponsesAdapter {
         input: &str,
         options: super::TurnRequestOptions<'_>,
     ) -> Result<super::TurnExecution> {
-        execute_openai(
-            state, resources, providers, provider, model_id, auth_store, input, options,
-        )
+        let use_native = prefer_native_structured_output(
+            state,
+            provider,
+            &model_id,
+            options.structured_output,
+        );
+        match run_responses_attempt(
+            state,
+            resources,
+            providers,
+            provider,
+            &model_id,
+            auth_store,
+            input,
+            &options,
+            use_native,
+            None,
+        ) {
+            Ok(turn) => Ok(turn),
+            Err(error) if use_native && is_openai_structured_output_error(&error) => {
+                state.mark_native_structured_output_unsupported(
+                    OPENAI_STRUCTURED_OUTPUT_FAMILY,
+                    provider.id.as_str(),
+                    &model_id,
+                    structured_output_endpoint_id(provider),
+                );
+                run_responses_attempt(
+                    state,
+                    resources,
+                    providers,
+                    provider,
+                    &model_id,
+                    auth_store,
+                    input,
+                    &options,
+                    false,
+                    None,
+                )
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn execute_turn_streaming(
@@ -1549,34 +1152,101 @@ impl super::provider_adapter::ProviderAdapter for OpenAIResponsesAdapter {
         options: super::TurnRequestOptions<'_>,
         on_event: &mut dyn FnMut(super::TurnStreamEvent),
     ) -> Result<super::TurnExecution> {
-        // Wrap the unsized `dyn FnMut` in a sized closure so the generic
-        // `<F: FnMut(...)>` callees remain unchanged.
-        let mut wrapped = |event: super::TurnStreamEvent| on_event(event);
+        // WebSocket transport keeps the legacy (non-agent_loop) path —
+        // it has fundamentally different framing and per-event flow
+        // control. SSE path uses agent_loop + responses_session.
         if openai_websocket_enabled() {
-            execute_openai_websocket_streaming(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-                options,
+            let mut wrapped = |event: super::TurnStreamEvent| on_event(event);
+            return execute_openai_websocket_streaming(
+                state, resources, providers, provider, model_id, auth_store, input, options,
                 &mut wrapped,
-            )
-        } else {
-            execute_openai_streaming(
-                state,
-                resources,
-                providers,
-                provider,
-                model_id,
-                auth_store,
-                input,
-                options,
-                &mut wrapped,
-            )
+            );
         }
+        let use_native = prefer_native_structured_output(
+            state,
+            provider,
+            &model_id,
+            options.structured_output,
+        );
+        match run_responses_attempt(
+            state,
+            resources,
+            providers,
+            provider,
+            &model_id,
+            auth_store,
+            input,
+            &options,
+            use_native,
+            Some(on_event as &mut dyn FnMut(super::TurnStreamEvent)),
+        ) {
+            Ok(turn) => Ok(turn),
+            Err(error) if use_native && is_openai_structured_output_error(&error) => {
+                state.mark_native_structured_output_unsupported(
+                    OPENAI_STRUCTURED_OUTPUT_FAMILY,
+                    provider.id.as_str(),
+                    &model_id,
+                    structured_output_endpoint_id(provider),
+                );
+                run_responses_attempt(
+                    state,
+                    resources,
+                    providers,
+                    provider,
+                    &model_id,
+                    auth_store,
+                    input,
+                    &options,
+                    false,
+                    Some(on_event),
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// One attempt of OpenAI Responses execution: build a session with the
+/// requested `use_native` flag, hand it off to `agent_loop`. The
+/// adapter retries with `use_native=false` if the first attempt fails
+/// with a native structured-output unsupported error.
+fn run_responses_attempt(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    provider: &ProviderDescriptor,
+    model_id: &str,
+    auth_store: &mut AuthStore,
+    input: &str,
+    options: &super::TurnRequestOptions<'_>,
+    use_native: bool,
+    on_event: Option<&mut dyn FnMut(super::TurnStreamEvent)>,
+) -> Result<super::TurnExecution> {
+    let registry = ToolRegistry::from_resources(resources);
+    let mut session = self::responses_session::setup_responses_session(
+        state,
+        resources,
+        provider,
+        model_id.to_string(),
+        auth_store,
+        options,
+        use_native,
+    )?;
+    let mut inputs = super::agent_loop::LoopInputs {
+        state,
+        resources,
+        providers,
+        provider,
+        model_id,
+        auth_store,
+        input,
+        reflection_config: options.reflection.clone(),
+        tool_filter: options.tool_filter,
+        registry: &registry,
+    };
+    match on_event {
+        Some(sink) => super::agent_loop::run_streaming_loop(&mut inputs, &mut session, sink),
+        None => super::agent_loop::run_blocking_loop(&mut inputs, &mut session),
     }
 }
 
@@ -1602,8 +1272,66 @@ impl super::provider_adapter::ProviderAdapter for OpenAICompletionsAdapter {
         input: &str,
         options: super::TurnRequestOptions<'_>,
     ) -> Result<super::TurnExecution> {
-        execute_openai_completions(
-            state, resources, providers, provider, model_id, auth_store, input, options,
-        )
+        let use_native = prefer_native_structured_output(
+            state,
+            provider,
+            &model_id,
+            options.structured_output,
+        );
+        match run_completions_attempt(
+            state, resources, providers, provider, &model_id, auth_store, input, &options, use_native,
+        ) {
+            Ok(turn) => Ok(turn),
+            Err(error) if use_native && is_openai_structured_output_error(&error) => {
+                state.mark_native_structured_output_unsupported(
+                    OPENAI_STRUCTURED_OUTPUT_FAMILY,
+                    provider.id.as_str(),
+                    &model_id,
+                    structured_output_endpoint_id(provider),
+                );
+                run_completions_attempt(
+                    state, resources, providers, provider, &model_id, auth_store, input, &options,
+                    false,
+                )
+            }
+            Err(error) => Err(error),
+        }
     }
+}
+
+/// One attempt of OpenAI Chat Completions execution.
+fn run_completions_attempt(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    provider: &ProviderDescriptor,
+    model_id: &str,
+    auth_store: &mut AuthStore,
+    input: &str,
+    options: &super::TurnRequestOptions<'_>,
+    use_native: bool,
+) -> Result<super::TurnExecution> {
+    let registry = ToolRegistry::from_resources(resources);
+    let mut session = self::completions_session::setup_completions_session(
+        state,
+        resources,
+        provider,
+        model_id.to_string(),
+        auth_store,
+        options,
+        use_native,
+    )?;
+    let mut inputs = super::agent_loop::LoopInputs {
+        state,
+        resources,
+        providers,
+        provider,
+        model_id,
+        auth_store,
+        input,
+        reflection_config: options.reflection.clone(),
+        tool_filter: options.tool_filter,
+        registry: &registry,
+    };
+    super::agent_loop::run_blocking_loop(&mut inputs, &mut session)
 }

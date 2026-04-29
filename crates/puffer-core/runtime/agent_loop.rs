@@ -56,6 +56,11 @@ pub(crate) struct AssistantTurn {
     pub assistant_text: String,
     /// Optional input-token usage hint for compaction sizing.
     pub input_tokens_hint: Option<usize>,
+    /// Tool call ids that the session already surfaced through
+    /// `on_event` during streaming (e.g. via SSE
+    /// `tool_call_start` events). Used by the loop to suppress
+    /// duplicate `ToolCallsRequested` emissions.
+    pub emitted_tool_call_ids: std::collections::HashSet<String>,
 }
 
 /// Provider-side session that captures vendor-specific setup and
@@ -70,6 +75,7 @@ pub(crate) trait TurnSession {
     fn one_turn_streaming(
         &mut self,
         state: &mut AppState,
+        auth_store: &mut AuthStore,
         items: &mut Vec<ConversationItem>,
         on_event: &mut dyn FnMut(TurnStreamEvent),
     ) -> Result<AssistantTurn>;
@@ -81,10 +87,11 @@ pub(crate) trait TurnSession {
     fn one_turn_blocking(
         &mut self,
         state: &mut AppState,
+        auth_store: &mut AuthStore,
         items: &mut Vec<ConversationItem>,
     ) -> Result<AssistantTurn> {
         let mut sink = |_: TurnStreamEvent| {};
-        self.one_turn_streaming(state, items, &mut sink)
+        self.one_turn_streaming(state, auth_store, items, &mut sink)
     }
 
     /// Provider-specific compaction summary generation.
@@ -93,6 +100,18 @@ pub(crate) trait TurnSession {
     /// Backend descriptor for `execute_tool_call`. Carries vendor refs
     /// (e.g. `&AnthropicRequestConfig`) borrowed from session state.
     fn tool_execution_backend(&self) -> ToolExecutionBackend<'_>;
+
+    /// Hook invoked once after `transcript_to_items` and before the
+    /// first iteration. Lets vendor sessions inject preamble items
+    /// (e.g. OpenAI's per-turn `currentDate / gitStatus` context
+    /// reminder pinned at index 0). Default: no-op.
+    fn pre_loop_inject(&mut self, _items: &mut Vec<ConversationItem>) {}
+
+    /// Hook invoked after the loop performs a compaction so the session
+    /// can invalidate threading state (OpenAI `previous_response_id` +
+    /// `continuation_start` must reset because the server-side cached
+    /// state no longer matches the local transcript). Default: no-op.
+    fn notify_compacted(&mut self) {}
 }
 
 /// Static-per-turn inputs the loop needs from the call site. Mutable
@@ -121,6 +140,8 @@ pub(crate) fn run_streaming_loop(
     let cwd = inputs.state.cwd.clone();
 
     let mut items = transcript_to_items(inputs.state, inputs.input);
+    session.pre_loop_inject(&mut items);
+
     let mut invocations: Vec<ToolInvocation> = Vec::new();
     let mut reflection_traces: Vec<ReflectionTraceEvent> = Vec::new();
     let mut reflection = inputs
@@ -136,6 +157,7 @@ pub(crate) fn run_streaming_loop(
             inject_post_compact_context(&mut items, &cwd);
         }
     }
+    session.notify_compacted(); // Defensive: pre-turn compact may have happened.
 
     loop {
         // Drain completed background tasks and inject as user messages.
@@ -152,7 +174,7 @@ pub(crate) fn run_streaming_loop(
         }
 
         // Provider single round-trip.
-        let turn = session.one_turn_streaming(inputs.state, &mut items, on_event)?;
+        let turn = session.one_turn_streaming(inputs.state, inputs.auth_store, &mut items, on_event)?;
 
         // No tool calls → final assistant text, run hooks, return.
         if turn.tool_calls.is_empty() {
@@ -172,7 +194,17 @@ pub(crate) fn run_streaming_loop(
         // Append response items (assistant text + reasoning + FunctionCall) BEFORE running tools.
         items.extend(turn.pre_tool_items);
 
-        on_event(TurnStreamEvent::ToolCallsRequested(turn.tool_calls.clone()));
+        // Suppress duplicate ToolCallsRequested for ids the session
+        // already surfaced via streaming events.
+        let pending_for_event: Vec<ToolCallRequest> = turn
+            .tool_calls
+            .iter()
+            .filter(|tc| !turn.emitted_tool_call_ids.contains(&tc.call_id))
+            .cloned()
+            .collect();
+        if !pending_for_event.is_empty() {
+            on_event(TurnStreamEvent::ToolCallsRequested(pending_for_event));
+        }
 
         // Execute tools (sequential — parallel-safe batching is a follow-up).
         let new_invocations = execute_tool_batch(inputs, session, &cwd, &turn.tool_calls)?;
@@ -219,17 +251,19 @@ pub(crate) fn run_streaming_loop(
         }
 
         // Post-iteration compaction.
-        {
+        let compacted = {
             let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
-            if compact_conversation_with(
+            compact_conversation_with(
                 &mut items,
                 inputs.provider,
                 inputs.model_id,
                 turn.input_tokens_hint,
                 &summary_fn,
-            ) {
-                inject_post_compact_context(&mut items, &cwd);
-            }
+            )
+        };
+        if compacted {
+            inject_post_compact_context(&mut items, &cwd);
+            session.notify_compacted();
         }
     }
 }
@@ -244,6 +278,8 @@ pub(crate) fn run_blocking_loop(
     let cwd = inputs.state.cwd.clone();
 
     let mut items = transcript_to_items(inputs.state, inputs.input);
+    session.pre_loop_inject(&mut items);
+
     let mut invocations: Vec<ToolInvocation> = Vec::new();
     let mut reflection_traces: Vec<ReflectionTraceEvent> = Vec::new();
     let mut reflection = inputs
@@ -258,9 +294,10 @@ pub(crate) fn run_blocking_loop(
             inject_post_compact_context(&mut items, &cwd);
         }
     }
+    session.notify_compacted();
 
     loop {
-        let turn = session.one_turn_blocking(inputs.state, &mut items)?;
+        let turn = session.one_turn_blocking(inputs.state, inputs.auth_store, &mut items)?;
 
         if turn.tool_calls.is_empty() {
             run_turn_hooks(
@@ -309,17 +346,19 @@ pub(crate) fn run_blocking_loop(
             }
         }
 
-        {
+        let compacted = {
             let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
-            if compact_conversation_with(
+            compact_conversation_with(
                 &mut items,
                 inputs.provider,
                 inputs.model_id,
                 turn.input_tokens_hint,
                 &summary_fn,
-            ) {
-                inject_post_compact_context(&mut items, &cwd);
-            }
+            )
+        };
+        if compacted {
+            inject_post_compact_context(&mut items, &cwd);
+            session.notify_compacted();
         }
     }
 }

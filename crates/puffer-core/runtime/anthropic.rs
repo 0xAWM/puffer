@@ -232,6 +232,7 @@ impl TurnSession for AnthropicTurnSession {
     fn one_turn_streaming(
         &mut self,
         state: &mut AppState,
+        _auth_store: &mut AuthStore,
         items: &mut Vec<ConversationItem>,
         on_event: &mut dyn FnMut(TurnStreamEvent),
     ) -> Result<AssistantTurn> {
@@ -270,6 +271,7 @@ impl TurnSession for AnthropicTurnSession {
     fn one_turn_blocking(
         &mut self,
         state: &mut AppState,
+        _auth_store: &mut AuthStore,
         items: &mut Vec<ConversationItem>,
     ) -> Result<AssistantTurn> {
         // Anthropic-specific 413 / prompt_too_long recovery: drop oldest
@@ -348,6 +350,7 @@ fn turn_from_response(response: &Value) -> Result<AssistantTurn> {
         tool_calls,
         assistant_text,
         input_tokens_hint,
+        emitted_tool_call_ids: std::collections::HashSet::new(),
     })
 }
 
