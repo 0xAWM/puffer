@@ -1662,6 +1662,7 @@ mod tests {
                 context_window,
                 max_output_tokens: max_output,
                 supports_reasoning: false,
+                compat: None,
             }],
         }
     }

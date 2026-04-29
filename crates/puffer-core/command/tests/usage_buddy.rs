@@ -46,6 +46,7 @@ fn usage_command_reports_runtime_and_resource_counts() {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            compat: None,
         }],
     });
     let mut auth_store = AuthStore::default();
@@ -373,6 +374,7 @@ fn anthropic_provider() -> ProviderDescriptor {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            compat: None,
         }],
     }
 }
@@ -395,6 +397,7 @@ fn openai_provider() -> ProviderDescriptor {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
         }],
     }
 }

@@ -141,8 +141,7 @@ fn setup_anthropic_session(
         .find(|m| m.id == model_id)
         .map(|m| m.supports_reasoning)
         .unwrap_or(false);
-    let provider_supports_thinking_api =
-        provider.id == "anthropic" || provider.base_url.contains("anthropic.com");
+    let provider_supports_thinking_api = anthropic_supports_thinking_api(provider, &model_id);
     let max_output = resolve_max_output_tokens(provider, &model_id);
 
     Ok(AnthropicTurnSession {
@@ -537,6 +536,24 @@ fn anthropic_system_blocks(
         }));
     }
     blocks
+}
+
+/// Resolve whether the given model accepts the Anthropic-style
+/// `thinking` block. Consults declared `Model.compat` first; falls
+/// back to the historical URL/id heuristic
+/// (`provider.id == "anthropic"` || `base_url contains "anthropic.com"`).
+fn anthropic_supports_thinking_api(provider: &ProviderDescriptor, model_id: &str) -> bool {
+    let declared = provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .and_then(|m| m.compat.as_ref())
+        .and_then(|c| c.as_anthropic_messages())
+        .and_then(|c| c.supports_thinking_api);
+    if let Some(value) = declared {
+        return value;
+    }
+    provider.id == "anthropic" || provider.base_url.contains("anthropic.com")
 }
 
 // ---------------------------------------------------------------------------

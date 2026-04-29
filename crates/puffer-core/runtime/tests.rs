@@ -33,6 +33,7 @@ fn provider() -> ProviderDescriptor {
             context_window: 200_000,
             max_output_tokens: 8192,
             supports_reasoning: true,
+            compat: None,
         }],
     }
 }
@@ -149,6 +150,7 @@ fn openai_provider(base_url: String) -> ProviderDescriptor {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
         }],
     }
 }
@@ -228,6 +230,7 @@ fn resolve_selection_uses_provider_scoped_default_model_id() {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
         },
         puffer_provider_registry::ModelDescriptor {
             id: "gpt-5.4".to_string(),
@@ -237,6 +240,7 @@ fn resolve_selection_uses_provider_scoped_default_model_id() {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
         },
     ];
     registry.register(descriptor);

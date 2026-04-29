@@ -192,8 +192,9 @@ where
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
+    let model = provider.models.iter().find(|m| m.id == model_id);
     let supports_response_threading =
-        openai_supports_response_threading(provider, &execution.request_config.base_url);
+        openai_supports_response_threading(provider, &execution.request_config.base_url, model);
     let mut previous_response_id: Option<String> = None;
     // Index where "continuation" items start — used for previous_response_id optimization.
     // When previous_response_id is set, only items[start..] are sent as wire input.
@@ -815,7 +816,12 @@ pub(super) fn resolve_openai_execution_config(
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect::<Vec<_>>();
-    append_default_openai_headers(&mut custom_headers, provider.id.as_str());
+    // The execution config is built once per session (no model_id in
+    // scope); compat-driven version-header gating consults the
+    // descriptor in `support::append_default_openai_headers` only when
+    // a model is supplied. Pass `None` here — auto-detect handles the
+    // canonical providers (`provider.id == "openai"`).
+    append_default_openai_headers(&mut custom_headers, provider.id.as_str(), None);
     let session_id = Some(state.session.id.to_string());
     let originator = OPENAI_CODEX_ORIGINATOR.to_string();
     match auth_store.get(provider.id.as_str()) {

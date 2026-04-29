@@ -340,6 +340,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8_192,
                 supports_reasoning: true,
+                compat: None,
             }],
         }
     }
@@ -576,6 +577,7 @@ mod tests {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
         }];
 
         let mut registry = ProviderRegistry::new();

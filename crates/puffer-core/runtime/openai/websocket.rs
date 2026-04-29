@@ -219,8 +219,9 @@ where
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
+    let model = provider.models.iter().find(|m| m.id == model_id);
     let supports_response_threading =
-        openai_supports_response_threading(provider, &execution.request_config.base_url);
+        openai_supports_response_threading(provider, &execution.request_config.base_url, model);
     let mut previous_response_id: Option<String> = None;
     let mut continuation_start: Option<usize> = None;
 

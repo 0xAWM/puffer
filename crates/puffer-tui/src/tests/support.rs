@@ -193,6 +193,7 @@ pub(super) fn openai_provider_resources() -> LoadedResources {
                     context_window: 272_000,
                     max_output_tokens: 16_384,
                     supports_reasoning: true,
+                    compat: None,
                 }],
             },
         )],
@@ -220,6 +221,7 @@ pub(super) fn sample_providers() -> ProviderRegistry {
                 context_window: 200_000,
                 max_output_tokens: 8_192,
                 supports_reasoning: true,
+                compat: None,
             },
             ModelDescriptor {
                 id: "claude-opus-4-1".to_string(),
@@ -229,6 +231,7 @@ pub(super) fn sample_providers() -> ProviderRegistry {
                 context_window: 200_000,
                 max_output_tokens: 8_192,
                 supports_reasoning: true,
+                compat: None,
             },
         ],
     });
@@ -249,6 +252,7 @@ pub(super) fn sample_providers() -> ProviderRegistry {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            compat: None,
         }],
     });
     providers.register(ProviderDescriptor {
@@ -268,6 +272,7 @@ pub(super) fn sample_providers() -> ProviderRegistry {
             context_window: 32_768,
             max_output_tokens: 8_192,
             supports_reasoning: false,
+            compat: None,
         }],
     });
     providers

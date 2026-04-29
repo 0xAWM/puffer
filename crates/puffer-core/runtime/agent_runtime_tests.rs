@@ -29,6 +29,7 @@ fn provider() -> ProviderDescriptor {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            compat: None,
         }],
     }
 }

@@ -417,9 +417,10 @@ pub(super) fn setup_responses_session(
     )?;
     let instructions =
         super::openai_request_instructions(state, resources, Some(&system_prompt))?;
+    let model = provider.models.iter().find(|m| m.id == model_id);
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
     let supports_response_threading =
-        openai_supports_response_threading(provider, &execution.request_config.base_url);
+        openai_supports_response_threading(provider, &execution.request_config.base_url, model);
 
     Ok(OpenAIResponsesTurnSession {
         execution,
