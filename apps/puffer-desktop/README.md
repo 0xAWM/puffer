@@ -18,6 +18,21 @@ npm run build
 npm run tauri dev
 ```
 
+### Browser mode
+
+The Svelte app can run outside Tauri when you point it at an already-running
+Puffer daemon:
+
+```bash
+puffer daemon --bind 127.0.0.1:1421 --token dev-token --print-handshake
+npm run dev
+open "http://127.0.0.1:1420/?daemonUrl=ws://127.0.0.1:1421/ws&daemonToken=dev-token"
+```
+
+The browser build also accepts `VITE_PUFFER_DAEMON_URL` and
+`VITE_PUFFER_DAEMON_TOKEN`. A daemon handshake supplied in the URL is cached in
+localStorage so reloads keep using the same daemon.
+
 ## Notes
 
 - The desktop host reads the existing Puffer session store and does not introduce a second session database.

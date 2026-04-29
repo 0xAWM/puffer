@@ -6,6 +6,7 @@ use serde_json::Value;
 pub(crate) struct SessionListItemDto {
     pub(crate) session_id: String,
     pub(crate) display_name: Option<String>,
+    pub(crate) generated_title: Option<String>,
     pub(crate) title: String,
     pub(crate) cwd: String,
     pub(crate) folder_path: String,
@@ -132,6 +133,7 @@ pub(crate) enum TimelineItemDto {
 pub(crate) struct SessionDetailDto {
     pub(crate) session_id: String,
     pub(crate) display_name: Option<String>,
+    pub(crate) generated_title: Option<String>,
     pub(crate) title: String,
     pub(crate) cwd: String,
     pub(crate) folder_path: String,
@@ -283,6 +285,16 @@ pub(crate) struct ProviderSummaryDto {
     pub(crate) auth_modes: Vec<String>,
     pub(crate) source_kind: String,
     pub(crate) source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalCredentialDto {
+    pub(crate) provider_id: String,
+    pub(crate) source: String,
+    pub(crate) kind: String,
+    pub(crate) description: String,
+    pub(crate) source_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

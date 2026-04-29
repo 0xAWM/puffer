@@ -44,6 +44,7 @@ pub(super) fn state() -> AppState {
         SessionMetadata {
             id: Uuid::nil(),
             display_name: None,
+            generated_title: None,
             cwd: std::env::current_dir().unwrap(),
             created_at_ms: 0,
             updated_at_ms: 0,
@@ -63,6 +64,7 @@ pub(super) fn plan_mode_state() -> AppState {
     let session = SessionMetadata {
         id: Uuid::new_v4(),
         display_name: None,
+        generated_title: None,
         cwd: cwd.clone(),
         created_at_ms: 0,
         updated_at_ms: 0,
@@ -208,6 +210,42 @@ fn resolve_selection_uses_first_provider_model_when_unset() {
     let (provider, model_id) = resolve_provider_and_model(&state, &registry).unwrap();
     assert_eq!(provider.id, "anthropic");
     assert_eq!(model_id, "claude-sonnet-4-5");
+}
+
+#[test]
+fn resolve_selection_uses_provider_scoped_default_model_id() {
+    let mut registry = ProviderRegistry::new();
+    let mut descriptor = provider();
+    descriptor.id = "openai".to_string();
+    descriptor.display_name = "OpenAI".to_string();
+    descriptor.default_api = "openai-responses".to_string();
+    descriptor.models = vec![
+        puffer_provider_registry::ModelDescriptor {
+            id: "gpt-5.1".to_string(),
+            display_name: "gpt-5.1".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+        },
+        puffer_provider_registry::ModelDescriptor {
+            id: "gpt-5.4".to_string(),
+            display_name: "gpt-5.4".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            context_window: 272_000,
+            max_output_tokens: 16_384,
+            supports_reasoning: true,
+        },
+    ];
+    registry.register(descriptor);
+    let mut state = state();
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("gpt-5.4".to_string());
+    let (provider, model_id) = resolve_provider_and_model(&state, &registry).unwrap();
+    assert_eq!(provider.id, "openai");
+    assert_eq!(model_id, "gpt-5.4");
 }
 
 #[test]
@@ -521,6 +559,7 @@ fn resolve_openai_execution_config_uses_codex_chatgpt_route_for_builtin_oauth() 
     .unwrap();
 
     assert_eq!(config.request_config.base_url, OPENAI_CHATGPT_BASE_URL);
+    assert_eq!(config.request_config.version, OPENAI_CODEX_COMPAT_VERSION);
     assert_eq!(
         config.request_config.account_id.as_deref(),
         Some("acct-123")
@@ -659,7 +698,7 @@ fn openai_structured_output_falls_back_and_caches_unsupported_native_support() {
     let server = thread::spawn(move || {
         for index in 0..5 {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buffer = [0_u8; 16384];
+            let mut buffer = [0_u8; 131072];
             let bytes = stream.read(&mut buffer).unwrap();
             let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
             request_log.lock().unwrap().push(request);
@@ -1026,12 +1065,12 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
 
 #[path = "tests/http_retries.rs"]
 mod http_retries;
-#[path = "tests/openai_stream_transport.rs"]
-mod openai_stream_transport;
 #[path = "tests/iteration_behavior.rs"]
 mod iteration_behavior;
 #[path = "tests/agent_loop_e2e.rs"]
 mod agent_loop_e2e;
+#[path = "tests/openai_stream_transport.rs"]
+mod openai_stream_transport;
 #[path = "tests/openai_tool_errors.rs"]
 mod openai_tool_errors;
 #[path = "tests/permissions.rs"]

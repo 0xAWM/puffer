@@ -7,6 +7,7 @@ use serde_json::Value;
 pub(crate) struct SessionListItemDto {
     pub session_id: String,
     pub display_name: Option<String>,
+    pub generated_title: Option<String>,
     pub title: String,
     pub cwd: String,
     pub folder_path: String,
@@ -140,6 +141,7 @@ pub(crate) enum TimelineItemDto {
 pub(crate) struct SessionDetailDto {
     pub session_id: String,
     pub display_name: Option<String>,
+    pub generated_title: Option<String>,
     pub title: String,
     pub cwd: String,
     pub folder_path: String,
@@ -153,6 +155,44 @@ pub(crate) struct SessionDetailDto {
     pub latest_diff: Option<DiffSummaryDto>,
     pub diff_history: Vec<DiffSummaryDto>,
     pub repo_status: RepoStatusDto,
+    pub agent_diff: AgentDiffDto,
+    pub divergence: DivergenceReportDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffDto {
+    pub files: Vec<AgentDiffFileDto>,
+    pub entries: Vec<AgentDiffEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffFileDto {
+    pub path: String,
+    pub latest_kind: String,
+    pub edit_count: usize,
+    pub latest_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiffEntryDto {
+    pub call_id: String,
+    pub tool_id: String,
+    pub kind: String,
+    pub path: String,
+    pub success: bool,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DivergenceReportDto {
+    pub agent_only: Vec<String>,
+    pub git_only: Vec<String>,
+    pub agent_total: usize,
+    pub git_total: usize,
 }
 
 /// Describes the loaded runtime configuration snapshot for the desktop settings page.
@@ -236,6 +276,18 @@ pub(crate) struct ProviderSummaryDto {
     pub auth_modes: Vec<String>,
     pub source_kind: String,
     pub source_path: Option<String>,
+}
+
+/// Describes one importable credential discovered on disk (`~/.claude`,
+/// `~/.codex`, …) that the desktop can adopt without an interactive flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalCredentialDto {
+    pub provider_id: String,
+    pub source: String,
+    pub kind: String,
+    pub description: String,
+    pub source_path: String,
 }
 
 /// Describes one remote command or file operation result for the desktop scratchpad.

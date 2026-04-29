@@ -372,11 +372,11 @@ pub(crate) fn reasoning_item_from_value(item: &Value) -> Option<ConversationItem
             arr.iter()
                 .filter_map(|s| {
                     if s.get("type").and_then(Value::as_str) == Some("summary_text") {
-                        s.get("text")
-                            .and_then(Value::as_str)
-                            .map(|text| ReasoningSummary::SummaryText {
+                        s.get("text").and_then(Value::as_str).map(|text| {
+                            ReasoningSummary::SummaryText {
                                 text: text.to_string(),
-                            })
+                            }
+                        })
                     } else {
                         None
                     }
@@ -446,7 +446,78 @@ pub(crate) fn items_to_responses_input(items: &[ConversationItem]) -> Value {
     if items.is_empty() {
         return Value::Array(Vec::new());
     }
-    Value::Array(items.iter().map(item_to_responses_value).collect())
+    Value::Array(
+        drop_transient_system_messages(items)
+            .into_iter()
+            .map(item_to_responses_value)
+            .collect(),
+    )
+}
+
+/// Inserts the per-turn synthetic context reminder at the right position
+/// in `items`: after any leading run of `role:"system"` items, so the
+/// boundary filter's first-position exemption keeps preserving the
+/// sub-agent identity prompt that `agents.rs:319` pushes at transcript[0].
+///
+/// **TODO(phase3): delete this helper and revert call sites to
+/// `items.insert(0, …)` once sub-agent identity moves into top-level
+/// `Prompt::base_instructions` (codex parity). At that point no
+/// legitimate `role:"system"` exists in transcript, so no leading-system
+/// run to navigate around.**
+///
+/// Naive `items.insert(0, …)` would push the identity to position 1,
+/// past the exemption, and `drop_transient_system_messages()` would then
+/// strip it. Inserting after the leading system run keeps both the
+/// reminder and the identity in their right slots.
+pub(crate) fn insert_context_reminder_preserving_legacy_leading_system(
+    items: &mut Vec<ConversationItem>,
+    reminder_text: &str,
+) {
+    let insert_pos = items
+        .iter()
+        .take_while(
+            |item| matches!(item, ConversationItem::Message { role, .. } if role == "system"),
+        )
+        .count();
+    items.insert(insert_pos, ConversationItem::user_message(reminder_text));
+}
+
+/// Strips transient `role:"system"` items that appear after the first
+/// non-system item — these are local UI notifications (slash command
+/// output, "Provider request failed: ...", "Interrupted by user.")
+/// that leaked into the transcript via `emit_system_message` and have
+/// no business reaching the model.
+///
+/// Items at the head of the list are preserved so legitimate system
+/// content (e.g. a sub-agent identity prompt pushed by `agents.rs:321`)
+/// still reaches the wire — until we move that to top-level
+/// `instructions` in a follow-up.
+///
+/// Without this filter:
+/// - ChatGPT Codex backend (`chatgpt.com/backend-api/codex/responses`)
+///   rejects with `400` on any role:"system" inside `input`.
+/// - Permissive proxies silently merge the leaked content into the
+///   top-level `instructions`, corrupting the system prompt.
+/// - On Chat Completions, the leaked entry shows up mid-conversation
+///   which strict providers reject and lenient ones treat as a real
+///   instruction switch.
+fn drop_transient_system_messages(items: &[ConversationItem]) -> Vec<&ConversationItem> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut seen_non_system = false;
+    for item in items {
+        let is_system = matches!(
+            item,
+            ConversationItem::Message { role, .. } if role == "system"
+        );
+        if is_system && seen_non_system {
+            continue;
+        }
+        if !is_system {
+            seen_non_system = true;
+        }
+        out.push(item);
+    }
+    out
 }
 
 fn item_to_responses_value(item: &ConversationItem) -> Value {
@@ -556,6 +627,13 @@ pub(crate) fn items_to_chat_messages(
         messages.push(chat_message("system", reminder));
     }
 
+    // Same boundary filter as items_to_responses_input — strip transient
+    // role:"system" items emitted by `flow.rs::emit_system_message` so they
+    // don't appear mid-conversation on the wire (which strict Chat
+    // Completions providers reject).
+    let filtered: Vec<&ConversationItem> = drop_transient_system_messages(items);
+    let items_owned: Vec<ConversationItem> = filtered.into_iter().cloned().collect();
+    let items: &[ConversationItem] = &items_owned;
     let mut i = 0;
     while i < items.len() {
         match &items[i] {
@@ -611,9 +689,8 @@ pub(crate) fn items_to_chat_messages(
                 i += 1;
             }
             ConversationItem::Compaction { summary } => {
-                let text = format!(
-                    "[Conversation compacted — prior context summarized]\n\n{summary}"
-                );
+                let text =
+                    format!("[Conversation compacted — prior context summarized]\n\n{summary}");
                 messages.push(chat_message("user", &text));
                 i += 1;
             }
@@ -680,8 +757,7 @@ pub(crate) fn items_to_anthropic_messages(items: &[ConversationItem]) -> Vec<Val
                         arguments,
                     } = &items[i]
                     {
-                        let input_val: Value =
-                            serde_json::from_str(arguments).unwrap_or(json!({}));
+                        let input_val: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
                         tool_uses.push(json!({
                             "type": "tool_use",
                             "id": call_id,
@@ -723,9 +799,8 @@ pub(crate) fn items_to_anthropic_messages(items: &[ConversationItem]) -> Vec<Val
                 i += 1;
             }
             ConversationItem::Compaction { summary } => {
-                let text = format!(
-                    "[Conversation compacted — prior context summarized]\n\n{summary}"
-                );
+                let text =
+                    format!("[Conversation compacted — prior context summarized]\n\n{summary}");
                 push_or_merge(&mut messages, "user", json!(text));
                 i += 1;
             }
@@ -1115,6 +1190,7 @@ mod tests {
         let meta = SessionMetadata {
             id: uuid::Uuid::new_v4(),
             display_name: Some("test".to_string()),
+            generated_title: None,
             cwd: PathBuf::from("/tmp"),
             created_at_ms: 0,
             updated_at_ms: 0,
@@ -1197,6 +1273,196 @@ mod tests {
         assert_eq!(arr[2]["name"], "Bash");
         assert_eq!(arr[3]["type"], "function_call_output");
         assert_eq!(arr[3]["output"], "file.txt");
+    }
+
+    /// Regression: a `MessageRole::System` item pushed by
+    /// `flow.rs::emit_system_message` after the conversation has already
+    /// started (e.g. "Interrupted by user.", "Provider request failed: ...")
+    /// must be stripped before reaching the Responses API `input` array,
+    /// because (a) ChatGPT Codex backend rejects it with 400, and
+    /// (b) permissive proxies silently merge it into the top-level
+    /// `instructions`, polluting the system prompt.
+    #[test]
+    fn responses_input_drops_transient_system_messages() {
+        let items = vec![
+            ConversationItem::user_message("first user message"),
+            ConversationItem::assistant_message("first reply"),
+            ConversationItem::system_message("Interrupted by user."),
+            ConversationItem::user_message("second user message"),
+        ];
+        let value = items_to_responses_input(&items);
+        let arr = value.as_array().unwrap();
+        assert_eq!(arr.len(), 3, "transient system entry must be dropped");
+        assert!(
+            !arr.iter().any(|m| m["role"] == "system"),
+            "no system role should appear after the first non-system item: {arr:?}"
+        );
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[1]["role"], "assistant");
+        assert_eq!(arr[2]["role"], "user");
+        assert_eq!(arr[2]["content"][0]["text"], "second user message");
+    }
+
+    /// Regression: same scenario for Chat Completions wire format. Strict
+    /// providers (and some Anthropic-via-OpenAI shims like GLM coding plan
+    /// when routed through chat completions) reject mid-conversation
+    /// `role:"system"`; lenient ones treat it as an instruction switch
+    /// and behave unpredictably.
+    #[test]
+    fn chat_messages_drops_transient_system_messages() {
+        let items = vec![
+            ConversationItem::user_message("first user message"),
+            ConversationItem::assistant_message("first reply"),
+            ConversationItem::system_message("Interrupted by user."),
+            ConversationItem::user_message("second user message"),
+        ];
+        let msgs = items_to_chat_messages(&items, Some("real system prompt"), None, None);
+        // Position 0 is the explicit top-level system_prompt; positions
+        // 1..N must contain no further `system` role.
+        assert_eq!(msgs[0].role, "system");
+        for (i, m) in msgs.iter().enumerate().skip(1) {
+            assert_ne!(
+                m.role, "system",
+                "transient system leaked into chat messages at position {i}: {m:?}"
+            );
+        }
+        // Sanity: message order is user, assistant, user.
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(msgs[2].role, "assistant");
+        assert_eq!(msgs[3].role, "user");
+    }
+
+    /// First-position exemption: a `system_message` at the head of the
+    /// items list represents legitimate model-facing system content
+    /// (e.g. a sub-agent identity prompt pushed by `agents.rs:321`
+    /// after `nested_state.transcript.clear()`). It must NOT be dropped.
+    #[test]
+    fn responses_input_preserves_leading_system_message() {
+        let items = vec![
+            ConversationItem::system_message("You are the bug-bounty subagent."),
+            ConversationItem::user_message("audit this"),
+        ];
+        let value = items_to_responses_input(&items);
+        let arr = value.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["role"], "system");
+        assert_eq!(arr[0]["content"], "You are the bug-bounty subagent.");
+        assert_eq!(arr[1]["role"], "user");
+    }
+
+    /// Anthropic boundary already strips role:"system" entirely (the
+    /// protocol disallows it in messages) — keep that contract under
+    /// the same scenario the Responses-side regression covers.
+    #[test]
+    fn anthropic_messages_never_contain_system_role() {
+        let items = vec![
+            ConversationItem::user_message("first user message"),
+            ConversationItem::assistant_message("first reply"),
+            ConversationItem::system_message("Interrupted by user."),
+            ConversationItem::user_message("second user message"),
+        ];
+        let msgs = items_to_anthropic_messages(&items);
+        for m in &msgs {
+            assert_ne!(
+                m["role"], "system",
+                "system role leaked into Anthropic messages: {m:?}"
+            );
+        }
+    }
+
+    /// Regression for the gap that codex-review R2 surfaced: the runtime
+    /// path used to do `items.insert(0, user_message(context_reminder))`
+    /// before the wire boundary, which pushed the sub-agent identity
+    /// prompt that `agents.rs:319` puts at transcript[0] to items[1] —
+    /// past `drop_transient_system_messages`'s first-position exemption,
+    /// where it then got stripped.
+    ///
+    /// The fix lives in `insert_context_reminder_preserving_legacy_leading_system()` (this file): it
+    /// inserts the reminder *after* any leading run of `role:"system"`
+    /// items, preserving the sub-agent identity at the head where the
+    /// boundary expects it.
+    #[test]
+    fn responses_input_keeps_subagent_identity_after_runtime_prepend() {
+        let mut items = vec![
+            ConversationItem::system_message("You are the bug-bounty subagent."),
+            ConversationItem::user_message("audit this"),
+        ];
+        // Mimic the runtime call site (openai.rs / websocket.rs).
+        insert_context_reminder_preserving_legacy_leading_system(
+            &mut items,
+            "[context: cwd=/foo, ts=...]",
+        );
+        let value = items_to_responses_input(&items);
+        let arr = value.as_array().unwrap();
+        let identity_count = arr
+            .iter()
+            .filter(|m| {
+                m["role"] == "system"
+                    && m["content"]
+                        .as_str()
+                        .map(|s| s.contains("bug-bounty subagent"))
+                        .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            identity_count, 1,
+            "sub-agent identity prompt must survive the runtime context-reminder prepend: {arr:?}"
+        );
+        // And the reminder itself must still be present, immediately after
+        // the system identity.
+        assert_eq!(arr[0]["role"], "system");
+        assert_eq!(arr[1]["role"], "user");
+        assert!(
+            arr[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("context"),
+            "reminder text expected at position 1"
+        );
+    }
+
+    /// Mirror of `responses_input_preserves_leading_system_message` for the
+    /// Chat Completions boundary — confirms the first-position exemption
+    /// holds on both paths.
+    #[test]
+    fn chat_messages_preserves_leading_system_message() {
+        let items = vec![
+            ConversationItem::system_message("You are the bug-bounty subagent."),
+            ConversationItem::user_message("audit this"),
+        ];
+        let msgs = items_to_chat_messages(&items, Some("real system prompt"), None, None);
+        // Position 0 = explicit top-level system prompt; position 1 = the
+        // sub-agent identity from items[0]; position 2 = the user message.
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[1].role, "system");
+        assert_eq!(
+            msgs[1].content.as_ref().and_then(|v| v.as_str()),
+            Some("You are the bug-bounty subagent.")
+        );
+        assert_eq!(msgs[2].role, "user");
+    }
+
+    /// Mid-conversation transient system items get dropped even when a
+    /// stale UI `MessageRole::System` was reloaded from session_store at
+    /// startup. The reload path is `state.rs:197`; when followed by any
+    /// user/assistant content the new entry lands at items[1+] where the
+    /// boundary filter strips it.
+    ///
+    /// This is the core safety net for the "session reload after a
+    /// crash that left a `Provider request failed: ...` system in the
+    /// transcript" scenario that motivated PR#46.
+    #[test]
+    fn responses_input_drops_replayed_ui_system_when_followed_by_user() {
+        let items = vec![
+            ConversationItem::user_message("first user message"),
+            ConversationItem::system_message("Provider request failed: 400 ..."),
+            ConversationItem::user_message("retry"),
+        ];
+        let value = items_to_responses_input(&items);
+        let arr = value.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "stale UI system must be dropped");
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[1]["role"], "user");
     }
 
     #[test]
@@ -1467,7 +1733,10 @@ mod tests {
         let recovered: ConversationItem = serde_json::from_str(&json).unwrap();
         if let ConversationItem::FunctionCallOutput { output, .. } = &recovered {
             assert_eq!(output.text, "permission denied");
-            assert!(!output.is_error, "is_error should default to false after deserialization");
+            assert!(
+                !output.is_error,
+                "is_error should default to false after deserialization"
+            );
         } else {
             panic!("expected FunctionCallOutput");
         }
@@ -1581,7 +1850,11 @@ mod tests {
         ];
         let original_len = items.len();
         normalize_items(&mut items);
-        assert_eq!(items.len(), original_len, "paired items should not be modified");
+        assert_eq!(
+            items.len(),
+            original_len,
+            "paired items should not be modified"
+        );
     }
 
     #[test]
@@ -1644,7 +1917,7 @@ mod tests {
     fn token_estimation_function_call() {
         let item = ConversationItem::FunctionCall {
             call_id: "c1".into(),
-            name: "Bash".into(),             // 4 chars → 1 token
+            name: "Bash".into(),                 // 4 chars → 1 token
             arguments: r#"{"cmd":"ls"}"#.into(), // 12 chars → 3 tokens
         };
         // name(1) + arguments(3) = 4
@@ -1827,12 +2100,15 @@ mod tests {
         });
         let items = transcript_to_items(&state, "");
         // Find the FunctionCallOutput
-        let output_item = items.iter().find(|i| {
-            matches!(i, ConversationItem::FunctionCallOutput { .. })
-        });
+        let output_item = items
+            .iter()
+            .find(|i| matches!(i, ConversationItem::FunctionCallOutput { .. }));
         assert!(output_item.is_some(), "should have a FunctionCallOutput");
         if let ConversationItem::FunctionCallOutput { output, .. } = output_item.unwrap() {
-            assert!(output.is_error, "is_error should be true for failed tool result");
+            assert!(
+                output.is_error,
+                "is_error should be true for failed tool result"
+            );
             assert_eq!(output.text, "error output");
         }
     }
@@ -1885,7 +2161,11 @@ mod tests {
             },
         ];
         let msgs = items_to_anthropic_messages(&items);
-        assert_eq!(msgs.len(), 3, "user + assistant(tool_use) + user(tool_result)");
+        assert_eq!(
+            msgs.len(),
+            3,
+            "user + assistant(tool_use) + user(tool_result)"
+        );
 
         // Assistant message with tool_use
         assert_eq!(msgs[1]["role"], "assistant");
@@ -1901,7 +2181,10 @@ mod tests {
         assert_eq!(tool_result["type"], "tool_result");
         assert_eq!(tool_result["tool_use_id"], "c1");
         assert_eq!(tool_result["content"], "file.rs");
-        assert!(tool_result.get("is_error").is_none(), "is_error should be absent when false");
+        assert!(
+            tool_result.get("is_error").is_none(),
+            "is_error should be absent when false"
+        );
     }
 
     #[test]
@@ -2111,7 +2394,10 @@ mod tests {
         // === Chat Completions (OpenAI legacy pattern) ===
         let chat = items_to_chat_messages(&items, None, None, None);
         // user → assistant(tool_calls) → tool → assistant → user → assistant(tool_calls) → tool → assistant
-        assert!(chat.len() >= 4, "Chat Completions: should have role-based messages");
+        assert!(
+            chat.len() >= 4,
+            "Chat Completions: should have role-based messages"
+        );
         assert_eq!(chat[0].role, "user");
         // Function calls become assistant with tool_calls
         assert_eq!(chat[1].role, "assistant");
@@ -2127,7 +2413,8 @@ mod tests {
         // Verify alternation
         for i in 1..anthropic.len() {
             assert_ne!(
-                anthropic[i]["role"], anthropic[i - 1]["role"],
+                anthropic[i]["role"],
+                anthropic[i - 1]["role"],
                 "Anthropic: strict alternation violated at index {i}"
             );
         }
@@ -2141,7 +2428,10 @@ mod tests {
                     .map(|c| c.iter().any(|b| b["type"] == "tool_use"))
                     .unwrap_or(false)
         });
-        assert!(assistant_with_tool.is_some(), "Anthropic: should have assistant with tool_use");
+        assert!(
+            assistant_with_tool.is_some(),
+            "Anthropic: should have assistant with tool_use"
+        );
         let tool_use_block = assistant_with_tool.unwrap()["content"]
             .as_array()
             .unwrap()
@@ -2159,7 +2449,10 @@ mod tests {
                     .map(|c| c.iter().any(|b| b["type"] == "tool_result"))
                     .unwrap_or(false)
         });
-        assert!(user_with_result.is_some(), "Anthropic: should have user with tool_result");
+        assert!(
+            user_with_result.is_some(),
+            "Anthropic: should have user with tool_result"
+        );
         let tool_result_block = user_with_result.unwrap()["content"]
             .as_array()
             .unwrap()
@@ -2169,13 +2462,27 @@ mod tests {
         assert_eq!(tool_result_block["tool_use_id"], "call_1");
 
         // Find is_error propagation in Turn 2
-        let error_result = anthropic.iter().flat_map(|m| {
-            m["content"].as_array().unwrap_or(&vec![]).iter().filter(|b| {
-                b["type"] == "tool_result" && b["tool_use_id"] == "call_2"
-            }).cloned().collect::<Vec<_>>()
-        }).next();
-        assert!(error_result.is_some(), "Anthropic: should have tool_result for call_2");
-        assert_eq!(error_result.unwrap()["is_error"], true, "Anthropic: is_error should propagate");
+        let error_result = anthropic
+            .iter()
+            .flat_map(|m| {
+                m["content"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .filter(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_2")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .next();
+        assert!(
+            error_result.is_some(),
+            "Anthropic: should have tool_result for call_2"
+        );
+        assert_eq!(
+            error_result.unwrap()["is_error"],
+            true,
+            "Anthropic: is_error should propagate"
+        );
     }
 
     /// Dumps the actual wire-format JSON for visual inspection.
@@ -2346,14 +2653,12 @@ mod tests {
         append_reasoning_items(&mut items, &raw);
 
         assert_eq!(items.len(), 3);
-        let ConversationItem::Reasoning {
-            summary: s1,
-            ..
-        } = &items[1] else { panic!("item[1] should be Reasoning"); };
-        let ConversationItem::Reasoning {
-            summary: s2,
-            ..
-        } = &items[2] else { panic!("item[2] should be Reasoning"); };
+        let ConversationItem::Reasoning { summary: s1, .. } = &items[1] else {
+            panic!("item[1] should be Reasoning");
+        };
+        let ConversationItem::Reasoning { summary: s2, .. } = &items[2] else {
+            panic!("item[2] should be Reasoning");
+        };
         assert!(matches!(&s1[0], ReasoningSummary::SummaryText { text } if text == "first"));
         assert!(matches!(&s2[0], ReasoningSummary::SummaryText { text } if text == "second"));
     }

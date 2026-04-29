@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AuthProviderStatus,
+  AskUserQuestionItem,
+  DesktopPinState,
   DiffSnapshot,
+  ExternalCredential,
   FolderGroup,
   ProviderSummary,
   PullRequest,
@@ -12,7 +15,9 @@ import type {
   SessionDetail,
   SessionListItem,
   SettingsSnapshot,
-  TimelineItem
+  TimelineItem,
+  WorkflowRun,
+  WorkflowSnapshot
 } from "../types";
 import {
   mockCreatePrResult,
@@ -32,9 +37,15 @@ type BackendFolderGroup = {
   sessions: BackendSessionListItem[];
 };
 
+type BackendDesktopPinState = {
+  pinnedAgentIds?: string[];
+  pinnedWorkspacePaths?: string[];
+};
+
 type BackendSessionListItem = {
   sessionId: string;
   displayName: string | null;
+  generatedTitle?: string | null;
   title: string;
   cwd: string;
   folderPath: string;
@@ -103,12 +114,16 @@ type BackendTimelineItem =
   | {
       kind: "tool_call";
       id: string;
-      toolId: string;
+      toolId?: string;
+      tool_id?: string;
       status: string;
       summary: string | null;
-      inputText: string;
-      inputJson: Record<string, unknown> | null;
-      outputText: string;
+      inputText?: string;
+      input_text?: string;
+      inputJson?: Record<string, unknown> | null;
+      input_json?: Record<string, unknown> | null;
+      outputText?: string;
+      output_text?: string;
     }
   | {
       kind: "permission_dialog";
@@ -190,16 +205,11 @@ type BackendSettingsSnapshot = {
 
 type BackendRemoteOperation = RemoteOperation;
 
-function canInvokeTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
-
 /** Exposed to Svelte components so they can branch on whether the daemon
- *  is reachable (Tauri desktop shell) vs. running in pure web preview. In
- *  preview mode calls to `ensureLocalDaemonClient` throw — UIs that need
- *  live data should skip the RPC and render a friendly banner instead. */
+ *  is reachable. Tauri can spawn it automatically; browser mode needs a
+ *  configured daemon WebSocket handshake. */
 export function isDaemonReachable(): boolean {
-  return canInvokeTauri();
+  return canReachDaemon();
 }
 
 function preview(text: string, maxLength = 160): string {
@@ -257,10 +267,86 @@ function normalizeDiff(value: BackendDiff): DiffSnapshot {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeAskUserQuestions(raw: unknown): AskUserQuestionItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      question: typeof item.question === "string" ? item.question : "Question",
+      header: typeof item.header === "string" ? item.header : "Question",
+      multiSelect: item.multiSelect === true,
+      options: Array.isArray(item.options)
+        ? item.options
+            .map(asRecord)
+            .filter((option): option is Record<string, unknown> => option !== null)
+            .map((option) => ({
+              label: typeof option.label === "string" ? option.label : "Option",
+              description: typeof option.description === "string" ? option.description : "",
+              preview: typeof option.preview === "string" ? option.preview : null
+            }))
+        : []
+    }));
+}
+
+function normalizeQuestionAnswers(raw: unknown): Record<string, string | string[]> {
+  const record = asRecord(raw);
+  if (!record) return {};
+  const answers: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string") {
+      answers[key] = value;
+    } else if (Array.isArray(value)) {
+      const values = value.filter((item): item is string => typeof item === "string");
+      if (values.length > 0) answers[key] = values;
+    }
+  }
+  return answers;
+}
+
+function normalizeAskUserQuestionTool(
+  value: Extract<BackendTimelineItem, { kind: "tool_call" }>,
+  input: Record<string, unknown>,
+  output: Record<string, unknown>
+): TimelineItem {
+  const questions = normalizeAskUserQuestions(output.questions ?? input.questions);
+  const answers = normalizeQuestionAnswers(output.answers ?? input.answers);
+  const pending = output.pending === true || Object.keys(answers).length === 0;
+  const answerSummary = Object.entries(answers)
+    .map(([question, answer]) =>
+      `${question}: ${Array.isArray(answer) ? answer.join(", ") : answer}`
+    )
+    .join("\n");
+  return {
+    id: value.id,
+    kind: "question",
+    title: pending ? "Question" : "Answered question",
+    summary: answerSummary || questions.map((question) => question.question).join("\n"),
+    body: "",
+    meta: [],
+    status: pending ? "pending" : "answered",
+    questions,
+    answers
+  };
+}
+
 function normalizeSessionListItem(value: BackendSessionListItem): SessionListItem {
   return {
     id: value.sessionId,
     displayName: value.displayName,
+    generatedTitle: value.generatedTitle ?? null,
     title: value.title,
     cwd: value.cwd,
     folderPath: value.folderPath,
@@ -313,18 +399,32 @@ function normalizeTimelineItem(value: BackendTimelineItem): TimelineItem {
         meta: ["slash command"]
       };
     case "tool_call":
+      const toolId = value.toolId ?? value.tool_id ?? "";
+      const inputText = value.inputText ?? value.input_text ?? "";
+      const inputJson = value.inputJson ?? value.input_json ?? null;
+      const outputText = value.outputText ?? value.output_text ?? "";
+      const input = inputJson ?? parseJsonObject(inputText) ?? {};
+      const output = parseJsonObject(outputText) ?? {};
+      if (
+        toolId === "AskUserQuestion" ||
+        Array.isArray(input.questions) ||
+        Array.isArray(output.questions)
+      ) {
+        return normalizeAskUserQuestionTool(value, input, output);
+      }
+      const toolName = toolId || "Tool";
       return {
         id: value.id,
         kind: "tool",
-        title: `Tool call: ${value.toolId}`,
-        summary: value.summary ?? preview(value.outputText || value.inputText),
-        body: value.outputText || "Tool call completed without textual output.",
-        meta: [value.toolId, value.status],
-        toolName: value.toolId,
+        title: `Tool call: ${toolName}`,
+        summary: value.summary ?? preview(outputText || inputText),
+        body: outputText || "Tool call completed without textual output.",
+        meta: [toolName, value.status],
+        toolName,
         status: value.status,
-        input: value.inputText,
-        output: value.outputText,
-        inputJson: value.inputJson
+        input: inputText,
+        output: outputText,
+        inputJson
       };
     case "permission_dialog":
       return {
@@ -387,6 +487,7 @@ function normalizeSessionDetail(value: BackendSessionDetail): SessionDetail {
 
 export async function listGroupedSessions(remote?: RemoteConnection): Promise<FolderGroup[]> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) return listGroupedSessionsFromDaemon();
     return mockFolders;
   }
   const response = await invoke<BackendFolderGroup[]>("list_grouped_sessions", remoteArgs(remote));
@@ -404,6 +505,7 @@ export async function loadSessionDetail(
   remote?: RemoteConnection
 ): Promise<SessionDetail> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) return loadSessionDetailFromDaemon(sessionId);
     return mockSessionDetailFor(sessionId);
   }
   const response = await invoke<BackendSessionDetail>("load_session_detail", {
@@ -418,6 +520,13 @@ export async function refreshRepoStatus(
   remote?: RemoteConnection
 ): Promise<RepoStatus> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      const response = await client.request<BackendRepoStatus>("refresh_repo_status", {
+        sessionId
+      });
+      return normalizeRepoStatus(response);
+    }
     return mockRepoStatus;
   }
   const response = await invoke<BackendRepoStatus>("refresh_repo_status", {
@@ -477,6 +586,10 @@ export async function mergePullRequest(
 
 export async function loadSettingsSnapshot(remote?: RemoteConnection): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("load_settings_snapshot");
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("load_settings_snapshot", remoteArgs(remote));
@@ -487,6 +600,12 @@ export async function loginWithOauth(
   remote?: RemoteConnection
 ): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("login_with_oauth", {
+        providerId
+      });
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("login_with_oauth", {
@@ -501,6 +620,13 @@ export async function loginWithApiKey(
   remote?: RemoteConnection
 ): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("login_with_api_key", {
+        providerId,
+        apiKey
+      });
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("login_with_api_key", {
@@ -510,11 +636,54 @@ export async function loginWithApiKey(
   });
 }
 
+/** Lists credentials Puffer can adopt without an interactive flow — typically
+ *  whatever is already stored under `~/.claude` or `~/.codex`. The desktop
+ *  shell surfaces these so the user does not have to paste an API key they
+ *  already have on disk. */
+export async function listExternalCredentials(): Promise<ExternalCredential[]> {
+  if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<ExternalCredential[]>("list_external_credentials");
+    }
+    return [];
+  }
+  return invoke<ExternalCredential[]>("list_external_credentials");
+}
+
+/** Adopts a credential discovered by `listExternalCredentials` for the given
+ *  provider, then returns the refreshed settings snapshot. */
+export async function importExternalCredential(
+  providerId: string,
+  source: "claude" | "codex"
+): Promise<SettingsSnapshot> {
+  if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("import_external_credential", {
+        providerId,
+        source
+      });
+    }
+    return mockSettingsSnapshot;
+  }
+  return invoke<BackendSettingsSnapshot>("import_external_credential", {
+    providerId,
+    source
+  });
+}
+
 export async function logoutProvider(
   providerId: string,
   remote?: RemoteConnection
 ): Promise<SettingsSnapshot> {
   if (!canInvokeTauri()) {
+    if (canReachDaemon()) {
+      const client = await ensureLocalDaemonClient();
+      return client.request<BackendSettingsSnapshot>("logout_provider", {
+        providerId
+      });
+    }
     return mockSettingsSnapshot;
   }
   return invoke<BackendSettingsSnapshot>("logout_provider", {
@@ -575,7 +744,12 @@ export async function writeRemoteFile(
 // sessions, transcripts, and provider state. This module is a thin adapter.
 // ============================================================================
 
-import { ensureLocalDaemonClient, switchDaemonClient } from "./daemonClient";
+import {
+  canInvokeTauri,
+  canReachDaemon,
+  ensureLocalDaemonClient,
+  switchDaemonClient
+} from "./daemonClient";
 
 /** A blank session created on the fly. The daemon places it in the given
  *  `cwd` (defaults to the daemon's boot workspace). Returns the session id
@@ -736,9 +910,41 @@ export async function listGroupedSessionsFromDaemon(): Promise<FolderGroup[]> {
       sessions: folder.sessions.map(normalizeSessionListItem)
     }));
   } catch (_error) {
-    if (!canInvokeTauri()) return mockFolders;
+    if (!canReachDaemon()) return mockFolders;
     throw _error;
   }
+}
+
+function normalizeDesktopPinState(value: BackendDesktopPinState | null | undefined): DesktopPinState {
+  return {
+    pinnedAgentIds: Array.isArray(value?.pinnedAgentIds) ? value.pinnedAgentIds : [],
+    pinnedWorkspacePaths: Array.isArray(value?.pinnedWorkspacePaths) ? value.pinnedWorkspacePaths : []
+  };
+}
+
+export async function loadDesktopPins(): Promise<DesktopPinState> {
+  try {
+    const client = await ensureLocalDaemonClient();
+    const raw = await client.request<BackendDesktopPinState>("load_desktop_pins");
+    return normalizeDesktopPinState(raw);
+  } catch (_error) {
+    if (!canReachDaemon()) return { pinnedAgentIds: [], pinnedWorkspacePaths: [] };
+    throw _error;
+  }
+}
+
+export async function setDesktopPin(
+  kind: "agent" | "workspace",
+  id: string,
+  pinned: boolean
+): Promise<DesktopPinState> {
+  const client = await ensureLocalDaemonClient();
+  const raw = await client.request<BackendDesktopPinState>("set_desktop_pin", {
+    kind,
+    id,
+    pinned
+  });
+  return normalizeDesktopPinState(raw);
 }
 
 /** Load one session's detail (transcript + latest diff + repo state) via
@@ -753,12 +959,42 @@ export async function loadSessionDetailFromDaemon(
     });
     return normalizeSessionDetail(raw);
   } catch (_error) {
-    if (!canInvokeTauri()) return mockSessionDetailFor(sessionId) ?? mockSessionDetail;
+    if (!canReachDaemon()) return mockSessionDetailFor(sessionId) ?? mockSessionDetail;
     throw _error;
   }
 }
 
+/** Sets or clears the user-edited title for one session. */
+export async function renameSession(sessionId: string, title: string): Promise<SessionDetail> {
+  const client = await ensureLocalDaemonClient();
+  const raw = await client.request<BackendSessionDetail>("rename_session", {
+    sessionId,
+    title
+  });
+  return normalizeSessionDetail(raw);
+}
+
+/** Load registered workflows and recent runs from the daemon. */
+export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<WorkflowSnapshot>("workflow_list");
+}
+
+/** Load runs for one workflow slug from the daemon. */
+export async function listWorkflowRuns(workflowSlug: string): Promise<WorkflowRun[]> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<WorkflowRun[]>("workflow_runs_list", { workflowSlug });
+}
+
+/** Load one workflow run by global run index from the daemon. */
+export async function showWorkflowRun(idx: number): Promise<WorkflowRun | null> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<WorkflowRun | null>("workflow_run_show", { idx });
+}
+
 export type PermissionAction = "allow_once" | "allow_session" | "allow_all_session" | "deny";
+export type UserQuestionAnswers = Record<string, string | string[]>;
+export type UserQuestionAnnotations = Record<string, Record<string, string>>;
 
 /** Starts a new agent turn on `sessionId` with `message`. Returns the turn id
  *  so the caller can correlate streamed events and reply to permission
@@ -792,6 +1028,23 @@ export async function resolvePermission(
   } catch (daemonError) {
     if (!canInvokeTauri()) throw daemonError;
     await invoke("resolve_permission", { turnId, requestId, action });
+  }
+}
+
+/** Resolves a pending AskUserQuestion prompt for an in-flight turn. */
+export async function resolveUserQuestion(
+  turnId: string,
+  requestId: string,
+  answers: UserQuestionAnswers,
+  annotations: UserQuestionAnnotations = {}
+): Promise<void> {
+  try {
+    const client = await ensureLocalDaemonClient();
+    await client.request("resolve_user_question", { turnId, requestId, answers, annotations });
+    return;
+  } catch (daemonError) {
+    if (!canInvokeTauri()) throw daemonError;
+    await invoke("resolve_user_question", { turnId, requestId, answers, annotations });
   }
 }
 
@@ -845,7 +1098,7 @@ export async function logoutProviderViaDaemon(
 }
 
 // ---------------------------------------------------------------------------
-// Read-only filesystem RPCs for the Files tab.
+// Filesystem RPCs for the Files tab.
 // ---------------------------------------------------------------------------
 
 export type DirEntryKind = "file" | "directory" | "symlink";
@@ -863,6 +1116,32 @@ export type ReadFileResult = {
   content: string;
   size: number;
   truncated: boolean;
+};
+
+export type FileTabStateItem = {
+  path: string;
+  pinned: boolean;
+};
+
+export type FileTabsState = {
+  tabs: FileTabStateItem[];
+  activePath?: string | null;
+};
+
+export type LspOperationResult = {
+  operation: string;
+  filePath: string;
+  result: string;
+  resultCount?: number;
+  fileCount?: number;
+};
+
+export type LspInspectResult = {
+  path: string;
+  cwd: string;
+  line: number;
+  character: number;
+  operations: Record<string, LspOperationResult>;
 };
 
 /** List one directory. Absolute path required. The daemon enforces an
@@ -884,6 +1163,39 @@ export async function readFile(path: string, maxBytes?: number): Promise<ReadFil
     "read_file",
     maxBytes != null ? { path, maxBytes } : { path }
   );
+}
+
+/** Overwrite an existing UTF-8 file and return the updated file content. */
+export async function writeFile(path: string, content: string): Promise<ReadFileResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<ReadFileResult>("write_file", { path, content });
+}
+
+/** Load daemon-persisted Files tab state for one agent session. */
+export async function loadFileTabs(sessionId: string): Promise<FileTabsState> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<FileTabsState>("load_file_tabs", { sessionId });
+}
+
+/** Persist Files tab state for one agent session in the daemon. */
+export async function saveFileTabs(
+  sessionId: string,
+  state: FileTabsState
+): Promise<FileTabsState> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<FileTabsState>("save_file_tabs", { sessionId, ...state });
+}
+
+/** Ask the configured language server for symbol context at a file position.
+ *  `line` and `character` are zero-based LSP coordinates. */
+export async function lspInspect(
+  path: string,
+  cwd: string,
+  line: number,
+  character: number
+): Promise<LspInspectResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<LspInspectResult>("lsp_inspect", { path, cwd, line, character });
 }
 
 /** Start a filesystem watch. `paths` must live under the daemon's allowlist
@@ -921,16 +1233,64 @@ export type FsChangedEvent = {
 // shell output. One pty_id per open tab.
 // ---------------------------------------------------------------------------
 
+export type PtyTabInfo = {
+  ptyId: string;
+  sessionId: string;
+  title: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  createdAtMs: number;
+  active: boolean;
+};
+
+export type PtySessionInfo = {
+  tabs: PtyTabInfo[];
+  initialized: boolean;
+};
+
+export type PtyReplayChunk = {
+  seq: number;
+  data: string;
+};
+
+/** List live PTYs owned by one agent session. */
+export async function listPtys(sessionId: string): Promise<PtySessionInfo> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<PtySessionInfo>("pty_list", { sessionId });
+}
+
 /** Open a new PTY in `cwd` (defaults to the daemon's cwd). Returns the
  *  opaque pty_id to use on subsequent write/resize/close calls and to
  *  subscribe to `pty:<id>:data` + `pty:<id>:exit` events. */
 export async function openPty(params: {
+  sessionId?: string;
   cwd?: string;
   cols?: number;
   rows?: number;
+  title?: string;
 }): Promise<{ ptyId: string }> {
   const client = await ensureLocalDaemonClient();
   return client.request<{ ptyId: string }>("pty_open", params);
+}
+
+/** Mark a PTY as the active terminal for its agent session. */
+export async function focusPty(ptyId: string): Promise<void> {
+  const client = await ensureLocalDaemonClient();
+  await client.request("pty_focus", { ptyId });
+}
+
+/** Replay buffered PTY output for reconnecting terminal panes. */
+export async function replayPty(ptyId: string): Promise<PtyReplayChunk[]> {
+  const client = await ensureLocalDaemonClient();
+  const result = await client.request<{ chunks: PtyReplayChunk[] }>("pty_replay", { ptyId });
+  return result.chunks;
+}
+
+/** Rename a live PTY tab. */
+export async function renamePty(ptyId: string, title: string): Promise<PtyTabInfo> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<PtyTabInfo>("pty_rename", { ptyId, title });
 }
 
 /** Send keystrokes to the PTY. `dataB64` is the base64-encoding of the
@@ -958,6 +1318,246 @@ export async function closePty(ptyId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Browser — Chrome-backed Browser tab. The daemon owns a managed Chrome
+// process and streams screencast frames back to the renderer.
+// ---------------------------------------------------------------------------
+
+export type BrowserState = {
+  url: string;
+  title: string;
+  loading: boolean;
+  width?: number;
+  height?: number;
+  popOut?: boolean;
+  error?: string;
+};
+
+export type BrowserFrameEvent = {
+  frameId: string;
+  mimeType: string;
+  encoding: "base64";
+  data: string;
+  width: number;
+  height: number;
+};
+
+export type BrowserMouseInput = {
+  kind: "mouse";
+  eventType: "mousePressed" | "mouseReleased" | "mouseMoved";
+  x: number;
+  y: number;
+  button?: "left" | "middle" | "right" | "none";
+  buttons?: number;
+  clickCount?: number;
+};
+
+export type BrowserWheelInput = {
+  kind: "wheel";
+  x: number;
+  y: number;
+  deltaX: number;
+  deltaY: number;
+};
+
+export type BrowserKeyInput = {
+  kind: "key";
+  eventType: "keyDown" | "keyUp" | "rawKeyDown" | "char";
+  key: string;
+  code: string;
+  text?: string;
+  modifiers?: number;
+};
+
+export type BrowserTextInput = {
+  kind: "text";
+  text: string;
+};
+
+export type BrowserInputEvent =
+  | BrowserMouseInput
+  | BrowserWheelInput
+  | BrowserKeyInput
+  | BrowserTextInput;
+
+export type BrowserCopySelectionResult = {
+  text: string;
+  copiedFrom: string;
+};
+
+export type BrowserCursorResult = {
+  cursor: string;
+};
+
+export type BrowserDevtoolsEvent =
+  | {
+      kind: "console";
+      level: string;
+      text: string;
+      url?: string;
+      timestamp?: number;
+    }
+  | {
+      kind: "network";
+      phase: "request" | "response" | "failed";
+      requestId: string;
+      method?: string;
+      status?: number;
+      url?: string;
+      mimeType?: string;
+      errorText?: string;
+    };
+
+export type BrowserTabInfo = {
+  tabId: string;
+  label: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  connected: boolean;
+  active: boolean;
+  backendSessionId: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type BrowserTabsState = {
+  activeTabId?: string | null;
+  tabs: BrowserTabInfo[];
+};
+
+export type BrowserRecordedFrame = {
+  frameId: string;
+  backendSessionId: string;
+  rootSessionId: string;
+  tabId: string;
+  url: string;
+  title: string;
+  mimeType: string;
+  encoding: string;
+  data: string;
+  width: number;
+  height: number;
+  recordedAtMs: number;
+};
+
+export type BrowserRecordingSnapshot = {
+  frames: BrowserRecordedFrame[];
+};
+
+/** Open or reuse the Chrome-backed browser session for a Puffer session. */
+export async function browserOpen(params: {
+  sessionId: string;
+  url?: string;
+  width: number;
+  height: number;
+}): Promise<BrowserState> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserState>("browser_open", params);
+}
+
+/** Navigate the Chrome-backed browser session. */
+export async function browserNavigate(sessionId: string, url: string): Promise<void> {
+  const client = await ensureLocalDaemonClient();
+  await client.request("browser_navigate", { sessionId, url });
+}
+
+/** Reload the Chrome-backed browser session. */
+export async function browserReload(sessionId: string): Promise<void> {
+  const client = await ensureLocalDaemonClient();
+  await client.request("browser_reload", { sessionId });
+}
+
+/** Move the Chrome-backed browser session backward or forward in history. */
+export async function browserHistory(
+  sessionId: string,
+  direction: "back" | "forward"
+): Promise<void> {
+  const client = await ensureLocalDaemonClient();
+  await client.request("browser_history", { sessionId, direction });
+}
+
+/** Resize the Chrome viewport backing the Browser tab. */
+export async function browserResize(
+  sessionId: string,
+  width: number,
+  height: number
+): Promise<void> {
+  const client = await ensureLocalDaemonClient();
+  await client.request("browser_resize", { sessionId, width, height });
+}
+
+/** Forward one user input event from the Browser tab to Chrome. */
+export async function browserInput(
+  sessionId: string,
+  event: BrowserInputEvent
+): Promise<void> {
+  const client = await ensureLocalDaemonClient();
+  await client.request("browser_input", { sessionId, event });
+}
+
+/** Copy the current Chrome-owned webpage selection as plain text. */
+export async function browserCopySelection(
+  sessionId: string
+): Promise<BrowserCopySelectionResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserCopySelectionResult>("browser_copy_selection", { sessionId });
+}
+
+/** Read the CSS cursor Chrome reports at a browser viewport coordinate. */
+export async function browserCursor(
+  sessionId: string,
+  x: number,
+  y: number
+): Promise<BrowserCursorResult> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserCursorResult>("browser_cursor", { sessionId, x, y });
+}
+
+/** Close the Chrome-backed browser session. */
+export async function browserClose(sessionId: string): Promise<void> {
+  const client = await ensureLocalDaemonClient();
+  await client.request("browser_close", { sessionId });
+}
+
+/** List the daemon-owned Browser tabs for an agent session. */
+export async function browserTabsList(sessionId: string): Promise<BrowserTabsState> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserTabsState>("browser_agent", { action: "list", sessionId });
+}
+
+/** Open or reuse a daemon-owned Browser tab for an agent session. */
+export async function browserTabOpen(params: {
+  sessionId: string;
+  tabId?: string;
+  label?: string;
+  url?: string;
+  width?: number;
+  height?: number;
+  activate?: boolean;
+}): Promise<BrowserTabInfo> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserTabInfo>("browser_agent", { action: "open", ...params });
+}
+
+/** Focus a daemon-owned Browser tab for an agent session. */
+export async function browserTabFocus(sessionId: string, tabId: string): Promise<BrowserTabInfo> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserTabInfo>("browser_agent", { action: "focus", sessionId, tabId });
+}
+
+/** Close a daemon-owned Browser tab for an agent session. */
+export async function browserTabClose(sessionId: string, tabId: string): Promise<BrowserTabsState> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserTabsState>("browser_agent", { action: "close", sessionId, tabId });
+}
+
+/** Load the deduplicated browser screen recording for one agent session. */
+export async function browserRecording(sessionId: string): Promise<BrowserRecordingSnapshot> {
+  const client = await ensureLocalDaemonClient();
+  return client.request<BrowserRecordingSnapshot>("browser_recording", { sessionId });
+}
+
+// ---------------------------------------------------------------------------
 // Settings persistence — MCP servers, provider models, permissions, config.
 // All round-trip through the daemon so remote workspaces get the same UX.
 // ---------------------------------------------------------------------------
@@ -971,6 +1571,16 @@ export type McpServerInfo = {
   target: string;
   sourceKind: string;
   sourcePath: string | null;
+};
+
+export type AddMcpServerInput = {
+  id: string;
+  displayName?: string;
+  description?: string;
+  transport: "stdio" | "sse" | "http";
+  endpoint?: string;
+  target?: string;
+  scope?: "local" | "user";
 };
 
 export type ModelDescriptorInfo = {
@@ -998,6 +1608,12 @@ export type ConfigPatch = {
 export async function listMcpServers(): Promise<McpServerInfo[]> {
   const client = await ensureLocalDaemonClient();
   const result = await client.request<{ servers: McpServerInfo[] }>("list_mcp_servers");
+  return result.servers;
+}
+
+export async function addMcpServer(input: AddMcpServerInput): Promise<McpServerInfo[]> {
+  const client = await ensureLocalDaemonClient();
+  const result = await client.request<{ servers: McpServerInfo[] }>("add_mcp_server", input);
   return result.servers;
 }
 

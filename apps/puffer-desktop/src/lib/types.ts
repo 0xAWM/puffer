@@ -7,6 +7,7 @@ export type TimelineKind =
   | "system"
   | "tool"
   | "permission"
+  | "question"
   | "diff"
   | "command";
 
@@ -18,9 +19,15 @@ export type FolderGroup = {
   sessions: SessionListItem[];
 };
 
+export type DesktopPinState = {
+  pinnedAgentIds: string[];
+  pinnedWorkspacePaths: string[];
+};
+
 export type SessionListItem = {
   id: string;
   displayName: string | null;
+  generatedTitle: string | null;
   title: string;
   cwd: string;
   folderPath: string;
@@ -124,6 +131,26 @@ export type PermissionTimelineItem = TimelineBase & {
   choices: string[];
 };
 
+export type AskUserQuestionOption = {
+  label: string;
+  description: string;
+  preview?: string | null;
+};
+
+export type AskUserQuestionItem = {
+  question: string;
+  header: string;
+  options: AskUserQuestionOption[];
+  multiSelect?: boolean;
+};
+
+export type UserQuestionTimelineItem = TimelineBase & {
+  kind: "question";
+  status: string;
+  questions: AskUserQuestionItem[];
+  answers?: Record<string, string | string[]>;
+};
+
 export type DiffTimelineItem = TimelineBase & {
   kind: "diff";
   diff: DiffSnapshot;
@@ -133,6 +160,7 @@ export type TimelineItem =
   | MessageTimelineItem
   | ToolTimelineItem
   | PermissionTimelineItem
+  | UserQuestionTimelineItem
   | DiffTimelineItem;
 
 /** A single agent edit reconstructed from a tool-call transcript event.
@@ -268,4 +296,74 @@ export type SettingsSnapshot = {
   sessions: SettingsSessionSummary;
   auth: AuthProviderStatus[];
   providers: ProviderSummary[];
+};
+
+export type WorkflowTrigger =
+  | { type: "cron"; cron: string }
+  | {
+      type: "subscription";
+      source_topic: string;
+      pattern?: string | null;
+      classify_prompt?: string | null;
+    };
+
+export type WorkflowPipelineNode = {
+  id: string;
+  type?: string | null;
+  agent?: string | null;
+  prompt: string;
+  model?: string | null;
+  tools?: string[];
+  env?: Record<string, string>;
+  depends_on?: string[];
+};
+
+export type WorkflowDefinition = {
+  schema: string;
+  slug: string;
+  enabled: boolean;
+  trigger: WorkflowTrigger;
+  pipeline: {
+    name: string;
+    working_dir?: string | null;
+    concurrency?: number | null;
+    nodes: WorkflowPipelineNode[];
+  };
+};
+
+export type WorkflowRunStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+
+export type WorkflowRunNode = {
+  id: string;
+  status: WorkflowRunStatus;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  output?: string | null;
+  error?: string | null;
+};
+
+export type WorkflowRun = {
+  idx: number;
+  workflow_slug: string;
+  run_id: string;
+  trigger: Record<string, unknown>;
+  status: WorkflowRunStatus;
+  started_at_ms: number;
+  ended_at_ms?: number | null;
+  nodes: WorkflowRunNode[];
+  error?: string | null;
+  trigger_key?: string | null;
+};
+
+export type WorkflowSnapshot = {
+  workflows: WorkflowDefinition[];
+  runs: WorkflowRun[];
+};
+
+export type ExternalCredential = {
+  providerId: string;
+  source: "claude" | "codex";
+  kind: "api_key" | "oauth";
+  description: string;
+  sourcePath: string;
 };

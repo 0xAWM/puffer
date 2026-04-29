@@ -8,11 +8,11 @@ use puffer_resources::LoadedResources;
 use puffer_tools::{ToolDefinition, ToolExecutionResult, ToolOutput, ToolRegistry};
 use puffer_transport_anthropic::AnthropicRequestConfig;
 use serde_json::Value;
-use uuid::Uuid;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use uuid::Uuid;
 
 mod bash;
 mod edit;
@@ -494,9 +494,7 @@ pub fn execute_workflow_tool(
         "SubscriberInstall" => {
             workflow::subscriber_install::execute_subscriber_install(state, cwd, input)
         }
-        "SubscriberList" => {
-            workflow::subscriber_list::execute_subscriber_list(state, cwd, input)
-        }
+        "SubscriberList" => workflow::subscriber_list::execute_subscriber_list(state, cwd, input),
         "SubscriberScaffold" => {
             workflow::subscriber_scaffold::execute_subscriber_scaffold(state, cwd, input)
         }
@@ -511,6 +509,9 @@ pub fn execute_workflow_tool(
         }
         "SubscriptionPause" => {
             workflow::subscription_pause::execute_subscription_pause(state, cwd, input)
+        }
+        "WorkflowRegister" => {
+            workflow::workflow_register::execute_workflow_register(state, cwd, input)
         }
         "TaskCreate" => workflow::task_create::execute_task_create(state, cwd, input),
         "TaskGet" => workflow::task_get::execute_task_get(state, cwd, input),

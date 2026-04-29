@@ -497,7 +497,6 @@ pub(crate) fn handle_remote_env_command(
     )
 }
 
-
 fn render_memory_summary(state: &AppState) -> String {
     let files = memory_file_entries(state);
     format!(
@@ -779,6 +778,7 @@ mod tests {
             SessionMetadata {
                 id: Uuid::nil(),
                 display_name: Some("demo".to_string()),
+                generated_title: None,
                 cwd: PathBuf::from("/workspace/puffer"),
                 created_at_ms: 0,
                 updated_at_ms: 0,
@@ -808,8 +808,7 @@ mod tests {
             },
             ReflectionTraceEvent::LlmJudgeSkipped {
                 mode: "confirm_code_judge".to_string(),
-                reason: "confirm_code_judge mode requires a code-judge trigger first"
-                    .to_string(),
+                reason: "confirm_code_judge mode requires a code-judge trigger first".to_string(),
             },
         ];
 

@@ -43,9 +43,11 @@
     | "link"
     | "logs"
     | "external"
+    | "copy"
     | "coin"
     | "token"
-    | "wrench";
+    | "wrench"
+    | "pin";
 </script>
 
 <script lang="ts">
@@ -222,6 +224,9 @@
     <path d="M15 3h6v6" />
     <path d="M10 14 21 3" />
     <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+  {:else if name === "copy"}
+    <rect x="9" y="9" width="13" height="13" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
   {:else if name === "coin"}
     <line x1="12" y1="1" x2="12" y2="23" />
     <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
@@ -230,5 +235,9 @@
     <circle cx="12" cy="12" r="4" />
   {:else if name === "wrench"}
     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+  {:else if name === "pin"}
+    <path d="M12 17v5" />
+    <path d="M5 17h14" />
+    <path d="M7 3h10l-2 7 3 4H6l3-4z" />
   {/if}
 </svg>

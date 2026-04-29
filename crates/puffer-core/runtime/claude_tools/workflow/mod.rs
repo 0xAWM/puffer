@@ -25,7 +25,6 @@ pub(crate) mod subscription_globals;
 pub mod subscription_list;
 pub mod subscription_pause;
 pub mod task_create;
-pub mod telegram_login;
 pub mod task_get;
 pub mod task_list;
 pub mod task_output;
@@ -33,7 +32,9 @@ pub mod task_stop;
 pub mod task_update;
 pub mod team_create;
 pub mod team_delete;
+pub mod telegram_login;
 pub mod todo_write;
+pub mod workflow_register;
 
 pub(crate) mod store;
 mod support;
@@ -54,7 +55,15 @@ pub(crate) fn register_background_shell_task(
     process_id: u32,
     output_file: &Path,
 ) -> Result<()> {
-    support::register_background_shell_task(cwd, session_id, task_id, subject, command, process_id, output_file)
+    support::register_background_shell_task(
+        cwd,
+        session_id,
+        task_id,
+        subject,
+        command,
+        process_id,
+        output_file,
+    )
 }
 
 /// Marks a background shell task as completed after its process exits.

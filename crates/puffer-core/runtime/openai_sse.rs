@@ -378,7 +378,6 @@ impl OpenAISseState {
             raw_response,
         }
     }
-
 }
 
 /// Extracts assistant text from completed output items (fallback when no deltas received).
@@ -554,15 +553,13 @@ mod tests {
         );
         let mut requests = Vec::new();
 
-        let parsed = super::parse_openai_sse_reader_typed(
-            BufReader::new(stream.as_bytes()),
-            &mut |event| {
+        let parsed =
+            super::parse_openai_sse_reader_typed(BufReader::new(stream.as_bytes()), &mut |event| {
                 if let super::TurnStreamEvent::ToolCallsRequested(tool_calls) = event {
                     requests.extend(tool_calls);
                 }
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
 
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].tool_id, "read_file");
@@ -572,7 +569,10 @@ mod tests {
         assert_eq!(parsed.tool_calls[0].call_id, "call_123");
         assert_eq!(parsed.tool_calls[0].name, "read_file");
         // Raw response still contains the output item.
-        assert_eq!(parsed.raw_response["output"][0]["call_id"], json!("call_123"));
+        assert_eq!(
+            parsed.raw_response["output"][0]["call_id"],
+            json!("call_123")
+        );
     }
 
     #[test]
@@ -594,11 +594,9 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_456\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1500,\"output_tokens\":200}}}\n\n"
         );
 
-        let result = super::parse_openai_sse_reader_typed(
-            BufReader::new(stream.as_bytes()),
-            &mut |_| {},
-        )
-        .unwrap();
+        let result =
+            super::parse_openai_sse_reader_typed(BufReader::new(stream.as_bytes()), &mut |_| {})
+                .unwrap();
 
         // Typed fields populated directly from SSE events.
         assert_eq!(result.response_id.as_deref(), Some("resp_456"));
@@ -629,11 +627,9 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_789\",\"status\":\"completed\"}}\n\n"
         );
 
-        let result = super::parse_openai_sse_reader_typed(
-            BufReader::new(stream.as_bytes()),
-            &mut |_| {},
-        )
-        .unwrap();
+        let result =
+            super::parse_openai_sse_reader_typed(BufReader::new(stream.as_bytes()), &mut |_| {})
+                .unwrap();
 
         assert_eq!(result.assistant_text, "fallback text");
     }
@@ -650,11 +646,9 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bad\",\"status\":\"completed\"}}\n\n"
         );
 
-        let result = super::parse_openai_sse_reader_typed(
-            BufReader::new(stream.as_bytes()),
-            &mut |_| {},
-        )
-        .unwrap();
+        let result =
+            super::parse_openai_sse_reader_typed(BufReader::new(stream.as_bytes()), &mut |_| {})
+                .unwrap();
 
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "Bash");
@@ -671,15 +665,13 @@ mod tests {
             "data: {\"type\":\"response.cancelled\",\"response\":{\"id\":\"resp_cancel\",\"status\":\"cancelled\"}}\n\n"
         );
         let mut deltas = Vec::new();
-        let result = super::parse_openai_sse_reader_typed(
-            BufReader::new(stream.as_bytes()),
-            &mut |evt| {
+        let result =
+            super::parse_openai_sse_reader_typed(BufReader::new(stream.as_bytes()), &mut |evt| {
                 if let TurnStreamEvent::TextDelta(d) = evt {
                     deltas.push(d);
                 }
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(deltas, vec!["partial"]);
         assert_eq!(result.response_id.as_deref(), Some("resp_cancel"));
     }

@@ -1,7 +1,7 @@
 use super::{
     execute_tool_call, is_parallel_safe_tool, parse_http_json_response, resolve_tool_permission,
     run_turn_hooks, send_http_request_raw, PermissionOutcome, ToolExecutionBackend, ToolInvocation,
-    TurnStreamEvent, APP_VERSION,
+    TurnStreamEvent, APP_VERSION, OPENAI_CODEX_COMPAT_VERSION,
 };
 use crate::permissions::load_runtime_permission_context;
 use crate::workspace_paths;
@@ -12,7 +12,6 @@ mod support;
 mod websocket;
 
 pub(super) use self::support::build_codex_openai_request_body;
-pub(super) use self::websocket::{execute_openai_websocket_streaming, openai_websocket_enabled};
 use self::support::{
     append_default_openai_headers, apply_previous_response_id, is_codex_openai_provider,
     is_openai_structured_output_error, openai_base_url_for_auth, openai_model_supports_reasoning,
@@ -21,6 +20,7 @@ use self::support::{
     structured_output_endpoint_id, trace_openai_http_request, trace_openai_http_response_headers,
     OPENAI_STRUCTURED_OUTPUT_FAMILY,
 };
+pub(super) use self::websocket::{execute_openai_websocket_streaming, openai_websocket_enabled};
 use super::structured_output_support::{
     openai_chat_completion_tools_for_request, openai_chat_response_format,
     openai_responses_text_config, openai_tool_definitions_for_request, StructuredOutputConfig,
@@ -66,6 +66,14 @@ pub(super) struct OpenAIExecutionConfig {
 pub(super) struct OpenAIToolResults {
     pub(super) outputs: Vec<OpenAIResponsesFunctionCallOutput>,
     pub(super) invocations: Vec<ToolInvocation>,
+}
+
+fn openai_request_version(provider: &ProviderDescriptor, oauth: bool) -> String {
+    if is_codex_openai_provider(provider) || (oauth && provider.id == "openai") {
+        OPENAI_CODEX_COMPAT_VERSION.to_string()
+    } else {
+        APP_VERSION.to_string()
+    }
 }
 
 
@@ -177,7 +185,10 @@ where
     // Inject dynamic context as a user message at the start of the input
     // array (matching Codex/CC pattern).
     let context_reminder = build_context_reminder_message();
-    items.insert(0, ConversationItem::user_message(&context_reminder));
+    super::openai::conversation::insert_context_reminder_preserving_legacy_leading_system(
+        &mut items,
+        &context_reminder,
+    );
 
     let mut invocations = Vec::new();
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
@@ -812,7 +823,7 @@ pub(super) fn resolve_openai_execution_config(
             provider_id: provider.id.clone(),
             request_config: OpenAIRequestConfig {
                 base_url: provider.base_url.clone(),
-                version: APP_VERSION.to_string(),
+                version: openai_request_version(provider, false),
                 auth: OpenAIAuth::ApiKey(key.clone()),
                 originator,
                 session_id,
@@ -831,7 +842,7 @@ pub(super) fn resolve_openai_execution_config(
             provider_id: provider.id.clone(),
             request_config: OpenAIRequestConfig {
                 base_url: openai_base_url_for_auth(provider, true),
-                version: APP_VERSION.to_string(),
+                version: openai_request_version(provider, true),
                 auth: OpenAIAuth::OAuthBearer(credential.access_token.clone()),
                 originator,
                 session_id,
@@ -850,7 +861,7 @@ pub(super) fn resolve_openai_execution_config(
             provider_id: provider.id.clone(),
             request_config: OpenAIRequestConfig {
                 base_url: provider.base_url.clone(),
-                version: APP_VERSION.to_string(),
+                version: openai_request_version(provider, false),
                 auth: OpenAIAuth::None,
                 originator,
                 session_id,

@@ -5,10 +5,12 @@ use crate::spec::{render_template, ActionSpec};
 use anyhow::{Context, Result};
 use puffer_subscriber_runtime::EventEnvelope;
 use rusqlite::{params, Connection};
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 static GLOBAL_OUTBOUND: OnceLock<Arc<dyn Outbound>> = OnceLock::new();
+static GLOBAL_WORKFLOW_RUNNER: OnceLock<Arc<dyn WorkflowActionRunner>> = OnceLock::new();
 
 /// Installs the process-wide outbound implementation. Returns
 /// `Err(_)` if a different outbound has already been installed.
@@ -18,8 +20,20 @@ pub fn install_outbound(outbound: Arc<dyn Outbound>) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("outbound already installed"))
 }
 
+/// Installs the process-wide workflow action runner. Returns `Err(_)` if
+/// a different runner has already been installed.
+pub fn install_workflow_runner(runner: Arc<dyn WorkflowActionRunner>) -> Result<()> {
+    GLOBAL_WORKFLOW_RUNNER
+        .set(runner)
+        .map_err(|_| anyhow::anyhow!("workflow runner already installed"))
+}
+
 fn global_outbound() -> Option<Arc<dyn Outbound>> {
     GLOBAL_OUTBOUND.get().cloned()
+}
+
+fn global_workflow_runner() -> Option<Arc<dyn WorkflowActionRunner>> {
+    GLOBAL_WORKFLOW_RUNNER.get().cloned()
 }
 
 /// Outcome of an action invocation. The router records the success bit
@@ -43,6 +57,12 @@ pub trait Outbound: Send + Sync {
     /// Sends `text` to `target` on `platform`. Returns a one-line
     /// human-readable summary on success.
     fn send(&self, platform: &str, target: &str, text: &str) -> Result<String>;
+}
+
+/// Trait for triggering native Puffer workflows from subscription actions.
+pub trait WorkflowActionRunner: Send + Sync {
+    /// Runs `slug` with `trigger` as the interpolation payload.
+    fn run_workflow(&self, slug: &str, trigger: serde_json::Value) -> Result<String>;
 }
 
 /// Dispatcher trait — one method per invocation. Implementations may keep
@@ -69,6 +89,7 @@ pub struct BuiltinActionDispatcher {
     /// installs the outbound process-globally via [`install_outbound`]
     /// so any dispatcher instance picks it up.
     outbound: OnceLock<Arc<dyn Outbound>>,
+    workflow_runner: OnceLock<Arc<dyn WorkflowActionRunner>>,
 }
 
 impl BuiltinActionDispatcher {
@@ -84,8 +105,20 @@ impl BuiltinActionDispatcher {
         let _ = self.outbound.set(outbound);
     }
 
+    /// Installs a workflow runner on this dispatcher instance.
+    pub fn set_workflow_runner(&self, runner: Arc<dyn WorkflowActionRunner>) {
+        let _ = self.workflow_runner.set(runner);
+    }
+
     fn resolved_outbound(&self) -> Option<Arc<dyn Outbound>> {
         self.outbound.get().cloned().or_else(global_outbound)
+    }
+
+    fn resolved_workflow_runner(&self) -> Option<Arc<dyn WorkflowActionRunner>> {
+        self.workflow_runner
+            .get()
+            .cloned()
+            .or_else(global_workflow_runner)
     }
 
     fn sqlite_insert(
@@ -179,6 +212,38 @@ impl BuiltinActionDispatcher {
             },
         }
     }
+
+    fn run_workflow(&self, slug: &str, envelope: &EventEnvelope) -> ActionResult {
+        let trigger = json!({
+            "type": "subscription",
+            "envelope_id": envelope.envelope_id,
+            "subscriber_id": envelope.subscriber_id,
+            "received_at_ms": envelope.received_at_ms,
+            "topic": envelope.event.topic,
+            "kind": envelope.event.kind,
+            "dedup_key": envelope.event.dedup_key,
+            "text": envelope.event.text,
+            "payload": envelope.event.payload,
+        });
+        match self.resolved_workflow_runner() {
+            Some(runner) => match runner.run_workflow(slug, trigger) {
+                Ok(summary) => ActionResult {
+                    success: true,
+                    summary,
+                },
+                Err(error) => ActionResult {
+                    success: false,
+                    summary: format!("run_workflow `{slug}` failed: {error:#}"),
+                },
+            },
+            None => ActionResult {
+                success: false,
+                summary: format!(
+                    "run_workflow: no workflow runner is installed; `{slug}` cannot be run"
+                ),
+            },
+        }
+    }
 }
 
 impl ActionDispatcher for BuiltinActionDispatcher {
@@ -198,6 +263,7 @@ impl ActionDispatcher for BuiltinActionDispatcher {
                 target,
                 template,
             } => self.forward_message(platform, target, template.as_deref(), envelope),
+            ActionSpec::RunWorkflow { slug } => self.run_workflow(slug, envelope),
             ActionSpec::Unknown => ActionResult {
                 success: false,
                 summary: "action.type unknown — agent wrote a spec this Puffer build cannot run"
@@ -265,10 +331,11 @@ mod tests {
 
     impl Outbound for RecordingOutbound {
         fn send(&self, platform: &str, target: &str, text: &str) -> Result<String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((platform.to_string(), target.to_string(), text.to_string()));
+            self.calls.lock().unwrap().push((
+                platform.to_string(),
+                target.to_string(),
+                text.to_string(),
+            ));
             Ok(format!("recorded {platform}:{target}"))
         }
     }
@@ -308,5 +375,34 @@ mod tests {
         let result = dispatcher.dispatch(&action, &envelope("hi", json!({})));
         assert!(!result.success);
         assert!(result.summary.contains("no outbound is installed"));
+    }
+
+    struct RecordingWorkflowRunner {
+        calls: StdMutex<Vec<(String, serde_json::Value)>>,
+    }
+
+    impl WorkflowActionRunner for RecordingWorkflowRunner {
+        fn run_workflow(&self, slug: &str, trigger: serde_json::Value) -> Result<String> {
+            self.calls.lock().unwrap().push((slug.to_string(), trigger));
+            Ok(format!("ran {slug}"))
+        }
+    }
+
+    #[test]
+    fn run_workflow_dispatches_subscription_trigger() {
+        let dispatcher = BuiltinActionDispatcher::new();
+        let runner = Arc::new(RecordingWorkflowRunner {
+            calls: StdMutex::new(Vec::new()),
+        });
+        dispatcher.set_workflow_runner(runner.clone());
+        let action = ActionSpec::RunWorkflow {
+            slug: "daily-review".into(),
+        };
+        let result = dispatcher.dispatch(&action, &envelope("hello", json!({"chat":"@x"})));
+        assert!(result.success, "{}", result.summary);
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "daily-review");
+        assert_eq!(calls[0].1["type"], "subscription");
+        assert_eq!(calls[0].1["text"], "hello");
     }
 }

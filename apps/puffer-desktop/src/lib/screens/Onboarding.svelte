@@ -1,8 +1,9 @@
 <script lang="ts">
   import LoginView from "../components/LoginView.svelte";
+  import BrandLogo from "../design/BrandLogo.svelte";
   import Puffer from "../design/Puffer.svelte";
   import Icon from "../design/Icon.svelte";
-  import type { SettingsSnapshot } from "../types";
+  import type { ExternalCredential, SettingsSnapshot } from "../types";
 
   type Props = {
     snapshot: SettingsSnapshot | null;
@@ -10,8 +11,11 @@
     remoteEnabled: boolean;
     busyProviderId: string | null;
     errorMessage: string | null;
+    externals: ExternalCredential[];
+    busyImportKey: string | null;
     onLoginOauth: (providerId: string) => void;
     onLoginApiKey: (providerId: string, apiKey: string) => void;
+    onImportExternal: (providerId: string, source: "claude" | "codex") => void;
     onRefresh: () => void;
     forceRepoStep?: boolean;
   };
@@ -39,18 +43,18 @@
   let steps = $derived(
     signedIn
       ? [
-          { label: "Sign in",         done: true,  active: false },
-          { label: "Connect GitHub",  done: true,  active: false },
-          { label: "Choose your repos", done: false, active: true },
-          { label: "Pick a model",    done: false, active: false },
-          { label: "Set permissions", done: false, active: false }
+          { label: "Connect a provider", done: true,  active: false },
+          { label: "Connect GitHub",     done: true,  active: false },
+          { label: "Choose your repos",  done: false, active: true },
+          { label: "Pick a model",       done: false, active: false },
+          { label: "Set permissions",    done: false, active: false }
         ]
       : [
-          { label: "Sign in",         done: false, active: true },
-          { label: "Connect GitHub",  done: false, active: false },
-          { label: "Choose your repos", done: false, active: false },
-          { label: "Pick a model",    done: false, active: false },
-          { label: "Set permissions", done: false, active: false }
+          { label: "Connect a provider", done: false, active: true },
+          { label: "Connect GitHub",     done: false, active: false },
+          { label: "Choose your repos",  done: false, active: false },
+          { label: "Pick a model",       done: false, active: false },
+          { label: "Set permissions",    done: false, active: false }
         ]
   );
 </script>
@@ -58,7 +62,7 @@
 <div class="pf-onboard">
   <div class="pf-onboard-side">
     <div class="brand">
-      <Puffer size={28} state="idle" />
+      <BrandLogo size={32} />
       Puffer
     </div>
     <h1>An agent that codes alongside you, not for you.</h1>
@@ -118,8 +122,11 @@
         remoteEnabled={props.remoteEnabled}
         busyProviderId={props.busyProviderId}
         errorMessage={props.errorMessage}
+        externals={props.externals}
+        busyImportKey={props.busyImportKey}
         onLoginOauth={props.onLoginOauth}
         onLoginApiKey={props.onLoginApiKey}
+        onImportExternal={props.onImportExternal}
         onRefresh={props.onRefresh}
       />
     {/if}

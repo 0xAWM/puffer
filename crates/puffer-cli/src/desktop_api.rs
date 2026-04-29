@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
-use puffer_config::{ConfigPaths, PufferConfig};
-use puffer_provider_registry::{AuthMode, AuthStore, ProviderRegistry, StoredCredential};
+use puffer_config::{load_config, save_user_config, ConfigPaths, PufferConfig};
+use puffer_provider_registry::{
+    detect_import_candidates, AuthMode, AuthStore, ExternalImportCandidate, ExternalImportFamily,
+    ExternalImportSource, ProviderRegistry, StoredCredential,
+};
 use puffer_resources::LoadedResources;
 use puffer_session_store::{GitDiffSnapshot, SessionRecord, SessionStore, TranscriptEvent};
+use puffer_workflow::WorkflowStore;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -11,9 +15,10 @@ use uuid::Uuid;
 use crate::cli_args::DesktopApiCommand;
 use crate::desktop_api_types::{
     AgentDiffDto, AgentDiffEntryDto, AgentDiffFileDto, AuthProviderStatusDto, DiffSummaryDto,
-    DivergenceReportDto, FolderGroupDto, ProviderSummaryDto, RepoActionResultDto,
-    RepoPullRequestDto, RepoStatusDto, ResourceCountsDto, SessionDetailDto, SessionListItemDto,
-    SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto, TimelineItemDto,
+    DivergenceReportDto, ExternalCredentialDto, FolderGroupDto, ProviderSummaryDto,
+    RepoActionResultDto, RepoPullRequestDto, RepoStatusDto, ResourceCountsDto, SessionDetailDto,
+    SessionListItemDto, SettingsConfigDto, SettingsSessionSummaryDto, SettingsSnapshotDto,
+    TimelineItemDto,
 };
 
 /// Runs one hidden desktop JSON command for SSH-backed desktop integrations.
@@ -146,6 +151,21 @@ pub(crate) fn run_desktop_api(
             )?;
             println!("{}", serde_json::to_string_pretty(&snapshot)?);
         }
+        DesktopApiCommand::WorkflowList => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!("{}", serde_json::to_string_pretty(&store.snapshot()?)?);
+        }
+        DesktopApiCommand::WorkflowRunsList { workflow_slug } => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&store.list_runs_for(&workflow_slug)?)?
+            );
+        }
+        DesktopApiCommand::WorkflowRunsShow { idx } => {
+            let store = WorkflowStore::new(&paths.workspace_config_dir);
+            println!("{}", serde_json::to_string_pretty(&store.get_run(idx)?)?);
+        }
     }
     Ok(())
 }
@@ -161,8 +181,10 @@ pub(crate) fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<
             .push(SessionListItemDto {
                 session_id: session.id.to_string(),
                 display_name: session.display_name.clone(),
+                generated_title: session.generated_title.clone(),
                 title: session_title(
                     session.display_name.as_ref(),
+                    session.generated_title.as_ref(),
                     session.slug.as_ref(),
                     &session.cwd,
                     &session.id.to_string(),
@@ -191,11 +213,30 @@ pub(crate) fn list_grouped_sessions(session_store: &SessionStore) -> Result<Vec<
             }
         })
         .collect::<Vec<_>>();
-    folders.sort_by(|left, right| left.folder_label.cmp(&right.folder_label));
+    folders.sort_by(|left, right| {
+        let left_latest = left
+            .sessions
+            .iter()
+            .map(|session| session.updated_at_ms)
+            .max()
+            .unwrap_or(0);
+        let right_latest = right
+            .sessions
+            .iter()
+            .map(|session| session.updated_at_ms)
+            .max()
+            .unwrap_or(0);
+        right_latest
+            .cmp(&left_latest)
+            .then_with(|| left.folder_label.cmp(&right.folder_label))
+    });
     Ok(folders)
 }
 
-pub(crate) fn load_session_detail(session_store: &SessionStore, session_id: &str) -> Result<SessionDetailDto> {
+pub(crate) fn load_session_detail(
+    session_store: &SessionStore,
+    session_id: &str,
+) -> Result<SessionDetailDto> {
     let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = session_store.load_session(session_uuid)?;
     let folder_path = session_group_root(&record.metadata.cwd)
@@ -203,14 +244,16 @@ pub(crate) fn load_session_detail(session_store: &SessionStore, session_id: &str
         .to_string();
     let diff_history = diff_history(&record);
     let latest_diff = diff_history.first().cloned();
-    let repo_status = repo_status(&record.metadata.id.to_string(), &record.metadata.cwd);
+    let repo_status = deferred_repo_status(&record.metadata.id.to_string(), &record.metadata.cwd);
     let agent_diff = build_agent_diff(&record);
     let divergence = compute_divergence(&agent_diff, latest_diff.as_ref(), &record.metadata.cwd);
     Ok(SessionDetailDto {
         session_id: record.metadata.id.to_string(),
         display_name: record.metadata.display_name.clone(),
+        generated_title: record.metadata.generated_title.clone(),
         title: session_title(
             record.metadata.display_name.as_ref(),
+            record.metadata.generated_title.as_ref(),
             record.metadata.slug.as_ref(),
             &record.metadata.cwd,
             &record.metadata.id.to_string(),
@@ -239,6 +282,30 @@ pub(crate) fn load_session_cwd(session_store: &SessionStore, session_id: &str) -
     let session_uuid = Uuid::parse_str(session_id).context("invalid session id")?;
     let record = session_store.load_session(session_uuid)?;
     Ok(record.metadata.cwd)
+}
+
+fn deferred_repo_status(session_id: &str, cwd: &Path) -> RepoStatusDto {
+    RepoStatusDto {
+        session_id: session_id.to_string(),
+        cwd: cwd.display().to_string(),
+        repo_root: None,
+        branch: None,
+        head_sha: None,
+        is_clean: true,
+        status_lines: Vec::new(),
+        has_gh: false,
+        gh_authenticated: false,
+        can_create_pull_request: false,
+        can_merge_pull_request: false,
+        create_pull_request_reason: Some(
+            "Repository status has not been refreshed yet.".to_string(),
+        ),
+        merge_pull_request_reason: Some(
+            "Repository status has not been refreshed yet.".to_string(),
+        ),
+        open_pull_request: None,
+        warnings: Vec::new(),
+    }
 }
 
 pub(crate) fn load_settings_snapshot(
@@ -383,6 +450,103 @@ pub(crate) fn store_api_key(
         .context("failed to save auth store")
 }
 
+/// Lists importable `.claude` and `.codex` credentials for all compatible providers.
+pub(crate) fn list_external_credentials(
+    providers: &ProviderRegistry,
+) -> Result<Vec<ExternalCredentialDto>> {
+    let mut out = Vec::new();
+    for entry in providers.provider_entries() {
+        let Some(family) = import_family(&entry.descriptor.default_api) else {
+            continue;
+        };
+        let candidates = detect_import_candidates(family).unwrap_or_default();
+        for candidate in candidates {
+            out.push(ExternalCredentialDto {
+                provider_id: entry.descriptor.id.clone(),
+                source: source_label(candidate.source).to_string(),
+                kind: credential_kind(&candidate.credential).to_string(),
+                description: candidate.description.clone(),
+                source_path: candidate.source_path.display().to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Imports a `.claude` or `.codex` credential into Puffer's auth store.
+pub(crate) fn import_external_credential(
+    paths: &ConfigPaths,
+    auth_store: &mut AuthStore,
+    providers: &ProviderRegistry,
+    auth_path: &Path,
+    provider_id: &str,
+    source: &str,
+) -> Result<()> {
+    let provider = providers
+        .provider(provider_id)
+        .with_context(|| format!("unknown provider `{provider_id}`"))?;
+    let family = import_family(&provider.default_api)
+        .with_context(|| format!("provider `{provider_id}` has no importable credential family"))?;
+    let source_kind = match source {
+        "claude" => ExternalImportSource::Claude,
+        "codex" => ExternalImportSource::Codex,
+        other => anyhow::bail!("unknown import source `{other}`"),
+    };
+    let candidate = detect_import_candidates(family)?
+        .into_iter()
+        .find(|candidate| candidate.source == source_kind)
+        .with_context(|| {
+            format!("no `{source}` credential available on disk for provider `{provider_id}`")
+        })?;
+    apply_imported_credential(paths, auth_store, provider_id, candidate)?;
+    auth_store
+        .save(auth_path)
+        .context("failed to save auth store")
+}
+
+/// Ensures a freshly authenticated provider becomes the default route when needed.
+pub(crate) fn ensure_default_routing(
+    paths: &ConfigPaths,
+    providers: &ProviderRegistry,
+    auth_store: &AuthStore,
+    just_authed: &str,
+) -> Result<()> {
+    let mut config = load_config(paths)?;
+    let mut changed = false;
+
+    let default_has_creds = config
+        .default_provider
+        .as_deref()
+        .map(|id| auth_store.get(id).is_some())
+        .unwrap_or(false);
+    if !default_has_creds {
+        config.default_provider = Some(just_authed.to_string());
+        changed = true;
+    }
+
+    let default_provider_id = config.default_provider.clone().unwrap_or_default();
+    let provider_models = providers
+        .provider(&default_provider_id)
+        .map(|provider| provider.models.clone())
+        .unwrap_or_default();
+    let default_model_belongs = config
+        .default_model
+        .as_deref()
+        .map(|model_id| provider_models.iter().any(|model| model.id == model_id))
+        .unwrap_or(false);
+    if !default_model_belongs {
+        if let Some(first) = provider_models.first() {
+            config.default_model = Some(first.id.clone());
+            changed = true;
+        }
+    }
+
+    if changed {
+        save_user_config(paths, &config)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn logout_provider(
     auth_store: &mut AuthStore,
     auth_path: &Path,
@@ -392,6 +556,58 @@ pub(crate) fn logout_provider(
     auth_store
         .save(auth_path)
         .context("failed to save auth store")
+}
+
+fn import_family(default_api: &str) -> Option<ExternalImportFamily> {
+    match default_api {
+        "anthropic-messages" => Some(ExternalImportFamily::Anthropic),
+        "openai-responses"
+        | "openai-completions"
+        | "openai-codex-responses"
+        | "azure-openai-responses" => Some(ExternalImportFamily::OpenAi),
+        _ => None,
+    }
+}
+
+fn source_label(source: ExternalImportSource) -> &'static str {
+    match source {
+        ExternalImportSource::Claude => "claude",
+        ExternalImportSource::Codex => "codex",
+    }
+}
+
+fn credential_kind(credential: &StoredCredential) -> &'static str {
+    match credential {
+        StoredCredential::ApiKey { .. } => "api_key",
+        StoredCredential::OAuth(_) => "oauth",
+    }
+}
+
+fn apply_imported_credential(
+    paths: &ConfigPaths,
+    auth_store: &mut AuthStore,
+    provider_id: &str,
+    candidate: ExternalImportCandidate,
+) -> Result<()> {
+    let openai_base_url = candidate.openai_base_url.clone();
+    let openai_headers = candidate.openai_headers.clone();
+    let openai_query_params = candidate.openai_query_params.clone();
+    match candidate.credential {
+        StoredCredential::ApiKey { key } => {
+            auth_store.set_api_key(provider_id.to_string(), key);
+        }
+        StoredCredential::OAuth(credential) => {
+            auth_store.set_oauth(provider_id.to_string(), credential);
+        }
+    }
+    if provider_id == "openai" {
+        let mut config = load_config(paths)?;
+        config.openai_base_url = openai_base_url;
+        config.openai_headers = openai_headers;
+        config.openai_query_params = openai_query_params;
+        save_user_config(paths, &config)?;
+    }
+    Ok(())
 }
 
 fn store_credential(
@@ -426,17 +642,19 @@ fn store_credential(
 }
 
 fn session_group_root(cwd: &Path) -> PathBuf {
-    cwd.parent().unwrap_or(cwd).to_path_buf()
+    cwd.to_path_buf()
 }
 
 fn session_title(
     display_name: Option<&String>,
+    generated_title: Option<&String>,
     slug: Option<&String>,
     cwd: &Path,
     fallback: &str,
 ) -> String {
     display_name
         .cloned()
+        .or_else(|| generated_title.cloned())
         .or_else(|| slug.cloned())
         .or_else(|| {
             cwd.file_name()
@@ -557,10 +775,15 @@ fn agent_edit_intent(tool_id: &str, raw_input: &str) -> Option<AgentEditIntent> 
     let value: Value = serde_json::from_str(raw_input).ok()?;
     let obj = value.as_object()?;
     match tool_id {
-        "write_file" => {
-            let path = obj.get("path").and_then(Value::as_str)?.to_string();
+        "write_file" | "Write" => {
+            let path = obj
+                .get("path")
+                .or_else(|| obj.get("file_path"))
+                .and_then(Value::as_str)?
+                .to_string();
             let contents = obj
                 .get("contents")
+                .or_else(|| obj.get("content"))
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
@@ -570,18 +793,24 @@ fn agent_edit_intent(tool_id: &str, raw_input: &str) -> Option<AgentEditIntent> 
                 summary: render_write_summary(&contents),
             })
         }
-        "replace_in_file" | "edit_file" => {
-            let path = obj.get("path").and_then(Value::as_str)?.to_string();
+        "replace_in_file" | "edit_file" | "Edit" => {
+            let path = obj
+                .get("path")
+                .or_else(|| obj.get("file_path"))
+                .and_then(Value::as_str)?
+                .to_string();
             // `replace_in_file` uses old/new; some custom tools mirror
             // the Anthropic-style old_string/new_string. Accept both.
             let old = obj
                 .get("old")
                 .or_else(|| obj.get("old_string"))
+                .or_else(|| obj.get("oldText"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let new_text = obj
                 .get("new")
                 .or_else(|| obj.get("new_string"))
+                .or_else(|| obj.get("newText"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             Some(AgentEditIntent {
@@ -670,8 +899,7 @@ fn compute_divergence(
     latest_git_diff: Option<&DiffSummaryDto>,
     cwd: &Path,
 ) -> DivergenceReportDto {
-    let agent_paths: BTreeSet<String> =
-        agent_diff.files.iter().map(|f| f.path.clone()).collect();
+    let agent_paths: BTreeSet<String> = agent_diff.files.iter().map(|f| f.path.clone()).collect();
     let git_paths = latest_git_diff
         .map(|d| extract_paths_from_patch(&d.patch, cwd))
         .unwrap_or_default();
@@ -684,14 +912,8 @@ fn compute_divergence(
         .map(|p| relativize_path(p, cwd))
         .collect();
 
-    let agent_only: Vec<String> = agent_relative
-        .difference(&git_paths)
-        .cloned()
-        .collect();
-    let git_only: Vec<String> = git_paths
-        .difference(&agent_relative)
-        .cloned()
-        .collect();
+    let agent_only: Vec<String> = agent_relative.difference(&git_paths).cloned().collect();
+    let git_only: Vec<String> = git_paths.difference(&agent_relative).cloned().collect();
 
     DivergenceReportDto {
         agent_total: agent_relative.len(),
@@ -733,22 +955,32 @@ fn extract_paths_from_patch(patch: &str, _cwd: &Path) -> BTreeSet<String> {
 
 fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
     let mut items = Vec::new();
+    let mut pending_assistant = None;
     for (index, event) in record.events.iter().enumerate() {
         match event {
-            TranscriptEvent::UserMessage { text } => items.push(TimelineItemDto::UserMessage {
-                id: format!("timeline-{index}"),
-                text: text.clone(),
-            }),
-            TranscriptEvent::AssistantMessage { text } => {
-                items.push(TimelineItemDto::AssistantMessage {
+            TranscriptEvent::UserMessage { text } => {
+                flush_pending_assistant(&mut items, &mut pending_assistant);
+                items.push(TimelineItemDto::UserMessage {
                     id: format!("timeline-{index}"),
                     text: text.clone(),
-                })
+                });
+            }
+            TranscriptEvent::AssistantMessage { text } => {
+                flush_pending_assistant(&mut items, &mut pending_assistant);
+                pending_assistant = Some(TimelineItemDto::AssistantMessage {
+                    id: format!("timeline-{index}"),
+                    text: text.clone(),
+                });
             }
             TranscriptEvent::SystemMessage { text } => {
-                items.extend(parse_system_message(index, text))
+                let parsed = parse_system_message(index, text);
+                if parse_tool_message(text).is_none() {
+                    flush_pending_assistant(&mut items, &mut pending_assistant);
+                }
+                items.extend(parsed);
             }
             TranscriptEvent::CommandInvoked { name, args } => {
+                flush_pending_assistant(&mut items, &mut pending_assistant);
                 items.push(TimelineItemDto::Command {
                     id: format!("timeline-{index}"),
                     command_name: name.clone(),
@@ -756,12 +988,14 @@ fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
                 })
             }
             TranscriptEvent::GitDiffSnapshot { snapshot } => {
+                flush_pending_assistant(&mut items, &mut pending_assistant);
                 items.push(TimelineItemDto::DiffSnapshot {
                     id: format!("timeline-{index}"),
                     snapshot: diff_summary(index, snapshot),
                 })
             }
             TranscriptEvent::SessionRenamed { name } => {
+                flush_pending_assistant(&mut items, &mut pending_assistant);
                 items.push(TimelineItemDto::SystemMessage {
                     id: format!("timeline-{index}"),
                     text: format!("Session renamed to {name}."),
@@ -782,7 +1016,17 @@ fn timeline_items(record: &SessionRecord) -> Vec<TimelineItemDto> {
             }
         }
     }
+    flush_pending_assistant(&mut items, &mut pending_assistant);
     items
+}
+
+fn flush_pending_assistant(
+    items: &mut Vec<TimelineItemDto>,
+    pending_assistant: &mut Option<TimelineItemDto>,
+) {
+    if let Some(item) = pending_assistant.take() {
+        items.push(item);
+    }
 }
 
 fn parse_system_message(index: usize, text: &str) -> Vec<TimelineItemDto> {
@@ -1261,4 +1505,86 @@ fn command_exists(command: &str) -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{timeline_items, TimelineItemDto};
+    use puffer_session_store::{SessionMetadata, SessionRecord, TranscriptEvent};
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn record(events: Vec<TranscriptEvent>) -> SessionRecord {
+        SessionRecord {
+            metadata: SessionMetadata {
+                id: Uuid::nil(),
+                display_name: None,
+                generated_title: None,
+                cwd: PathBuf::from("/tmp"),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                parent_session_id: None,
+                slug: None,
+                tags: Vec::new(),
+                note: None,
+            },
+            events,
+        }
+    }
+
+    fn item_kind(item: &TimelineItemDto) -> &'static str {
+        match item {
+            TimelineItemDto::UserMessage { .. } => "user",
+            TimelineItemDto::AssistantMessage { .. } => "assistant",
+            TimelineItemDto::SystemMessage { .. } => "system",
+            TimelineItemDto::Command { .. } => "command",
+            TimelineItemDto::ToolCall { .. } => "tool",
+            TimelineItemDto::PermissionDialog { .. } => "permission",
+            TimelineItemDto::DiffSnapshot { .. } => "diff",
+        }
+    }
+
+    #[test]
+    fn timeline_places_persisted_tool_invocations_before_assistant_text() {
+        let items = timeline_items(&record(vec![
+            TranscriptEvent::UserMessage {
+                text: "inspect this".to_string(),
+            },
+            TranscriptEvent::AssistantMessage {
+                text: "Here is what I found.".to_string(),
+            },
+            TranscriptEvent::ToolInvocation {
+                call_id: "call-1".to_string(),
+                tool_id: "Read".to_string(),
+                input: r#"{"path":"Cargo.toml"}"#.to_string(),
+                output: "contents".to_string(),
+                success: true,
+            },
+        ]));
+
+        let kinds = items.iter().map(item_kind).collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["user", "tool", "assistant"]);
+    }
+
+    #[test]
+    fn timeline_keeps_new_tool_before_assistant_order() {
+        let items = timeline_items(&record(vec![
+            TranscriptEvent::UserMessage {
+                text: "inspect this".to_string(),
+            },
+            TranscriptEvent::ToolInvocation {
+                call_id: "call-1".to_string(),
+                tool_id: "Read".to_string(),
+                input: r#"{"path":"Cargo.toml"}"#.to_string(),
+                output: "contents".to_string(),
+                success: true,
+            },
+            TranscriptEvent::AssistantMessage {
+                text: "Here is what I found.".to_string(),
+            },
+        ]));
+
+        let kinds = items.iter().map(item_kind).collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["user", "tool", "assistant"]);
+    }
 }
