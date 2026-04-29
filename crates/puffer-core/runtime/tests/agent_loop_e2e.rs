@@ -25,6 +25,30 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// RAII helper that restores an env var on drop. Use under
+/// `refresh_env_lock()` so concurrent tests don't race the value.
+struct EnvGuard {
+    name: &'static str,
+    prior: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let prior = std::env::var(name).ok();
+        std::env::set_var(name, value);
+        EnvGuard { name, prior }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match self.prior.take() {
+            Some(prior) => std::env::set_var(self.name, prior),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
+
 fn session_for(cwd: &std::path::Path) -> SessionMetadata {
     SessionMetadata {
         id: Uuid::new_v4(),
@@ -585,3 +609,103 @@ fn anthropic_and_openai_agent_loop_share_outcome_for_same_tool_round() {
     assert!(a_turn.tool_invocations[0].output.contains("shared-text"));
     assert!(o_turn.tool_invocations[0].output.contains("shared-text"));
 }
+
+// ---------------------------------------------------------------------------
+// OpenAI Responses threading: with `previous_response_id` enabled, turn 2
+// must (a) carry `previous_response_id: "resp_1"`, and (b) send only the
+// continuation slice (FunctionCall + FunctionCallOutput) — NOT the full
+// transcript. Held under env_lock so concurrent tests' threading-disable
+// flags don't short-circuit the check inside `setup_responses_session`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn openai_responses_agent_loop_threads_previous_response_id() {
+    let _env_lock = refresh_env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // Clear the disable flags first; setup_responses_session checks
+    // DISABLE_* before ENABLE_* so a stale "1" would trump our enable.
+    let _disable1 = EnvGuard::set("PUFFER_OPENAI_DISABLE_RESPONSE_THREADING", "");
+    let _disable2 = EnvGuard::set("PUFFER_OPENAI_DISABLE_PREVIOUS_RESPONSE_ID", "");
+    let _enable = EnvGuard::set("PUFFER_OPENAI_ENABLE_CUSTOM_RESPONSE_THREADING", "1");
+
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("fixture.txt"), "fixture-contents").unwrap();
+    let (base_url, requests, server) = spawn_server("application/json", 2, |index| {
+        if index == 0 {
+            openai_responses_tool_turn()
+        } else {
+            openai_responses_final_turn()
+        }
+    });
+
+    let mut registry = ProviderRegistry::new();
+    registry.register(openai_provider(base_url));
+    let mut auth_store = AuthStore::default();
+    auth_store.set_api_key("openai", "sk-openai");
+
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        temp.path().to_path_buf(),
+        session_for(temp.path()),
+    );
+    state.current_provider = Some("openai".to_string());
+    state.current_model = Some("openai/gpt-5".to_string());
+    state.session_allow_all = true;
+
+    let resources = LoadedResources {
+        tools: vec![loaded_tool("read_file", "Read a file", "read_file")],
+        ..LoadedResources::default()
+    };
+
+    let turn = execute_user_prompt(
+        &mut state,
+        &resources,
+        &registry,
+        &mut auth_store,
+        "please read fixture.txt",
+    )
+    .unwrap();
+    server.join().unwrap();
+
+    assert_eq!(turn.assistant_text, "all set");
+    assert_eq!(turn.tool_invocations.len(), 1);
+
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+
+    let body2 = extract_request_body(&captured[1]);
+    let body2_json: Value = serde_json::from_str(body2).unwrap_or(Value::Null);
+
+    // (a) previous_response_id wired through.
+    assert_eq!(
+        body2_json
+            .get("previous_response_id")
+            .and_then(Value::as_str),
+        Some("resp_1"),
+        "second request should carry previous_response_id from first response: {body2}"
+    );
+
+    // (b) Continuation slice only — NOT the full transcript.
+    let input_arr = body2_json
+        .get("input")
+        .and_then(Value::as_array)
+        .expect("input array on second request");
+    let types: Vec<&str> = input_arr
+        .iter()
+        .filter_map(|item| item.get("type").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        types,
+        vec!["function_call", "function_call_output"],
+        "with threading enabled, turn 2 must send only [FunctionCall, FunctionCallOutput], got: {types:?}"
+    );
+    let call_id_match = input_arr.iter().all(|item| {
+        item.get("call_id").and_then(Value::as_str) == Some("call_1")
+    });
+    assert!(
+        call_id_match,
+        "all continuation items must reference call_1: {body2}"
+    );
+}
+

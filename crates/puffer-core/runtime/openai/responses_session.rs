@@ -23,7 +23,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 use super::conversation::{
-    append_reasoning_items, items_to_responses_input, ConversationItem,
+    append_reasoning_items, generate_openai_summary, items_to_responses_input, ConversationItem,
 };
 use super::support::{
     apply_previous_response_id, build_codex_openai_request_body, openai_responses_path,
@@ -350,17 +350,12 @@ impl TurnSession for OpenAIResponsesTurnSession {
         })
     }
 
-    fn generate_summary(&self, _old_context: &str, _model_id: &str) -> Option<String> {
-        // OpenAI compaction uses `compact_conversation` (not
-        // `compact_conversation_with`), which calls a private
-        // `generate_summary` keyed off the request_config rather than a
-        // user-supplied summary_fn. Rather than thread that out through
-        // a trait method, we fall back to None here — compaction still
-        // runs (the `_with` variant we use in agent_loop drops oldest
-        // items as Phase 3 fallback when summary returns None), and a
-        // follow-up commit can promote the OpenAI summary helper to a
-        // crate-public function.
-        None
+    fn generate_summary(&self, old_context: &str, model_id: &str) -> Option<String> {
+        // Phase 2 of compaction: ask the same OpenAI endpoint we use
+        // for the turn loop to summarize the prefix into a compact
+        // context block. Falls through to Phase 3 (drop oldest items)
+        // when the summary call fails / errors / times out.
+        generate_openai_summary(old_context, model_id, &self.execution.request_config)
     }
 
     fn tool_execution_backend(&self) -> ToolExecutionBackend<'_> {

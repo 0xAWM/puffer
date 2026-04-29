@@ -19,7 +19,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 use super::conversation::{
-    build_system_reminder, items_to_chat_messages, ConversationItem,
+    build_system_reminder, generate_openai_summary, items_to_chat_messages, ConversationItem,
 };
 use super::{
     parse_openai_text, parse_openai_text_fallback, send_openai_request_with_refresh,
@@ -66,8 +66,6 @@ impl TurnSession for OpenAICompletionsTurnSession {
         auth_store: &mut AuthStore,
         items: &mut Vec<ConversationItem>,
     ) -> Result<AssistantTurn> {
-        let _ = items.len(); // items moved into messages below; ensure no aliasing
-
         let messages = items_to_chat_messages(
             items,
             Some(&self.system_prompt),
@@ -145,11 +143,12 @@ impl TurnSession for OpenAICompletionsTurnSession {
         })
     }
 
-    fn generate_summary(&self, _old_context: &str, _model_id: &str) -> Option<String> {
-        // Same rationale as Responses: compaction falls through to
-        // Phase 3 (drop oldest items) when no summary is provided. Wire
-        // up to the OpenAI summary helper in a follow-up.
-        None
+    fn generate_summary(&self, old_context: &str, model_id: &str) -> Option<String> {
+        // Same Phase 2 helper Responses uses — issues a single
+        // non-streaming summarization request via the OpenAI
+        // /responses endpoint. Falls through to Phase 3 (drop oldest)
+        // on any failure.
+        generate_openai_summary(old_context, model_id, &self.execution.request_config)
     }
 
     fn tool_execution_backend(&self) -> ToolExecutionBackend<'_> {

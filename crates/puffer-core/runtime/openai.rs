@@ -69,6 +69,16 @@ pub(super) struct OpenAIToolResults {
 }
 
 
+/// Legacy non-`agent_loop` streaming path. **Only reachable from
+/// `runtime/openai/websocket.rs`** (it falls back to this when
+/// websocket negotiation fails or the env-flag points at SSE).
+/// Production SSE traffic goes through `OpenAIResponsesAdapter` →
+/// `agent_loop::run_streaming_loop` → `OpenAIResponsesTurnSession`.
+///
+/// Do not change this function in isolation — any behavior fix here
+/// also needs mirroring in `responses_session.rs::one_turn_streaming`
+/// (and vice-versa) until the websocket path is migrated to its own
+/// `TurnSession` impl in a follow-up.
 pub(super) fn execute_openai_streaming<F>(
     state: &mut AppState,
     resources: &LoadedResources,

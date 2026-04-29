@@ -36,7 +36,12 @@ use super::openai::conversation::{
 };
 use super::reflection::{ReflectionConfig, ReflectionTraceEvent, ReflectionTracker};
 use super::request_tool_filter::RequestToolFilter;
-use super::tool_executor::{execute_tool_call, ToolExecutionBackend};
+use super::claude_tools::{self, ProviderToolContext};
+use super::tool_executor::{
+    execute_tool_call, is_parallel_safe_tool, resolve_tool_permission, PermissionOutcome,
+    ToolExecutionBackend,
+};
+use crate::workspace_paths;
 use super::{
     enforce_tool_result_budget, process_tool_result, run_turn_hooks, ToolCallRequest,
     ToolInvocation, TurnExecution, TurnStreamEvent, MAX_TOOL_RESULT_CHARS,
@@ -150,14 +155,14 @@ pub(crate) fn run_streaming_loop(
         .map(|config| ReflectionTracker::new(inputs.input, config));
 
     // Pre-turn compaction.
-    {
+    let pre_compacted = {
         let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
-        if compact_conversation_with(&mut items, inputs.provider, inputs.model_id, None, &summary_fn)
-        {
-            inject_post_compact_context(&mut items, &cwd);
-        }
+        compact_conversation_with(&mut items, inputs.provider, inputs.model_id, None, &summary_fn)
+    };
+    if pre_compacted {
+        inject_post_compact_context(&mut items, &cwd);
+        session.notify_compacted();
     }
-    session.notify_compacted(); // Defensive: pre-turn compact may have happened.
 
     loop {
         // Drain completed background tasks and inject as user messages.
@@ -367,8 +372,186 @@ pub(crate) fn run_blocking_loop(
 ///
 /// Mirrors the existing serial behavior of `execute_anthropic_tool_calls`
 /// (head-truncation per tool, aggregate budget). Parallel-safe batching
-/// is a follow-up.
+/// Mirrors the OLD `execute_openai_tool_calls` parallel batching for ALL
+/// providers: parallel-safe tools run concurrently in a `thread::scope`,
+/// the rest fall back to serial execution with full `&mut state` access.
+/// Permission resolution always runs serially up front because
+/// `AllowSession` mutates `state`.
 fn execute_tool_batch(
+    inputs: &mut LoopInputs<'_>,
+    session: &mut dyn TurnSession,
+    cwd: &std::path::Path,
+    tool_calls: &[ToolCallRequest],
+) -> Result<Vec<ToolInvocation>> {
+    let parallel_count = tool_calls
+        .iter()
+        .filter(|tc| is_parallel_safe_tool(&tc.tool_id))
+        .count();
+
+    // Serial fast-path: no parallelism gain available.
+    if tool_calls.len() <= 1 || parallel_count <= 1 {
+        return execute_tool_batch_serial(inputs, session, cwd, tool_calls);
+    }
+
+    // Phase 1: resolve permissions serially (mutates state on AllowSession).
+    let mut permissions: Vec<PermissionOutcome> = Vec::with_capacity(tool_calls.len());
+    for tc in tool_calls {
+        let args: serde_json::Value =
+            serde_json::from_str(&tc.input).unwrap_or(serde_json::Value::Null);
+        permissions.push(resolve_tool_permission(
+            inputs.state,
+            inputs.resources,
+            inputs.registry,
+            cwd,
+            &tc.tool_id,
+            &args,
+            inputs.tool_filter,
+        )?);
+    }
+
+    // Phase 2: spawn parallel-safe tools. We snapshot the immutable
+    // bits of state we need so the parallel closures only borrow
+    // refs, never `&mut state`.
+    let working_dirs = inputs.state.working_dirs.clone();
+    let allow_all_paths = workspace_paths::sandbox_allows_all_paths(&inputs.state.sandbox_mode);
+    let session_id = inputs.state.session.id;
+    let provider_context = backend_to_provider_context(
+        session.tool_execution_backend(),
+        inputs.model_id,
+    );
+
+    let mut results: Vec<Option<(String, bool)>> = vec![None; tool_calls.len()];
+
+    std::thread::scope(|s| {
+        let mut handles: Vec<(usize, std::thread::ScopedJoinHandle<'_, (String, bool)>)> =
+            Vec::new();
+        for (i, tc) in tool_calls.iter().enumerate() {
+            if !is_parallel_safe_tool(&tc.tool_id) {
+                continue;
+            }
+            if let PermissionOutcome::Denied(ref denied) = permissions[i] {
+                results[i] = Some((denied.output.stdout.clone(), denied.success));
+                continue;
+            }
+            let definition = match inputs.registry.definition(&tc.tool_id) {
+                Some(d) => d.clone(),
+                None => {
+                    results[i] = Some((format!("unknown tool {}", tc.tool_id), false));
+                    continue;
+                }
+            };
+            let args: serde_json::Value =
+                serde_json::from_str(&tc.input).unwrap_or(serde_json::Value::Null);
+            let resources = inputs.resources;
+            let registry = inputs.registry;
+            let working_dirs_ref = &working_dirs;
+            let provider_context_ref = &provider_context;
+            handles.push((
+                i,
+                s.spawn(move || {
+                    match claude_tools::execute_parallel_tool(
+                        &definition,
+                        cwd,
+                        working_dirs_ref,
+                        allow_all_paths,
+                        &session_id,
+                        args,
+                        resources,
+                        registry,
+                        provider_context_ref,
+                    ) {
+                        Ok(exec) => {
+                            let output = if exec.output.stderr.is_empty() {
+                                exec.output.stdout
+                            } else if exec.output.stdout.is_empty() {
+                                exec.output.stderr
+                            } else {
+                                format!("{}\n{}", exec.output.stdout, exec.output.stderr)
+                            };
+                            (output, exec.success)
+                        }
+                        Err(error) => (format!("Tool execution failed: {error}"), false),
+                    }
+                }),
+            ));
+        }
+        for (i, handle) in handles {
+            results[i] = Some(
+                handle
+                    .join()
+                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), false)),
+            );
+        }
+    });
+
+    // Phase 3: serial execution for non-parallel + denied (and unknown
+    // tool fallthroughs that we did not pre-fill above).
+    for (i, tc) in tool_calls.iter().enumerate() {
+        if results[i].is_some() {
+            continue;
+        }
+        if let PermissionOutcome::Denied(ref denied) = permissions[i] {
+            results[i] = Some((denied.output.stdout.clone(), denied.success));
+            continue;
+        }
+        let backend = session.tool_execution_backend();
+        let args: serde_json::Value =
+            serde_json::from_str(&tc.input).unwrap_or(serde_json::Value::Null);
+        let exec = match execute_tool_call(
+            inputs.state,
+            inputs.resources,
+            inputs.providers,
+            inputs.auth_store,
+            inputs.registry,
+            inputs.model_id,
+            cwd,
+            backend,
+            inputs.tool_filter,
+            &tc.tool_id,
+            args,
+        ) {
+            Ok(exec) => {
+                let output = if exec.output.stderr.is_empty() {
+                    exec.output.stdout
+                } else if exec.output.stdout.is_empty() {
+                    exec.output.stderr
+                } else {
+                    format!("{}\n{}", exec.output.stdout, exec.output.stderr)
+                };
+                (output, exec.success)
+            }
+            Err(error) => (format!("Tool execution failed: {error}"), false),
+        };
+        results[i] = Some(exec);
+    }
+
+    // Phase 4: assemble in original order with per-tool truncation.
+    let mut invocations = Vec::with_capacity(tool_calls.len());
+    for (i, tc) in tool_calls.iter().enumerate() {
+        let (raw_output, success) = results[i]
+            .take()
+            .unwrap_or_else(|| ("Tool was not executed".to_string(), false));
+        let output_text = process_tool_result(
+            &raw_output,
+            MAX_TOOL_RESULT_CHARS,
+            &inputs.state.session.id,
+        );
+        invocations.push(ToolInvocation {
+            call_id: tc.call_id.clone(),
+            tool_id: tc.tool_id.clone(),
+            input: tc.input.clone(),
+            output: output_text,
+            success,
+        });
+    }
+
+    enforce_tool_result_budget_in_place(&mut invocations, &inputs.state.session.id);
+    Ok(invocations)
+}
+
+/// Serial fallback used when parallelism would not help. Mirrors the
+/// earlier serial path bit-for-bit.
+fn execute_tool_batch_serial(
     inputs: &mut LoopInputs<'_>,
     session: &mut dyn TurnSession,
     cwd: &std::path::Path,
@@ -414,14 +597,46 @@ fn execute_tool_batch(
         });
     }
 
-    // Per-message aggregate budget (CC: 200K).
+    enforce_tool_result_budget_in_place(&mut invocations, &inputs.state.session.id);
+    Ok(invocations)
+}
+
+fn enforce_tool_result_budget_in_place(
+    invocations: &mut [ToolInvocation],
+    session_id: &uuid::Uuid,
+) {
     let mut output_strings: Vec<String> = invocations.iter().map(|i| i.output.clone()).collect();
-    enforce_tool_result_budget(&mut output_strings, &inputs.state.session.id);
+    enforce_tool_result_budget(&mut output_strings, session_id);
     for (i, new_output) in output_strings.into_iter().enumerate() {
         if new_output != invocations[i].output {
             invocations[i].output = new_output;
         }
     }
+}
 
-    Ok(invocations)
+/// Map the neutral `ToolExecutionBackend` into the
+/// `claude_tools::ProviderToolContext` shape that `execute_parallel_tool`
+/// expects (these are isomorphic — same fields, different name space).
+fn backend_to_provider_context<'a>(
+    backend: ToolExecutionBackend<'a>,
+    model_id: &'a str,
+) -> ProviderToolContext<'a> {
+    match backend {
+        ToolExecutionBackend::OpenAi {
+            request_config,
+            structured_output,
+        } => ProviderToolContext::OpenAI {
+            request_config,
+            model_id,
+            structured_output,
+        },
+        ToolExecutionBackend::Anthropic {
+            request_config,
+            structured_output,
+        } => ProviderToolContext::Anthropic {
+            request_config,
+            model_id,
+            structured_output,
+        },
+    }
 }
