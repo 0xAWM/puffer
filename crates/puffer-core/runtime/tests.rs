@@ -1030,6 +1030,8 @@ mod http_retries;
 mod openai_stream_transport;
 #[path = "tests/iteration_behavior.rs"]
 mod iteration_behavior;
+#[path = "tests/agent_loop_e2e.rs"]
+mod agent_loop_e2e;
 #[path = "tests/openai_tool_errors.rs"]
 mod openai_tool_errors;
 #[path = "tests/permissions.rs"]
