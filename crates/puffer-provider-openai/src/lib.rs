@@ -134,6 +134,18 @@ pub fn extract_chat_completions_text(response: &OpenAIChatCompletionsResponse) -
     response::extract_chat_completions_text(response)
 }
 
+/// Extracts the reasoning / thinking chain from a parsed OpenAI-compatible
+/// Chat Completions payload. Non-reasoning models (or providers that omit
+/// the field) return `None`. Used by the agent loop to surface a
+/// `ThinkingDelta` event so the TUI's thinking block stays populated for
+/// reasoning-capable Chat Completions providers (Moonshot Kimi, Deepseek,
+/// OpenRouter relays).
+pub fn extract_chat_completions_reasoning(
+    response: &OpenAIChatCompletionsResponse,
+) -> Option<String> {
+    response::extract_chat_completions_reasoning(response)
+}
+
 /// Extracts tool calls from a parsed OpenAI Responses API payload.
 pub fn extract_responses_tool_calls(
     response: &OpenAIResponsesResponse,

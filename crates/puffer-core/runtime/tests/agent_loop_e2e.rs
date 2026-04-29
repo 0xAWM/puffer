@@ -409,6 +409,74 @@ fn openai_completions_final_turn() -> String {
     .to_string()
 }
 
+/// Reasoning-capable Chat Completions providers (Moonshot Kimi
+/// `k2p5`, Deepseek, OpenRouter relays) return a `reasoning_content`
+/// (or `reasoning`) field on the assistant message. Agent_loop must
+/// surface this as a `TurnStreamEvent::ThinkingDelta` so the TUI's
+/// thinking block stays populated.
+#[test]
+fn openai_completions_agent_loop_emits_thinking_for_reasoning_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let (base_url, _requests, server) = spawn_server("application/json", 1, |_| {
+        json!({
+            "id": "chatcmpl-rsn",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "the visible answer",
+                    "reasoning_content": "step 1, step 2, step 3"
+                },
+                "finish_reason": "stop"
+            }]
+        })
+        .to_string()
+    });
+    let mut registry = ProviderRegistry::new();
+    registry.register(openai_completions_provider(base_url));
+    let mut auth = AuthStore::default();
+    auth.set_api_key("openai-completions-test", "sk-x");
+    let mut state = AppState::new(
+        PufferConfig::default(),
+        temp.path().to_path_buf(),
+        session_for(temp.path()),
+    );
+    state.current_provider = Some("openai-completions-test".to_string());
+    state.current_model = Some("openai-completions-test/gpt-5".to_string());
+    state.session_allow_all = true;
+    let resources = LoadedResources::default();
+
+    let mut thinking_deltas = Vec::new();
+    let mut text_deltas = Vec::new();
+    let turn = execute_user_prompt_streaming(
+        &mut state,
+        &resources,
+        &registry,
+        &mut auth,
+        "ask",
+        |event| match event {
+            TurnStreamEvent::ThinkingDelta(d) => thinking_deltas.push(d),
+            TurnStreamEvent::TextDelta(d) => text_deltas.push(d),
+            _ => {}
+        },
+    )
+    .unwrap();
+    server.join().unwrap();
+
+    assert_eq!(turn.assistant_text, "the visible answer");
+    assert_eq!(
+        thinking_deltas,
+        vec!["step 1, step 2, step 3".to_string()],
+        "ThinkingDelta must fire with reasoning_content payload"
+    );
+    assert_eq!(
+        text_deltas,
+        vec!["the visible answer".to_string()],
+        "TextDelta must fire with the visible content"
+    );
+}
+
 #[test]
 fn openai_completions_agent_loop_runs_tool_then_text() {
     let temp = tempfile::tempdir().unwrap();

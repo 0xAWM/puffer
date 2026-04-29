@@ -85,8 +85,27 @@ pub struct OpenAIChatChoiceMessage {
     pub role: Option<String>,
     #[serde(default)]
     pub content: Option<Value>,
+    /// Reasoning chain emitted by reasoning-capable Chat-Completions
+    /// providers (Moonshot Kimi, Deepseek, OpenRouter, etc.). The
+    /// canonical key is `reasoning_content`; we accept `reasoning` as
+    /// an alias because some compatible relays use the shorter name.
+    /// Populated for non-streaming responses.
+    #[serde(default, alias = "reasoning")]
+    pub reasoning_content: Option<String>,
     #[serde(default, deserialize_with = "deserialize_tool_calls")]
     pub tool_calls: Vec<OpenAIChatToolCall>,
+}
+
+/// Convenience accessor: returns the reasoning chain text when
+/// the message includes one, or `None` for non-reasoning models.
+pub fn extract_chat_completions_reasoning(
+    response: &OpenAIChatCompletionsResponse,
+) -> Option<String> {
+    response
+        .choices
+        .first()
+        .and_then(|choice| choice.message.reasoning_content.clone())
+        .filter(|reasoning| !reasoning.trim().is_empty())
 }
 
 /// A tool-call item nested under a Chat Completions assistant message.
