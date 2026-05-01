@@ -810,6 +810,9 @@ pub(super) fn sample_providers() -> ProviderRegistry {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            compat: None,
+            input: vec![puffer_provider_registry::Modality::Text],
+            cost: None,
         }],
     });
     registry.register(ProviderDescriptor {
@@ -829,6 +832,9 @@ pub(super) fn sample_providers() -> ProviderRegistry {
             context_window: 128_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            compat: None,
+            input: vec![puffer_provider_registry::Modality::Text],
+            cost: None,
         }],
     });
     registry

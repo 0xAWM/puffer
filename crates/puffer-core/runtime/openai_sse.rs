@@ -69,6 +69,7 @@ where
     let mut reader = reader;
     let mut line = String::new();
     let mut data_lines = Vec::new();
+    let mut last_event_name: Option<String> = None;
     let mut trace = openai_sse_trace_file();
 
     loop {
@@ -77,6 +78,13 @@ where
         trace_openai_sse_line(&mut trace, read, &line);
         if read == 0 {
             flush_sse_event(&data_lines, &mut state, on_event)?;
+            if !state.terminal && is_terminal_event_name(last_event_name.as_deref()) {
+                state.terminal = true;
+                trace_openai_sse_message(
+                    &mut trace,
+                    "EOF after terminal event header without data — treating as terminal",
+                );
+            }
             if !state.terminal {
                 trace_openai_sse_message(&mut trace, "EOF before terminal event");
                 bail!("stream closed before response.completed");
@@ -96,10 +104,24 @@ where
         }
         if let Some(data) = trimmed.strip_prefix("data:") {
             data_lines.push(data.trim_start().to_string());
+        } else if let Some(name) = trimmed.strip_prefix("event:") {
+            last_event_name = Some(name.trim().to_string());
         }
     }
 
     Ok(state)
+}
+
+fn is_terminal_event_name(name: Option<&str>) -> bool {
+    matches!(
+        name,
+        Some(
+            "response.completed"
+                | "response.done"
+                | "response.incomplete"
+                | "response.cancelled"
+        )
+    )
 }
 
 /// Parses an OpenAI SSE stream and returns typed result with tool calls,
@@ -438,6 +460,44 @@ mod tests {
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\"}}\n\n",
             "event: response.output_item.done\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\n"
+        );
+
+        let error = parse_openai_sse_response(stream).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("stream closed before response.completed"));
+    }
+
+    #[test]
+    fn parse_openai_sse_response_treats_eof_after_terminal_event_header_as_terminal() {
+        // Real-world proxy bug: the upstream sends `event: response.completed\n`
+        // and then closes the connection before the matching `data:` line lands.
+        // Without recovery, every tool-call turn through such a proxy bails with
+        // "stream closed before response.completed" and the request is retried,
+        // even though the user already saw the assistant text streamed.
+        let stream = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\n",
+            "event: response.completed\n",
+        );
+
+        let parsed = parse_openai_sse_response(stream).unwrap();
+        assert_eq!(parsed["id"], json!("resp_123"));
+        assert_eq!(parsed["output"][0]["type"], json!("message"));
+    }
+
+    #[test]
+    fn parse_openai_sse_response_does_not_recover_from_eof_after_failed_event_header() {
+        // We only recover non-failure terminal events on header-only EOF, since a
+        // failed response without its data line lacks the error message we need
+        // to surface to the user. Falling back to "stream closed" preserves the
+        // retry path for genuine failures.
+        let stream = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\"}}\n\n",
+            "event: response.failed\n",
         );
 
         let error = parse_openai_sse_response(stream).unwrap_err();

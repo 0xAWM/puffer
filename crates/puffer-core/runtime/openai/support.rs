@@ -3,7 +3,9 @@ use super::StructuredOutputConfig;
 use crate::AppState;
 use anyhow::{Error, Result};
 use puffer_provider_openai::{OpenAIResponsesTextConfig, OpenAIResponsesTool};
-use puffer_provider_registry::{OAuthCredential, ProviderDescriptor};
+use puffer_provider_registry::{
+    ModelCompat, ModelDescriptor, OAuthCredential, ProviderDescriptor, ResponsesPath,
+};
 use serde_json::{json, Value};
 use std::io;
 use std::time::Duration;
@@ -195,6 +197,7 @@ pub(super) fn apply_previous_response_id(body: &mut Value, previous_response_id:
 pub(super) fn openai_supports_response_threading(
     provider: &ProviderDescriptor,
     base_url: &str,
+    model: Option<&ModelDescriptor>,
 ) -> bool {
     if env_flag("PUFFER_OPENAI_DISABLE_RESPONSE_THREADING")
         || env_flag("PUFFER_OPENAI_DISABLE_PREVIOUS_RESPONSE_ID")
@@ -204,19 +207,54 @@ pub(super) fn openai_supports_response_threading(
     if env_flag("PUFFER_OPENAI_ENABLE_CUSTOM_RESPONSE_THREADING") {
         return true;
     }
+    if let Some(declared) = openai_responses_compat(model)
+        .and_then(|c| c.supports_response_threading)
+    {
+        return declared;
+    }
+    auto_detect_response_threading(provider, base_url)
+}
 
+fn auto_detect_response_threading(provider: &ProviderDescriptor, base_url: &str) -> bool {
     let trimmed = base_url.trim_end_matches('/');
     (provider.id == "openai" && trimmed.contains("api.openai.com"))
         || (trimmed.contains("/api/codex") && !trimmed.contains("chatgpt.com/backend-api"))
 }
 
 pub(super) fn openai_responses_path(base_url: &str) -> &'static str {
+    auto_detect_responses_path_str(base_url)
+}
+
+/// Same as `openai_responses_path` but consults declared model compat
+/// before falling back to URL auto-detection. The URL-only path is
+/// retained because some helpers (codex-style detection inside
+/// `is_codex_openai_provider`) don't have a model handy.
+pub(super) fn openai_responses_path_for_model(
+    base_url: &str,
+    model: Option<&ModelDescriptor>,
+) -> &'static str {
+    if let Some(declared) = openai_responses_compat(model).and_then(|c| c.responses_path) {
+        return match declared {
+            ResponsesPath::V1Responses => "/v1/responses",
+            ResponsesPath::Responses => "/responses",
+        };
+    }
+    auto_detect_responses_path_str(base_url)
+}
+
+fn auto_detect_responses_path_str(base_url: &str) -> &'static str {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.contains("/backend-api") || trimmed.contains("/api/codex") {
         "/responses"
     } else {
         "/v1/responses"
     }
+}
+
+fn openai_responses_compat(
+    model: Option<&ModelDescriptor>,
+) -> Option<&puffer_provider_registry::OpenAiResponsesCompat> {
+    model.and_then(|m| m.compat.as_ref()).and_then(ModelCompat::as_openai_responses)
 }
 
 pub(super) fn openai_model_supports_reasoning(
@@ -234,8 +272,12 @@ pub(super) fn openai_model_supports_reasoning(
 pub(super) fn append_default_openai_headers(
     headers: &mut Vec<(String, String)>,
     provider_id: &str,
+    model: Option<&ModelDescriptor>,
 ) {
-    if provider_id == "openai" && !has_header(headers, "version") {
+    let send_version = openai_responses_compat(model)
+        .and_then(|c| c.send_codex_version_header)
+        .unwrap_or_else(|| provider_id == "openai");
+    if send_version && !has_header(headers, "version") {
         headers.push((
             "version".to_string(),
             OPENAI_CODEX_COMPAT_VERSION.to_string(),
@@ -246,6 +288,20 @@ pub(super) fn append_default_openai_headers(
 }
 
 pub(super) fn is_codex_openai_provider(provider: &ProviderDescriptor) -> bool {
+    is_codex_openai_provider_for_model(provider, None)
+}
+
+pub(super) fn is_codex_openai_provider_for_model(
+    provider: &ProviderDescriptor,
+    model: Option<&ModelDescriptor>,
+) -> bool {
+    if let Some(declared) = openai_responses_compat(model).and_then(|c| c.codex_style) {
+        return declared;
+    }
+    auto_detect_codex_style(provider)
+}
+
+fn auto_detect_codex_style(provider: &ProviderDescriptor) -> bool {
     provider.default_api == "openai-codex-responses"
         || provider
             .base_url
@@ -258,7 +314,21 @@ pub(super) fn is_codex_openai_provider(provider: &ProviderDescriptor) -> bool {
 }
 
 pub(super) fn openai_base_url_for_auth(provider: &ProviderDescriptor, oauth: bool) -> String {
-    if !oauth || provider.id != "openai" {
+    openai_base_url_for_auth_with_model(provider, oauth, None)
+}
+
+pub(super) fn openai_base_url_for_auth_with_model(
+    provider: &ProviderDescriptor,
+    oauth: bool,
+    model: Option<&ModelDescriptor>,
+) -> String {
+    if !oauth {
+        return provider.base_url.clone();
+    }
+    if let Some(declared) = openai_responses_compat(model).and_then(|c| c.oauth_base_url.clone()) {
+        return declared;
+    }
+    if provider.id != "openai" {
         return provider.base_url.clone();
     }
     let trimmed = provider.base_url.trim_end_matches('/');
@@ -506,7 +576,8 @@ mod tests {
 
         assert!(openai_supports_response_threading(
             &provider,
-            "https://api.openai.com"
+            "https://api.openai.com",
+            None,
         ));
     }
 
@@ -522,7 +593,8 @@ mod tests {
 
         assert!(!openai_supports_response_threading(
             &provider,
-            "http://84.32.32.146:8317/v1"
+            "http://84.32.32.146:8317/v1",
+            None,
         ));
     }
 
@@ -539,7 +611,8 @@ mod tests {
 
         assert!(openai_supports_response_threading(
             &provider,
-            "http://84.32.32.146:8317/v1"
+            "http://84.32.32.146:8317/v1",
+            None,
         ));
     }
 
@@ -555,7 +628,8 @@ mod tests {
 
         assert!(!openai_supports_response_threading(
             &provider,
-            "https://chatgpt.com/backend-api/codex"
+            "https://chatgpt.com/backend-api/codex",
+            None,
         ));
     }
 }

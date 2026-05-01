@@ -33,6 +33,9 @@ fn provider() -> ProviderDescriptor {
             context_window: 200_000,
             max_output_tokens: 8192,
             supports_reasoning: true,
+            compat: None,
+            input: vec![puffer_provider_registry::Modality::Text],
+            cost: None,
         }],
     }
 }
@@ -149,6 +152,9 @@ fn openai_provider(base_url: String) -> ProviderDescriptor {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
+            input: vec![puffer_provider_registry::Modality::Text],
+            cost: None,
         }],
     }
 }
@@ -228,6 +234,9 @@ fn resolve_selection_uses_provider_scoped_default_model_id() {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
+            input: vec![puffer_provider_registry::Modality::Text],
+            cost: None,
         },
         puffer_provider_registry::ModelDescriptor {
             id: "gpt-5.4".to_string(),
@@ -237,6 +246,9 @@ fn resolve_selection_uses_provider_scoped_default_model_id() {
             context_window: 272_000,
             max_output_tokens: 16_384,
             supports_reasoning: true,
+            compat: None,
+            input: vec![puffer_provider_registry::Modality::Text],
+            cost: None,
         },
     ];
     registry.register(descriptor);
@@ -1067,6 +1079,8 @@ fn tool_definitions_keep_never_approval_tools_enabled() {
 mod http_retries;
 #[path = "tests/iteration_behavior.rs"]
 mod iteration_behavior;
+#[path = "tests/agent_loop_e2e.rs"]
+mod agent_loop_e2e;
 #[path = "tests/openai_stream_transport.rs"]
 mod openai_stream_transport;
 #[path = "tests/openai_tool_errors.rs"]

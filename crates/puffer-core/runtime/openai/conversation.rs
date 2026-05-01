@@ -999,8 +999,10 @@ pub(crate) fn compact_conversation(
     request_config: &OpenAIRequestConfig,
     input_tokens_hint: Option<usize>,
 ) -> bool {
-    let summary_fn =
-        |old_context: &str, mid: &str| generate_summary(old_context, mid, provider, request_config);
+    let summary_fn = |old_context: &str, mid: &str| {
+        let _ = provider;
+        generate_openai_summary(old_context, mid, request_config)
+    };
     compact_conversation_with(items, provider, model_id, input_tokens_hint, &summary_fn)
 }
 
@@ -1094,10 +1096,9 @@ pub(crate) fn build_summary_text(items: &[ConversationItem]) -> String {
 }
 
 /// Generates an AI summary of old context via the Responses API.
-fn generate_summary(
+pub(crate) fn generate_openai_summary(
     old_context: &str,
     model_id: &str,
-    _provider: &ProviderDescriptor,
     request_config: &OpenAIRequestConfig,
 ) -> Option<String> {
     use puffer_provider_openai::OpenAIAuth;
@@ -1661,6 +1662,9 @@ mod tests {
                 context_window,
                 max_output_tokens: max_output,
                 supports_reasoning: false,
+                compat: None,
+                input: vec![puffer_provider_registry::Modality::Text],
+                cost: None,
             }],
         }
     }

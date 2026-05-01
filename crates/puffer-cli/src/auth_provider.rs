@@ -163,6 +163,9 @@ mod tests {
                 context_window: 1000,
                 max_output_tokens: 100,
                 supports_reasoning: false,
+                compat: None,
+                input: vec![puffer_provider_registry::Modality::Text],
+                cost: None,
             }],
         }
     }

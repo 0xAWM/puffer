@@ -1,0 +1,896 @@
+//! Anthropic Messages API adapter.
+//!
+//! Vendor-specific concerns (auth, request URL, headers, fingerprinting,
+//! tool serialization, SSE parsing, response Value → ConversationItem
+//! synthesis) live in this module. The turn-by-turn driver (tool
+//! execution, reflection, compaction, hooks) lives in
+//! [`crate::runtime::agent_loop`] and is shared with other providers.
+//!
+//! The seam is the [`AnthropicTurnSession`] struct, which captures all
+//! per-prompt setup once and then implements the neutral
+//! [`TurnSession`](crate::runtime::agent_loop::TurnSession) trait so
+//! `agent_loop::run_streaming_loop` and `run_blocking_loop` can drive it
+//! without seeing any vendor types.
+
+use super::agent_loop::{
+    self, AssistantTurn, LoopInputs, TurnSession,
+};
+use super::anthropic_sse::parse_anthropic_sse;
+use super::openai::conversation::{
+    build_system_reminder, items_to_anthropic_messages, ConversationItem, ToolOutputPayload,
+};
+use super::request_tool_filter::RequestToolFilter;
+use super::structured_output_support::{
+    anthropic_tool_definitions_for_request, StructuredOutputConfig,
+};
+use super::system_prompt::render_runtime_system_prompt;
+use super::tool_executor::{execute_tool_call, ToolExecutionBackend};
+use super::{
+    enforce_tool_result_budget, git_status_context, process_tool_result, resolve_max_output_tokens,
+    send_http_request, ToolCallRequest, ToolInvocation, TurnExecution, TurnRequestOptions,
+    TurnStreamEvent, APP_VERSION, MAX_TOOL_RESULT_CHARS,
+};
+use crate::permissions::load_runtime_permission_context;
+use crate::AppState;
+use anyhow::{anyhow, bail, Context, Result};
+use puffer_provider_registry::{
+    AuthStore, OAuthCredential, ProviderDescriptor, ProviderRegistry, StoredCredential,
+};
+use puffer_resources::LoadedResources;
+use puffer_tools::ToolRegistry;
+use puffer_transport_anthropic::{
+    build_messages_request, get_session_ingress_auth, AnthropicAuth, AnthropicMessage,
+    AnthropicModelRequest, AnthropicRequestConfig,
+};
+use reqwest::blocking::Client;
+use serde_json::{json, Value};
+
+// ---------------------------------------------------------------------------
+// Session — per-prompt setup that the turn loop reuses across iterations.
+// ---------------------------------------------------------------------------
+
+/// All static-per-prompt state the Anthropic adapter needs to perform a
+/// single LLM round-trip. Computed once in
+/// [`setup_anthropic_session`], then used by `TurnSession` impls.
+pub(super) struct AnthropicTurnSession {
+    request_url: String,
+    request_headers: Vec<(String, String)>,
+    attribution_prefix_block: String,
+    request_config: AnthropicRequestConfig,
+    system_prompt: String,
+    plan_mode_context: Option<String>,
+    system_reminder: String,
+    tools: Vec<Value>,
+    structured_output: Option<StructuredOutputConfig>,
+    model_id: String,
+    model_supports_thinking: bool,
+    provider_supports_thinking_api: bool,
+    max_output: u32,
+}
+
+fn setup_anthropic_session(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    provider: &ProviderDescriptor,
+    model_id: String,
+    auth_store: &AuthStore,
+    options: &TurnRequestOptions<'_>,
+    input: &str,
+) -> Result<AnthropicTurnSession> {
+    let auth = anthropic_auth_for_provider(auth_store, provider)?;
+    let registry = ToolRegistry::from_resources(resources);
+    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
+    let plan_mode_context = crate::plan_mode::take_plan_mode_context_message(state, resources)?;
+
+    let request_config = AnthropicRequestConfig {
+        base_url: provider.base_url.clone(),
+        session_id: state.session.id.to_string(),
+        custom_headers: provider.headers.clone(),
+        remote_container_id: None,
+        remote_session_id: None,
+        client_app: None,
+        entrypoint: "cli".to_string(),
+        user_type: "external".to_string(),
+        version: APP_VERSION.to_string(),
+        workload: None,
+        additional_protection: false,
+        cch_enabled: true,
+        auth: auth.clone(),
+        beta_header: None,
+        client_request_id: None,
+    };
+    let request = build_messages_request(
+        &request_config,
+        &AnthropicModelRequest {
+            model: model_id.clone(),
+            max_tokens: resolve_max_output_tokens(provider, &model_id),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: input.to_string(),
+            }],
+        },
+    )?;
+
+    let tools = anthropic_tool_definitions_for_request(
+        &registry,
+        options.structured_output,
+        Some(&permission_context),
+        options.tool_filter,
+    )?;
+
+    let system_prompt = render_runtime_system_prompt(
+        state,
+        resources,
+        &model_id,
+        &tools
+            .iter()
+            .filter_map(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<std::collections::BTreeSet<_>>(),
+    )?;
+
+    let git_status = git_status_context();
+    let system_reminder = build_system_reminder(&git_status);
+
+    let model_supports_thinking = provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.supports_reasoning)
+        .unwrap_or(false);
+    let provider_supports_thinking_api = anthropic_supports_thinking_api(provider, &model_id);
+    let max_output = resolve_max_output_tokens(provider, &model_id);
+
+    Ok(AnthropicTurnSession {
+        request_url: request.url,
+        request_headers: request.headers,
+        attribution_prefix_block: request.attribution_prefix_block,
+        request_config,
+        system_prompt,
+        plan_mode_context,
+        system_reminder,
+        tools,
+        structured_output: options.structured_output.cloned(),
+        model_id,
+        model_supports_thinking,
+        provider_supports_thinking_api,
+        max_output,
+    })
+}
+
+impl AnthropicTurnSession {
+    /// Builds the Anthropic Messages API JSON body. `stream` toggles the
+    /// `stream: true` flag plus the streaming-specific field set (the
+    /// blocking path additionally emits `context_management`, `speed`,
+    /// and `metadata` fields).
+    fn build_body(&self, items: &[ConversationItem], state: &AppState, stream: bool) -> Value {
+        let wire_messages = items_to_anthropic_messages(items);
+        let mut body = json!({
+            "model": self.model_id,
+            "max_tokens": self.max_output,
+            "messages": wire_messages,
+            "system": anthropic_system_blocks(
+                &self.attribution_prefix_block,
+                Some(&self.system_prompt),
+                self.plan_mode_context.as_deref(),
+                Some(&self.system_reminder),
+            )
+        });
+        if stream {
+            body["stream"] = json!(true);
+        }
+        if !self.tools.is_empty() {
+            body["tools"] = Value::Array(self.tools.clone());
+            body["tool_choice"] = json!({"type": "auto"});
+        }
+        if self.model_supports_thinking
+            && self.provider_supports_thinking_api
+            && state.effort_level != "low"
+        {
+            let thinking_budget = match state.effort_level.as_str() {
+                "high" | "max" => self.max_output.saturating_sub(1).min(16_384),
+                _ => self.max_output.saturating_sub(1).min(8_192),
+            };
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": thinking_budget
+            });
+        } else {
+            body["temperature"] = json!(1);
+        }
+        if !stream {
+            // Blocking path injects extra fields. (Streaming path
+            // historically omits these — preserved to keep wire bytes
+            // identical pre/post refactor.)
+            if self.model_supports_thinking && self.provider_supports_thinking_api {
+                body["context_management"] = json!({
+                    "edits": [{
+                        "type": "clear_thinking_20251015",
+                        "keep": "all"
+                    }]
+                });
+            }
+            if state.fast_mode {
+                body["speed"] = json!("fast");
+            }
+            body["metadata"] = json!({
+                "user_id": format!(
+                    "{{\"session_id\":\"{}\",\"device_id\":\"puffer-cli\"}}",
+                    state.session.id
+                )
+            });
+        }
+        body
+    }
+}
+
+impl TurnSession for AnthropicTurnSession {
+    fn one_turn_streaming(
+        &mut self,
+        state: &mut AppState,
+        _auth_store: &mut AuthStore,
+        items: &mut Vec<ConversationItem>,
+        on_event: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<AssistantTurn> {
+        let body = self.build_body(items, state, true);
+
+        // Send streaming request.
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        let mut http_request = client.post(&self.request_url);
+        for (key, value) in &self.request_headers {
+            http_request = http_request.header(key, value);
+        }
+        http_request = http_request
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream");
+        let http_response = http_request
+            .body(body.to_string())
+            .send()
+            .with_context(|| format!("failed to send streaming request to {}", self.request_url))?;
+
+        if !http_response.status().is_success() {
+            let status = http_response.status();
+            let text = http_response.text().unwrap_or_default();
+            bail!("request failed with status {status}: {text}");
+        }
+
+        // Wrap `&mut dyn FnMut` in a sized closure so the generic
+        // `parse_anthropic_sse<F: FnMut(...)>` signature accepts it.
+        let mut wrapped = |event: TurnStreamEvent| on_event(event);
+        let response = parse_anthropic_sse(http_response, &mut wrapped)?;
+        turn_from_response(&response)
+    }
+
+    fn one_turn_blocking(
+        &mut self,
+        state: &mut AppState,
+        _auth_store: &mut AuthStore,
+        items: &mut Vec<ConversationItem>,
+    ) -> Result<AssistantTurn> {
+        // Anthropic-specific 413 / prompt_too_long recovery: drop oldest
+        // items in place and retry until the request fits or we hit the
+        // floor (3 items).
+        loop {
+            let body = self.build_body(items, state, false);
+            match send_http_request(
+                &self.request_url,
+                &self.request_headers,
+                &body.to_string(),
+                true,
+            ) {
+                Ok(response) => return turn_from_response(&response),
+                Err(error) => {
+                    let err_msg = error.to_string();
+                    let too_long = err_msg.contains("413")
+                        || err_msg.contains("prompt_too_long")
+                        || err_msg.contains("too long");
+                    if too_long && items.len() > 3 {
+                        let drop_count = (items.len() / 3).max(1);
+                        items.drain(..drop_count);
+                        if !matches!(items.first(), Some(ConversationItem::Message { .. })) {
+                            items.insert(
+                                0,
+                                ConversationItem::user_message(
+                                    "[Context truncated to fit within model limits]",
+                                ),
+                            );
+                        }
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn generate_summary(&self, old_context: &str, model_id: &str) -> Option<String> {
+        anthropic_generate_summary(
+            old_context,
+            model_id,
+            &self.request_url,
+            &self.request_headers,
+        )
+    }
+
+    fn tool_execution_backend(&self) -> ToolExecutionBackend<'_> {
+        ToolExecutionBackend::Anthropic {
+            request_config: &self.request_config,
+            structured_output: self.structured_output.as_ref(),
+        }
+    }
+}
+
+/// Converts an Anthropic response Value into the neutral
+/// [`AssistantTurn`] shape: extracts text + tool_use blocks, leaves
+/// FunctionCallOutput synthesis to the loop driver.
+fn turn_from_response(response: &Value) -> Result<AssistantTurn> {
+    let pre_tool_items = synthesize_pre_tool_items(response);
+    let tool_calls = extract_tool_calls(response)?;
+    let assistant_text = if tool_calls.is_empty() {
+        parse_anthropic_text(response)?
+    } else {
+        // When tool calls exist, assistant text is partial and the
+        // returned TurnExecution.assistant_text comes from the FINAL
+        // (no-tool-calls) iteration anyway. Empty here is fine.
+        String::new()
+    };
+    let input_tokens_hint = response
+        .pointer("/usage/input_tokens")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    Ok(AssistantTurn {
+        pre_tool_items,
+        tool_calls,
+        assistant_text,
+        input_tokens_hint,
+        emitted_tool_call_ids: std::collections::HashSet::new(),
+    })
+}
+
+/// Pulls assistant text + reasoning + tool_use blocks from an Anthropic
+/// response Value into neutral `ConversationItem`s. The loop driver
+/// later appends `FunctionCallOutput` entries from tool execution.
+fn synthesize_pre_tool_items(response: &Value) -> Vec<ConversationItem> {
+    let mut out = Vec::new();
+    if let Some(content) = response.get("content").and_then(Value::as_array) {
+        let texts: Vec<&str> = content
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect();
+        if !texts.is_empty() {
+            out.push(ConversationItem::assistant_message(texts.join("\n")));
+        }
+    }
+    if let Some(content) = response.get("content").and_then(Value::as_array) {
+        for block in content {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let call_id = block
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let name = block
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let arguments = block
+                .get("input")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "{}".to_string());
+            out.push(ConversationItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            });
+        }
+    }
+    out
+}
+
+/// Pure parsing: vendor `content[].type == "tool_use"` → neutral
+/// `ToolCallRequest`. Used by both the loop driver and the test helper
+/// `execute_anthropic_tool_calls`.
+fn extract_tool_calls(response: &Value) -> Result<Vec<ToolCallRequest>> {
+    let Some(content) = response.get("content").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut calls = Vec::with_capacity(content.len());
+    for item in content {
+        if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let tool_id = item
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("anthropic tool_use block missing name"))?;
+        let call_id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("anthropic tool_use block missing id"))?;
+        let input = item
+            .get("input")
+            .ok_or_else(|| anyhow!("anthropic tool_use block missing input"))?;
+        calls.push(ToolCallRequest {
+            call_id: call_id.to_string(),
+            tool_id: tool_id.to_string(),
+            input: serde_json::to_string(input)?,
+        });
+    }
+    Ok(calls)
+}
+
+// ---------------------------------------------------------------------------
+// Vendor helpers (kept across the refactor — used by session impl + tests).
+// ---------------------------------------------------------------------------
+
+fn anthropic_auth_for_provider(
+    auth_store: &AuthStore,
+    provider: &ProviderDescriptor,
+) -> Result<AnthropicAuth> {
+    match auth_store.get(&provider.id) {
+        Some(StoredCredential::ApiKey { key }) => Ok(AnthropicAuth::ApiKey(key.clone())),
+        Some(StoredCredential::OAuth(OAuthCredential { access_token, .. })) => {
+            Ok(AnthropicAuth::OAuthBearer(access_token.clone()))
+        }
+        None if provider.auth_modes.is_empty() => Ok(AnthropicAuth::None),
+        None => get_session_ingress_auth().ok_or_else(|| {
+            anyhow!(
+                "no credentials configured for provider {}; use `puffer auth set-api-key {}` first",
+                provider.id,
+                provider.id
+            )
+        }),
+    }
+}
+
+fn parse_anthropic_text(response: &Value) -> Result<String> {
+    let parts = response
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("anthropic response missing content array"))?
+        .iter()
+        .filter_map(|item| {
+            let item_type = item.get("type").and_then(Value::as_str)?;
+            if item_type == "text" {
+                item.get("text").and_then(Value::as_str).map(str::to_string)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        bail!("anthropic response did not contain text content");
+    }
+    Ok(parts.join("\n"))
+}
+
+fn anthropic_generate_summary(
+    old_context: &str,
+    model_id: &str,
+    url: &str,
+    headers: &[(String, String)],
+) -> Option<String> {
+    let compact_prompt = format!(
+        "Summarize this conversation fragment into a compact context block. \
+         Preserve file paths, function names, errors, and key decisions verbatim. \
+         Structure: 1) Intent 2) Key Concepts 3) Files & Code 4) Errors & Fixes \
+         5) Pending Tasks 6) Current State. Be thorough but concise. \
+         Do NOT use any tools.\n\n---\n\n{old_context}"
+    );
+
+    let body = json!({
+        "model": model_id,
+        "max_tokens": 16_384,
+        "messages": [{"role": "user", "content": compact_prompt}],
+    });
+
+    match send_http_request(url, headers, &body.to_string(), true) {
+        Ok(response) => parse_anthropic_text(&response).ok(),
+        Err(_) => None,
+    }
+}
+
+fn anthropic_system_blocks(
+    attribution_prefix_block: &str,
+    system_prompt: Option<&str>,
+    plan_mode_context: Option<&str>,
+    system_reminder: Option<&str>,
+) -> Vec<Value> {
+    let mut blocks = vec![json!({
+        "type": "text",
+        "text": attribution_prefix_block,
+    })];
+    if let Some(system_prompt) = system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        blocks.push(json!({
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": { "type": "ephemeral" }
+        }));
+    }
+    if let Some(plan_mode_context) = plan_mode_context {
+        blocks.push(json!({
+            "type": "text",
+            "text": plan_mode_context,
+        }));
+    }
+    if let Some(reminder) = system_reminder.filter(|r| !r.trim().is_empty()) {
+        blocks.push(json!({
+            "type": "text",
+            "text": format!(
+                "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n\
+                 {reminder}\n\n\
+                 IMPORTANT: this context may or may not be relevant to your tasks. \
+                 You should not respond to this context unless it is highly relevant to your task.\n\
+                 </system-reminder>"
+            ),
+        }));
+    }
+    blocks
+}
+
+/// Resolve whether the model accepts the Anthropic-style `thinking`
+/// block. Decision is **family-based**, not id-based: this function
+/// only runs inside the Anthropic-Messages adapter, so by the time we
+/// get here the request is already going to an Anthropic-Messages
+/// endpoint. Per the Anthropic protocol, every compliant endpoint
+/// (canonical `api.anthropic.com`, Kimi `kimi-coding`, Bedrock /
+/// Vertex Anthropic relays, self-hosted proxies, …) accepts the
+/// `thinking` field — verified via curl against `kimi-coding/k2p5`,
+/// which returns full `thinking` content blocks when the request
+/// carries `thinking: { type: "enabled", … }`.
+///
+/// The `Model.supports_reasoning` flag still gates whether the field
+/// is actually sent, so non-reasoning models keep their cheap
+/// no-thinking path. To opt OUT for a relay that rejects the field
+/// despite the spec, set
+/// `Model.compat.AnthropicMessages.supports_thinking_api: false` on
+/// the descriptor.
+///
+/// Historical note: this used to gate on
+/// `provider.id == "anthropic" || base_url.contains("anthropic.com")`
+/// — too narrow, silently dropped reasoning for every third-party
+/// Anthropic-compatible reasoning model.
+fn anthropic_supports_thinking_api(provider: &ProviderDescriptor, model_id: &str) -> bool {
+    provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .and_then(|m| m.compat.as_ref())
+        .and_then(|c| c.as_anthropic_messages())
+        .and_then(|c| c.supports_thinking_api)
+        .unwrap_or(true)
+}
+
+// ---------------------------------------------------------------------------
+// Adapter — thin wrapper that builds the session and hands off to the
+// neutral agent_loop driver.
+// ---------------------------------------------------------------------------
+
+pub(crate) struct AnthropicAdapter;
+
+impl super::provider_adapter::ProviderAdapter for AnthropicAdapter {
+    fn api_id(&self) -> &'static str {
+        "anthropic-messages"
+    }
+
+    fn execute_turn(
+        &self,
+        state: &mut AppState,
+        resources: &LoadedResources,
+        providers: &ProviderRegistry,
+        provider: &ProviderDescriptor,
+        model_id: String,
+        auth_store: &mut AuthStore,
+        input: &str,
+        options: TurnRequestOptions<'_>,
+    ) -> Result<TurnExecution> {
+        let registry = ToolRegistry::from_resources(resources);
+        let mut session = setup_anthropic_session(
+            state, resources, provider, model_id, auth_store, &options, input,
+        )?;
+        let mut inputs = LoopInputs {
+            state,
+            resources,
+            providers,
+            provider,
+            model_id: &session.model_id.clone(),
+            auth_store,
+            input,
+            reflection_config: options.reflection.clone(),
+            tool_filter: options.tool_filter,
+            registry: &registry,
+        };
+        agent_loop::run_blocking_loop(&mut inputs, &mut session)
+    }
+
+    fn execute_turn_streaming(
+        &self,
+        state: &mut AppState,
+        resources: &LoadedResources,
+        providers: &ProviderRegistry,
+        provider: &ProviderDescriptor,
+        model_id: String,
+        auth_store: &mut AuthStore,
+        input: &str,
+        options: TurnRequestOptions<'_>,
+        on_event: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<TurnExecution> {
+        let registry = ToolRegistry::from_resources(resources);
+        let mut session = setup_anthropic_session(
+            state, resources, provider, model_id, auth_store, &options, input,
+        )?;
+        let mut inputs = LoopInputs {
+            state,
+            resources,
+            providers,
+            provider,
+            model_id: &session.model_id.clone(),
+            auth_store,
+            input,
+            reflection_config: options.reflection.clone(),
+            tool_filter: options.tool_filter,
+            registry: &registry,
+        };
+        agent_loop::run_streaming_loop(&mut inputs, &mut session, on_event)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test-only helpers — preserve existing test coverage of the
+// extract+execute pipeline against fake response payloads. Production
+// code path goes through `agent_loop` and never calls these.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+pub(super) fn anthropic_tool_schema(handler: &str) -> Value {
+    match handler {
+        "bash" => json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string" }
+            },
+            "required": ["command"],
+        }),
+        "read_file" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": ["path"],
+        }),
+        "write_file" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "contents": { "type": "string" }
+            },
+            "required": ["path", "contents"],
+        }),
+        "replace_in_file" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "old": { "type": "string" },
+                "new": { "type": "string" },
+                "replace_all": { "type": "boolean" }
+            },
+            "required": ["path", "old", "new"],
+        }),
+        "list_dir" => json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": [],
+        }),
+        "search_text" => json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "path": { "type": "string" }
+            },
+            "required": ["query"],
+        }),
+        _ => json!({
+            "type": "object",
+            "properties": {},
+        }),
+    }
+}
+
+#[cfg(test)]
+pub(super) struct AnthropicToolResults {
+    #[allow(dead_code)]
+    pub(super) results: Value,
+    pub(super) invocations: Vec<ToolInvocation>,
+}
+
+#[cfg(test)]
+pub(super) fn execute_anthropic_tool_calls(
+    state: &mut AppState,
+    resources: &LoadedResources,
+    providers: &ProviderRegistry,
+    auth_store: &mut AuthStore,
+    response: &Value,
+    registry: &ToolRegistry,
+    cwd: &std::path::Path,
+    request_config: &AnthropicRequestConfig,
+    model_id: &str,
+    structured_output: Option<&StructuredOutputConfig>,
+    tool_filter: Option<&RequestToolFilter>,
+) -> Result<Option<AnthropicToolResults>> {
+    let calls = extract_tool_calls(response)?;
+    if calls.is_empty() {
+        return Ok(None);
+    }
+
+    let mut results = Vec::new();
+    let mut invocations = Vec::new();
+    for call in &calls {
+        let input_value: Value = serde_json::from_str(&call.input).unwrap_or(Value::Null);
+        let execution = execute_tool_call(
+            state,
+            resources,
+            providers,
+            auth_store,
+            registry,
+            model_id,
+            cwd,
+            ToolExecutionBackend::Anthropic {
+                request_config,
+                structured_output,
+            },
+            tool_filter,
+            &call.tool_id,
+            input_value,
+        )?;
+        let raw_output = if execution.output.stderr.is_empty() {
+            execution.output.stdout
+        } else if execution.output.stdout.is_empty() {
+            execution.output.stderr
+        } else {
+            format!("{}\n{}", execution.output.stdout, execution.output.stderr)
+        };
+        let output_text =
+            process_tool_result(&raw_output, MAX_TOOL_RESULT_CHARS, &state.session.id);
+        results.push(json!({
+            "type": "tool_result",
+            "tool_use_id": call.call_id,
+            "content": output_text,
+            "is_error": !execution.success,
+        }));
+        invocations.push(ToolInvocation {
+            call_id: call.call_id.clone(),
+            tool_id: call.tool_id.clone(),
+            input: call.input.clone(),
+            output: output_text.clone(),
+            success: execution.success,
+        });
+    }
+
+    let mut output_strings: Vec<String> = invocations.iter().map(|i| i.output.clone()).collect();
+    enforce_tool_result_budget(&mut output_strings, &state.session.id);
+    for (i, new_output) in output_strings.into_iter().enumerate() {
+        if new_output != invocations[i].output {
+            results[i]["content"] = json!(new_output);
+            invocations[i].output = new_output;
+        }
+    }
+
+    Ok(Some(AnthropicToolResults {
+        results: Value::Array(results),
+        invocations,
+    }))
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn append_anthropic_response_to_items(
+    items: &mut Vec<ConversationItem>,
+    response: &Value,
+    tool_results: &AnthropicToolResults,
+) {
+    items.extend(synthesize_pre_tool_items(response));
+    for inv in &tool_results.invocations {
+        items.push(ConversationItem::FunctionCallOutput {
+            call_id: inv.call_id.clone(),
+            output: if inv.success {
+                ToolOutputPayload::success(inv.output.clone())
+            } else {
+                ToolOutputPayload::error(inv.output.clone())
+            },
+        });
+    }
+}
+
+#[cfg(test)]
+mod thinking_gate_tests {
+    use super::anthropic_supports_thinking_api;
+    use puffer_provider_registry::{
+        AnthropicMessagesCompat, AuthMode, Modality, ModelCompat, ModelDescriptor,
+        ProviderDescriptor,
+    };
+
+    fn provider_with(id: &str, base_url: &str, model_compat: Option<ModelCompat>) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            base_url: base_url.to_string(),
+            default_api: "anthropic-messages".to_string(),
+            auth_modes: vec![AuthMode::ApiKey],
+            headers: Default::default(),
+            query_params: Default::default(),
+            discovery: None,
+            models: vec![ModelDescriptor {
+                id: "claude-sonnet-4-5".to_string(),
+                display_name: "Claude".to_string(),
+                provider: id.to_string(),
+                api: "anthropic-messages".to_string(),
+                context_window: 200_000,
+                max_output_tokens: 8192,
+                supports_reasoning: true,
+                input: vec![Modality::Text],
+                cost: None,
+                compat: model_compat,
+            }],
+        }
+    }
+
+    #[test]
+    fn canonical_anthropic_defaults_to_thinking_supported() {
+        let provider = provider_with("anthropic", "https://api.anthropic.com", None);
+        assert!(anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn third_party_anthropic_compatible_relay_defaults_to_supported() {
+        // Regression: kimi-coding/k2p5 returns full Anthropic-shaped
+        // `thinking` content blocks when the request carries the
+        // thinking field, but the previous heuristic gated on
+        // `provider.id == "anthropic" || base_url contains anthropic.com`
+        // and silently dropped reasoning for any non-anthropic.com URL.
+        // Verified via curl against api.kimi.com/coding before flipping
+        // the default.
+        let provider = provider_with("kimi-coding", "https://api.kimi.com/coding", None);
+        assert!(anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn explicit_compat_opt_out_wins_over_default() {
+        // For a relay that does NOT accept the thinking field, users
+        // can drop a workspace-level provider yaml with
+        // `compat: { kind: anthropic_messages, supports_thinking_api: false }`
+        // to keep the agent loop from sending it.
+        let compat = ModelCompat::AnthropicMessages(AnthropicMessagesCompat {
+            supports_thinking_api: Some(false),
+        });
+        let provider = provider_with("custom-anthropic", "http://1.2.3.4/", Some(compat));
+        assert!(!anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn explicit_compat_opt_in_wins_over_default() {
+        let compat = ModelCompat::AnthropicMessages(AnthropicMessagesCompat {
+            supports_thinking_api: Some(true),
+        });
+        let provider = provider_with("custom-anthropic", "http://1.2.3.4/", Some(compat));
+        assert!(anthropic_supports_thinking_api(&provider, "claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn unknown_model_id_falls_back_to_default_supported() {
+        let provider = provider_with("kimi-coding", "https://api.kimi.com/coding", None);
+        // No model with id="not-a-model" → no compat to read → default true.
+        assert!(anthropic_supports_thinking_api(&provider, "not-a-model"));
+    }
+}

@@ -268,6 +268,9 @@ fn parse_discovered_models(
             context_window: discovery.context_window,
             max_output_tokens: discovery.max_output_tokens,
             supports_reasoning: discovery.supports_reasoning,
+            compat: None,
+            input: vec![crate::Modality::Text],
+            cost: None,
         });
     }
     Ok(models)
@@ -342,6 +345,9 @@ fn parse_codex_discovered_models(
             context_window,
             max_output_tokens: discovery.max_output_tokens,
             supports_reasoning,
+            compat: None,
+            input: vec![crate::Modality::Text],
+            cost: None,
         });
     }
     Ok(models)
@@ -389,6 +395,9 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            compat: None,
+            input: vec![crate::Modality::Text],
+            cost: None,
         }];
 
         merge_discovered_models(
@@ -402,6 +411,9 @@ mod tests {
                     context_window: 200_000,
                     max_output_tokens: 8_192,
                     supports_reasoning: true,
+                    compat: None,
+                    input: vec![crate::Modality::Text],
+                    cost: None,
                 },
                 ModelDescriptor {
                     id: "claude-opus-4-1".to_string(),
@@ -411,6 +423,9 @@ mod tests {
                     context_window: 200_000,
                     max_output_tokens: 8_192,
                     supports_reasoning: true,
+                    compat: None,
+                    input: vec![crate::Modality::Text],
+                    cost: None,
                 },
             ],
         );

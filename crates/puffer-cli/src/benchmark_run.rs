@@ -537,6 +537,9 @@ fn ensure_model_registered(
         context_window: prototype.context_window,
         max_output_tokens: prototype.max_output_tokens,
         supports_reasoning: prototype.supports_reasoning,
+        compat: None,
+        input: vec![puffer_provider_registry::Modality::Text],
+        cost: None,
     });
     providers.register_with_source(descriptor, entry.source);
     Ok(())
