@@ -300,6 +300,34 @@ pub fn start_tool_span(
     SpanGuard::active(span, parent_ctx, handle.clone())
 }
 
+/// Start a `reflection` child span. Wraps the per-batch reflection
+/// observation that may or may not fire an LLM judge call. When the
+/// judge does fire, callers should set `puffer.reflection.judge.fired`
+/// + token usage via `set_str` / `set_token_usage`.
+pub fn start_reflection_span(
+    handle: Option<&ObservabilityHandle>,
+    parent: Option<&OtelContext>,
+) -> SpanGuard {
+    let Some(handle) = handle else {
+        return SpanGuard::Disabled;
+    };
+    let tracer = handle.tracer();
+    let parent_ctx = parent.cloned().unwrap_or_else(OtelContext::current);
+    let mut builder = tracer
+        .span_builder(ObservationKind::Reflection.span_name())
+        .with_kind(SpanKind::Internal);
+    builder.attributes = Some(
+        AttributeBag::new()
+            .str(
+                LANGFUSE_OBSERVATION_TYPE,
+                ObservationKind::Reflection.langfuse_observation_type(),
+            )
+            .build(),
+    );
+    let span = tracer.build_with_context(builder, &parent_ctx);
+    SpanGuard::active(span, parent_ctx, handle.clone())
+}
+
 /// Start a `compaction` child span.
 pub fn start_compaction_span(
     handle: Option<&ObservabilityHandle>,

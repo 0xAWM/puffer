@@ -385,7 +385,18 @@ pub(crate) fn run_streaming_loop(
             });
         }
 
-        // Reflection observation over THIS batch only.
+        // Reflection observation over THIS batch only. Wrapped in a
+        // `reflection` SPAN so the timing is visible in Langfuse; if
+        // the LLM judge fires (only on code-judge trigger), token
+        // usage from the returned trace events is attached so the
+        // span doubles as a generation observation for that judge
+        // call. Subagent-style: this is the only LLM round-trip puffer
+        // makes outside the main `agent_loop → turn → provider_call`
+        // path inside the runtime.
+        let mut reflection_span = puffer_observability::start_reflection_span(
+            inputs.observability.as_ref(),
+            turn_span.context(),
+        );
         if let Some(observation) = reflection.as_mut().and_then(|tracker| {
             tracker.observe_batch_with_judge(
                 &new_invocations,
@@ -398,6 +409,20 @@ pub(crate) fn run_streaming_loop(
         }) {
             for trace_event in &observation.trace_events {
                 on_event(TurnStreamEvent::ReflectionTrace(trace_event.clone()));
+                if let ReflectionTraceEvent::LlmJudgeResponse {
+                    input_tokens,
+                    output_tokens,
+                    cached_input_tokens,
+                    ..
+                } = trace_event
+                {
+                    reflection_span.set_str("puffer.reflection.judge.fired", "true");
+                    reflection_span.set_token_usage(
+                        *input_tokens,
+                        *output_tokens,
+                        *cached_input_tokens,
+                    );
+                }
             }
             reflection_traces.extend(observation.trace_events);
             if let Some(checkpoint) = observation.checkpoint {
@@ -407,8 +432,19 @@ pub(crate) fn run_streaming_loop(
                 items.push(ConversationItem::user_message(checkpoint.prompt));
             }
         }
+        reflection_span.end();
 
-        // Post-iteration compaction.
+        // Post-iteration compaction. The compaction trigger itself
+        // may issue an LLM round-trip via `session.generate_summary`
+        // — wrapping in a span lets Langfuse see the cost. Most turns
+        // skip compaction (transcript under threshold), so we mark
+        // skipped spans with `puffer.compaction.skipped=true` instead
+        // of suppressing them.
+        let mut post_compaction_span = puffer_observability::start_compaction_span(
+            inputs.observability.as_ref(),
+            turn_span.context(),
+            1,
+        );
         let compacted = {
             let summary_fn = |old: &str, mid: &str| session.generate_summary(old, mid);
             compact_conversation_with(
@@ -422,7 +458,10 @@ pub(crate) fn run_streaming_loop(
         if compacted {
             inject_post_compact_context(&mut items, &cwd);
             session.notify_compacted();
+        } else {
+            post_compaction_span.set_str("puffer.compaction.skipped", "true");
         }
+        post_compaction_span.end();
     }
 }
 
