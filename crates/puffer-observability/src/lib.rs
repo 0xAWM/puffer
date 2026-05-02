@@ -42,8 +42,10 @@ mod redaction;
 mod tests;
 
 pub use attributes::{
-    AttributeBag, GenAiSystem, ObservationKind, PUFFER_API, PUFFER_CWD, PUFFER_PROVIDER_ID,
-    PUFFER_SESSION_ID, PUFFER_TOOL_CALL_ID, PUFFER_TOOL_PARALLEL,
+    AttributeBag, GenAiSystem, ObservationKind, LANGFUSE_OBSERVATION_INPUT,
+    LANGFUSE_OBSERVATION_OUTPUT, LANGFUSE_TRACE_INPUT, LANGFUSE_TRACE_OUTPUT, LANGFUSE_TRACE_TAGS,
+    PUFFER_API, PUFFER_CWD, PUFFER_PROVIDER_ID, PUFFER_SESSION_ID, PUFFER_TOOL_CALL_ID,
+    PUFFER_TOOL_PARALLEL,
 };
 pub use hooks::{
     start_agent_loop_span, start_compaction_span, start_provider_span, start_reflection_span,
@@ -161,6 +163,10 @@ struct HandleInner {
     provider: TracerProvider,
     redaction: RedactionPolicy,
     shutdown_timeout: Duration,
+    /// Per-trace tags surfaced on the root `agent_loop` span as
+    /// `langfuse.trace.tags` so Langfuse renders them in its tag
+    /// filter / per-trace tag chips.
+    tags: Vec<String>,
 }
 
 impl ObservabilityHandle {
@@ -207,9 +213,9 @@ impl ObservabilityHandle {
             resource_kvs.push(KeyValue::new("langfuse.version", release.clone()));
             resource_kvs.push(KeyValue::new("langfuse.release", release));
         }
-        if !config.tags.is_empty() {
-            resource_kvs.push(KeyValue::new("langfuse.tags", config.tags.join(",")));
-        }
+        // Tags travel with each trace via `langfuse.trace.tags` on the
+        // root span, NOT the resource — Langfuse's tag filter reads
+        // span-level. See `start_agent_loop_span`.
         let resource = Resource::new(resource_kvs);
 
         let sampler = if config.sample_rate >= 1.0 {
@@ -239,14 +245,23 @@ impl ObservabilityHandle {
             config.always_redact_tool_ids,
         );
         let shutdown_timeout = config.shutdown_timeout;
+        let tags = config.tags;
 
         Ok(Self {
             inner: Arc::new(HandleInner {
                 provider,
                 redaction,
                 shutdown_timeout,
+                tags,
             }),
         })
+    }
+
+    /// Per-trace tags pulled from `ObservabilityConfig::tags`. Used by
+    /// `start_agent_loop_span` to set `langfuse.trace.tags` on the root
+    /// span so Langfuse renders them in its tag filter.
+    pub fn tags(&self) -> &[String] {
+        &self.inner.tags
     }
 
     /// Build an [`ObservabilityConfig`] from environment variables that

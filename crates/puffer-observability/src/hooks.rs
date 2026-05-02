@@ -186,17 +186,29 @@ pub fn start_agent_loop_span(
     let mut builder = tracer
         .span_builder(ObservationKind::AgentLoop.span_name())
         .with_kind(SpanKind::Internal);
-    builder.attributes = Some(
-        AttributeBag::new()
-            .str(PUFFER_SESSION_ID, session_id)
-            .str(LANGFUSE_SESSION_ID, session_id)
-            .str(PUFFER_CWD, cwd)
-            .str(
-                LANGFUSE_OBSERVATION_TYPE,
-                ObservationKind::AgentLoop.langfuse_observation_type(),
-            )
-            .build(),
-    );
+    let mut bag = AttributeBag::new()
+        .str(PUFFER_SESSION_ID, session_id)
+        .str(LANGFUSE_SESSION_ID, session_id)
+        .str(PUFFER_CWD, cwd)
+        .str(
+            LANGFUSE_OBSERVATION_TYPE,
+            ObservationKind::AgentLoop.langfuse_observation_type(),
+        );
+    let tags = handle.tags();
+    if !tags.is_empty() {
+        // Langfuse renders trace tag chips from a string-array
+        // attribute on the root span. The OTel spec allows array-typed
+        // attributes; we go through `KeyValue::new` directly because
+        // `AttributeBag::str` is single-string only.
+        let kv = opentelemetry::KeyValue::new(
+            crate::attributes::LANGFUSE_TRACE_TAGS,
+            opentelemetry::Value::Array(opentelemetry::Array::String(
+                tags.iter().map(|t| t.clone().into()).collect(),
+            )),
+        );
+        bag = bag.kv(kv);
+    }
+    builder.attributes = Some(bag.build());
     let span = tracer.build_with_context(builder, &parent);
     SpanGuard::active(span, parent, handle.clone())
 }

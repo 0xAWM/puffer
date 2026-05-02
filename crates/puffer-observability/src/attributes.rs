@@ -93,7 +93,12 @@ pub const PUFFER_TOOL_CALL_ID: &str = "puffer.tool.call_id";
 pub const PUFFER_TOOL_PARALLEL: &str = "puffer.tool.parallel";
 
 pub const LANGFUSE_OBSERVATION_TYPE: &str = "langfuse.observation.type";
+pub const LANGFUSE_OBSERVATION_INPUT: &str = "langfuse.observation.input";
+pub const LANGFUSE_OBSERVATION_OUTPUT: &str = "langfuse.observation.output";
 pub const LANGFUSE_SESSION_ID: &str = "langfuse.session.id";
+pub const LANGFUSE_TRACE_INPUT: &str = "langfuse.trace.input";
+pub const LANGFUSE_TRACE_OUTPUT: &str = "langfuse.trace.output";
+pub const LANGFUSE_TRACE_TAGS: &str = "langfuse.trace.tags";
 
 // gen_ai.* shortcuts
 pub const GEN_AI_SYSTEM: &str = "gen_ai.system";
@@ -144,6 +149,13 @@ impl AttributeBag {
 
     pub fn bool(mut self, key: &'static str, value: bool) -> Self {
         self.inner.push(KeyValue::new(key, value));
+        self
+    }
+
+    /// Push an arbitrary pre-built `KeyValue` (e.g. an array-typed
+    /// attribute that the typed setters above don't cover).
+    pub fn kv(mut self, kv: KeyValue) -> Self {
+        self.inner.push(kv);
         self
     }
 

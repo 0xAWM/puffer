@@ -176,6 +176,15 @@ pub(crate) fn run_streaming_loop(
         cwd.to_string_lossy().as_ref(),
     );
     agent_span.set_str(puffer_observability::PUFFER_PROVIDER_ID, inputs.provider.id.clone());
+    // Langfuse renders the trace's Input/Output panes from the
+    // `langfuse.trace.input` / `langfuse.trace.output` keys (any other
+    // attribute lands in the metadata blob). Same content also keeps a
+    // `puffer.input` mirror for OTel-only consumers.
+    agent_span.set_content(
+        puffer_observability::LANGFUSE_TRACE_INPUT,
+        puffer_observability::ContentKind::Prompt,
+        inputs.input,
+    );
     agent_span.set_content(
         "puffer.input",
         puffer_observability::ContentKind::Prompt,
@@ -244,6 +253,58 @@ pub(crate) fn run_streaming_loop(
             &inputs.provider.default_api,
             inputs.model_id,
         );
+        // Langfuse renders the generation Input pane from
+        // `langfuse.observation.input`. Serialize the conversation
+        // items being sent to the LLM as a messages array (role +
+        // textual content). Non-message items (function calls, tool
+        // outputs, reasoning blobs) are projected to compact stubs so
+        // they're countable without ballooning the attribute.
+        let provider_input_json = serde_json::to_string(
+            &items
+                .iter()
+                .map(|item| match item {
+                    ConversationItem::Message { role, content } => {
+                        let text: String = content
+                            .iter()
+                            .filter_map(|p| match p {
+                                super::openai::conversation::ContentPart::Text { text } => {
+                                    Some(text.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        serde_json::json!({ "role": role, "content": text })
+                    }
+                    ConversationItem::FunctionCall { name, arguments, .. } => {
+                        serde_json::json!({
+                            "role": "assistant",
+                            "tool_call": { "name": name, "arguments": arguments }
+                        })
+                    }
+                    ConversationItem::FunctionCallOutput { call_id, output } => {
+                        serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": output.text,
+                            "is_error": output.is_error
+                        })
+                    }
+                    ConversationItem::Reasoning { redacted, .. } => {
+                        serde_json::json!({ "role": "assistant", "reasoning": { "redacted": redacted } })
+                    }
+                    ConversationItem::Compaction { summary } => {
+                        serde_json::json!({ "role": "system", "compaction_summary": summary })
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+        provider_span.set_content(
+            puffer_observability::LANGFUSE_OBSERVATION_INPUT,
+            puffer_observability::ContentKind::Prompt,
+            &provider_input_json,
+        );
         // We need to capture token usage from the streaming Usage
         // event without breaking the existing on_event signature for
         // other consumers. Wrap it.
@@ -284,6 +345,11 @@ pub(crate) fn run_streaming_loop(
             }
         };
         provider_span.set_content(
+            puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
+            puffer_observability::ContentKind::Output,
+            &turn.assistant_text,
+        );
+        provider_span.set_content(
             "puffer.assistant_text",
             puffer_observability::ContentKind::Output,
             &turn.assistant_text,
@@ -309,6 +375,11 @@ pub(crate) fn run_streaming_loop(
                 &cwd,
                 &turn.assistant_text,
                 invocations.len(),
+            );
+            agent_span.set_content(
+                puffer_observability::LANGFUSE_TRACE_OUTPUT,
+                puffer_observability::ContentKind::Output,
+                &turn.assistant_text,
             );
             agent_span.set_content(
                 "puffer.output",
@@ -684,7 +755,7 @@ fn execute_tool_batch(
                         true,
                     );
                     tool_span.set_content(
-                        "puffer.tool.input",
+                        puffer_observability::LANGFUSE_OBSERVATION_INPUT,
                         puffer_observability::ContentKind::ToolInput {
                             tool_id: tool_id_owned.clone(),
                         },
@@ -715,7 +786,7 @@ fn execute_tool_batch(
                         Err(error) => (format!("Tool execution failed: {error}"), false, false),
                     };
                     tool_span.set_content(
-                        "puffer.tool.output",
+                        puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
                         puffer_observability::ContentKind::ToolOutput {
                             tool_id: tool_id_owned.clone(),
                         },
@@ -761,7 +832,7 @@ fn execute_tool_batch(
             false,
         );
         tool_span.set_content(
-            "puffer.tool.input",
+            puffer_observability::LANGFUSE_OBSERVATION_INPUT,
             puffer_observability::ContentKind::ToolInput {
                 tool_id: tc.tool_id.clone(),
             },
@@ -797,7 +868,7 @@ fn execute_tool_batch(
             Err(error) => (format!("Tool execution failed: {error}"), false, false),
         };
         tool_span.set_content(
-            "puffer.tool.output",
+            puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
             puffer_observability::ContentKind::ToolOutput {
                 tool_id: tc.tool_id.clone(),
             },
@@ -856,7 +927,7 @@ fn execute_tool_batch_serial(
             false,
         );
         tool_span.set_content(
-            "puffer.tool.input",
+            puffer_observability::LANGFUSE_OBSERVATION_INPUT,
             puffer_observability::ContentKind::ToolInput {
                 tool_id: call.tool_id.clone(),
             },
@@ -899,7 +970,7 @@ fn execute_tool_batch_serial(
             &inputs.state.session.id,
         );
         tool_span.set_content(
-            "puffer.tool.output",
+            puffer_observability::LANGFUSE_OBSERVATION_OUTPUT,
             puffer_observability::ContentKind::ToolOutput {
                 tool_id: call.tool_id.clone(),
             },
