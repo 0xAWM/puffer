@@ -1277,7 +1277,7 @@ fn run_responses_attempt(
     };
     match on_event {
         Some(sink) => super::agent_loop::run_streaming_loop(&mut inputs, &mut session, sink),
-        None => super::agent_loop::run_blocking_loop(&mut inputs, &mut session),
+        None => super::blocking_loop::run_blocking_loop(&mut inputs, &mut session),
     }
 }
 
@@ -1439,6 +1439,6 @@ fn run_completions_attempt(
     };
     match on_event {
         Some(sink) => super::agent_loop::run_streaming_loop(&mut inputs, &mut session, sink),
-        None => super::agent_loop::run_blocking_loop(&mut inputs, &mut session),
+        None => super::blocking_loop::run_blocking_loop(&mut inputs, &mut session),
     }
 }

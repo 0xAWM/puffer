@@ -19,6 +19,8 @@ use std::time::Duration;
 #[cfg(test)]
 mod agent_runtime_tests;
 mod agent_loop;
+mod blocking_loop;
+mod tool_batch;
 mod agents;
 mod anthropic;
 mod anthropic_sse;

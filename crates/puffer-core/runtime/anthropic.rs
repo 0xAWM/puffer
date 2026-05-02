@@ -747,7 +747,7 @@ impl super::provider_adapter::ProviderAdapter for AnthropicAdapter {
             cancel: options.cancel,
             observability: options.observability.clone(),
         };
-        agent_loop::run_blocking_loop(&mut inputs, &mut session)
+        super::blocking_loop::run_blocking_loop(&mut inputs, &mut session)
     }
 
     fn execute_turn_streaming(
