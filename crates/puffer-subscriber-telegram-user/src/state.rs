@@ -11,12 +11,12 @@ use anyhow::Context;
 use grammers_client::types::{LoginToken, PasswordToken};
 use serde::{Deserialize, Serialize};
 
-/// Public Telegram Android app id used when the operator does not provide a
+/// Public Telegram Desktop app id used when the operator does not provide a
 /// custom Telegram app credential pair.
-pub const DEFAULT_API_ID: i32 = 6;
+pub const DEFAULT_API_ID: i32 = 2040;
 
-/// Public Telegram Android app hash paired with [`DEFAULT_API_ID`].
-pub const DEFAULT_API_HASH: &str = "eb06d4abfb49dc3eeb1aeb98ae0f581e";
+/// Public Telegram Desktop app hash paired with [`DEFAULT_API_ID`].
+pub const DEFAULT_API_HASH: &str = "b18441a1ff607e10a989891a5462e627";
 
 /// Ambient configuration resolved once at startup from environment variables.
 #[derive(Debug, Clone)]
@@ -106,7 +106,7 @@ impl PersistedCredentials {
 ///
 /// Priority order is explicit tool input, persisted credentials, then
 /// `PUFFER_TELEGRAM_API_ID`/`PUFFER_TELEGRAM_API_HASH`, then the hardcoded
-/// public Telegram Android pair.
+/// public Telegram Desktop pair.
 pub fn resolve_api_credentials(
     explicit_id: Option<i32>,
     explicit_hash: Option<String>,
@@ -142,9 +142,9 @@ pub fn resolve_api_credentials(
 /// credential pair.
 pub fn default_init_params() -> grammers_client::InitParams {
     grammers_client::InitParams {
-        device_model: "Android".to_string(),
-        system_version: "SDK 35".to_string(),
-        app_version: "11.9.0".to_string(),
+        device_model: "Desktop".to_string(),
+        system_version: "Linux x86_64".to_string(),
+        app_version: "6.7.6".to_string(),
         lang_code: "en".to_string(),
         system_lang_code: "en".to_string(),
         catch_up: true,

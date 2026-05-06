@@ -66,21 +66,32 @@ pub fn execute_telegram_login_start(
         TELEGRAM_USER_TOPIC,
         TELEGRAM_USER_TOPIC,
         &command,
-        &["login_awaiting_code", "login_error"],
+        &["login_awaiting_code", "login_complete", "login_error"],
         TELEGRAM_LOGIN_EVENT_TIMEOUT,
     )?;
-    if event.event.kind == "login_error" {
-        return Err(anyhow!(
+    match event.event.kind.as_str() {
+        "login_awaiting_code" => Ok(json!({
+            "status": "awaiting_code",
+            "phone": phone,
+            "next": "Telegram accepted the login-code request. Ask the user for the code from Telegram, then call TelegramLoginSubmitCode."
+        })
+        .to_string()),
+        "login_complete" => Ok(json!({
+            "status": "complete",
+            "already_authorized": event
+                .event
+                .payload
+                .get("already_authorized")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            "payload": event.event.payload,
+        })
+        .to_string()),
+        _ => Err(anyhow!(
             "telegram login failed while requesting code: {}",
             event_error_message(&event.event.payload)
-        ));
+        )),
     }
-    Ok(json!({
-        "status": "awaiting_code",
-        "phone": phone,
-        "next": "Telegram accepted the login-code request. Ask the user for the code from Telegram, then call TelegramLoginSubmitCode."
-    })
-    .to_string())
 }
 
 #[derive(Debug, Deserialize)]

@@ -360,9 +360,12 @@ async fn handle_runtime_command(
             api_id,
             api_hash,
         } => {
-            // Re-request a code on the live client rather than reconnecting.
-            // The effect is that the running session keeps serving updates
-            // until sign_in succeeds and overwrites the auth.
+            match emit_already_authorized(env, client).await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    warn!(%error, "authorized status probe failed; re-requesting login code");
+                }
+            }
             let persisted = PersistedCredentials::load(&env.credentials_path()).unwrap_or_default();
             let (resolved_id, resolved_hash) =
                 match resolve_api_credentials(api_id, api_hash, &persisted) {
@@ -418,6 +421,20 @@ async fn handle_runtime_command(
             )?;
         }
     }
+    Ok(())
+}
+
+async fn emit_already_authorized(env: &SkillEnv, client: &Client) -> anyhow::Result<()> {
+    let user = client.get_me().await?;
+    emit_control(
+        &env.topic,
+        "login_complete",
+        json!({
+            "already_authorized": true,
+            "user_id": user.id(),
+            "first_name": user.first_name(),
+        }),
+    )?;
     Ok(())
 }
 
