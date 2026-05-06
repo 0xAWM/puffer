@@ -13,12 +13,12 @@ use crate::codec::read_lines;
 use crate::command::CommandSender;
 use crate::event::{Event, EventEnvelope};
 use crate::manifest::Manifest;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::process::Stdio;
 use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::process::Command;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 /// Configuration for how a single subscriber is supervised.
@@ -75,7 +75,7 @@ impl SubscriberSupervisor {
     /// Spawns the subscriber described by `manifest`, wiring stdout onto
     /// `bus`, exposing stdin via the returned handle's [`CommandSender`],
     /// and applying the restart policy in `config`.
-    pub fn spawn(
+    pub async fn spawn(
         manifest: Manifest,
         bus: EventBus,
         config: SupervisorConfig,
@@ -87,8 +87,10 @@ impl SubscriberSupervisor {
         let id = manifest.spec.id.clone();
         let topic = manifest.topic().to_string();
         let commands = CommandSender::disconnected();
+        let (ready_tx, ready_rx) = oneshot::channel();
 
         let commands_for_task = commands.clone();
+        let shutdown_for_error = shutdown_tx.clone();
         let join = tokio::spawn(run_loop(
             manifest,
             topic,
@@ -97,7 +99,24 @@ impl SubscriberSupervisor {
             commands_for_task,
             shutdown_rx,
             config,
+            Some(ready_tx),
         ));
+
+        match ready_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = shutdown_for_error.send(true);
+                let _ = join.await;
+                return Err(anyhow!(error));
+            }
+            Err(_) => {
+                let _ = shutdown_for_error.send(true);
+                let _ = join.await;
+                return Err(anyhow!(
+                    "subscriber supervisor exited before startup completed"
+                ));
+            }
+        }
 
         Ok(SubscriberHandle {
             id,
@@ -116,6 +135,7 @@ async fn run_loop(
     commands: CommandSender,
     mut shutdown_rx: watch::Receiver<bool>,
     config: SupervisorConfig,
+    mut first_start: Option<oneshot::Sender<std::result::Result<(), String>>>,
 ) {
     let id = manifest.spec.id.clone();
     let mut backoff = config.min_backoff;
@@ -123,7 +143,16 @@ async fn run_loop(
         if *shutdown_rx.borrow() {
             break;
         }
-        match spawn_once(&manifest, &topic, state_dir.as_deref(), &bus, &commands).await {
+        match spawn_once(
+            &manifest,
+            &topic,
+            state_dir.as_deref(),
+            &bus,
+            &commands,
+            &mut first_start,
+        )
+        .await
+        {
             Ok(exit_status) => {
                 tracing::info!(%id, code = ?exit_status, "subscriber exited");
                 if !config.restart_on_exit {
@@ -132,6 +161,9 @@ async fn run_loop(
             }
             Err(error) => {
                 tracing::warn!(%id, %error, "subscriber spawn failed");
+                if let Some(ready) = first_start.take() {
+                    let _ = ready.send(Err(error.to_string()));
+                }
                 if !config.restart_on_exit {
                     break;
                 }
@@ -153,6 +185,7 @@ async fn spawn_once(
     state_dir: Option<&std::path::Path>,
     bus: &EventBus,
     commands: &CommandSender,
+    first_start: &mut Option<oneshot::Sender<std::result::Result<(), String>>>,
 ) -> Result<std::process::ExitStatus> {
     let program = &manifest.spec.run.cmd[0];
     let args = &manifest.spec.run.cmd[1..];
@@ -176,8 +209,10 @@ async fn spawn_once(
         .with_context(|| format!("failed to spawn subscriber `{}`", manifest.spec.id))?;
     let stdout = child.stdout.take().context("child stdout missing")?;
     let stderr = child.stderr.take().context("child stderr missing")?;
-    if let Some(stdin) = child.stdin.take() {
-        commands.replace(Some(stdin)).await;
+    let stdin = child.stdin.take().context("child stdin missing")?;
+    commands.replace(Some(stdin)).await;
+    if let Some(ready) = first_start.take() {
+        let _ = ready.send(Ok(()));
     }
 
     let subscriber_id = manifest.spec.id.clone();
@@ -224,4 +259,68 @@ async fn spawn_once(
     let _ = stdout_task.await;
     let _ = stderr_task.await;
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::SubscriberCommand;
+    use serde_json::Value;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn spawn_returns_after_stdin_is_connected() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            r#"manifest_version = 1
+id = "test-subscriber"
+kind = "subscriber"
+topic = "test-topic"
+
+[run]
+cmd = ["sh", "run.sh"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("run.sh"),
+            r#"IFS= read -r _line || exit 0
+printf '%s\n' '{"topic":"test-topic","kind":"message","text":"ready"}'
+"#,
+        )
+        .unwrap();
+
+        let manifest = Manifest::load(dir.path()).unwrap();
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_topic("test-topic");
+        let handle = SubscriberSupervisor::spawn(
+            manifest,
+            bus,
+            SupervisorConfig {
+                restart_on_exit: false,
+                ..SupervisorConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        handle
+            .commands
+            .send(&SubscriberCommand::Custom {
+                op: "ping".into(),
+                args: Value::Null,
+            })
+            .await
+            .unwrap();
+
+        let envelope = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(envelope.subscriber_id, "test-subscriber");
+        assert_eq!(envelope.event.text, "ready");
+
+        handle.shutdown().await;
+    }
 }

@@ -108,7 +108,7 @@ impl SubscriptionManager {
         }
         let bus = self.bus.clone();
         let handle = self.handle.block_on(async move {
-            SubscriberSupervisor::spawn(manifest, bus, SupervisorConfig::default())
+            SubscriberSupervisor::spawn(manifest, bus, SupervisorConfig::default()).await
         })?;
         guard.insert(id.clone(), handle);
         Ok(id)
@@ -153,5 +153,72 @@ impl SubscriptionManager {
         for handle in handles {
             self.handle.block_on(async move { handle.shutdown().await });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puffer_subscriber_runtime::SubscriberCommand;
+    use serde_json::Value;
+    use tempfile::tempdir;
+
+    #[test]
+    fn start_subscriber_allows_immediate_control_command() {
+        let temp = tempdir().unwrap();
+        let subscriber_dir = temp.path().join("subscriber");
+        std::fs::create_dir_all(&subscriber_dir).unwrap();
+        std::fs::write(
+            subscriber_dir.join("manifest.toml"),
+            r#"manifest_version = 1
+id = "test-subscriber"
+kind = "subscriber"
+topic = "test-topic"
+
+[run]
+cmd = ["sh", "run.sh"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            subscriber_dir.join("run.sh"),
+            r#"IFS= read -r _line || exit 0
+printf '%s\n' '{"topic":"test-topic","kind":"message","text":"ready"}'
+"#,
+        )
+        .unwrap();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let manager = SubscriptionManagerBuilder::new(temp.path().join("subscriptions.json"))
+            .build(runtime.handle().clone())
+            .unwrap();
+        let mut rx = manager.bus().subscribe_topic("test-topic");
+        let manifest = Manifest::load(&subscriber_dir).unwrap();
+
+        manager.start_subscriber(manifest).unwrap();
+        manager
+            .send_command(
+                "test-subscriber",
+                &SubscriberCommand::Custom {
+                    op: "ping".into(),
+                    args: Value::Null,
+                },
+            )
+            .unwrap();
+
+        let envelope = runtime
+            .block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(envelope.subscriber_id, "test-subscriber");
+        assert_eq!(envelope.event.text, "ready");
+
+        manager.shutdown();
     }
 }
