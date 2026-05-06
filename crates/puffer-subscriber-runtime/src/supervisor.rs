@@ -14,6 +14,7 @@ use crate::command::CommandSender;
 use crate::event::{Event, EventEnvelope};
 use crate::manifest::Manifest;
 use anyhow::{anyhow, Context, Result};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -187,9 +188,9 @@ async fn spawn_once(
     commands: &CommandSender,
     first_start: &mut Option<oneshot::Sender<std::result::Result<(), String>>>,
 ) -> Result<std::process::ExitStatus> {
-    let program = &manifest.spec.run.cmd[0];
+    let program = resolve_manifest_program(&manifest.spec.run.cmd[0]);
     let args = &manifest.spec.run.cmd[1..];
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(&program);
     cmd.args(args)
         .current_dir(&manifest.dir)
         .env("PUFFER_SKILL_ID", &manifest.spec.id)
@@ -204,9 +205,13 @@ async fn spawn_once(
     for entry in &manifest.spec.run.env {
         cmd.env(&entry.name, &entry.value);
     }
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("failed to spawn subscriber `{}`", manifest.spec.id))?;
+    let mut child = cmd.spawn().with_context(|| {
+        format!(
+            "failed to spawn subscriber `{}` using `{}`",
+            manifest.spec.id,
+            program.display()
+        )
+    })?;
     let stdout = child.stdout.take().context("child stdout missing")?;
     let stderr = child.stderr.take().context("child stderr missing")?;
     let stdin = child.stdin.take().context("child stdin missing")?;
@@ -259,6 +264,50 @@ async fn spawn_once(
     let _ = stdout_task.await;
     let _ = stderr_task.await;
     Ok(status)
+}
+
+fn resolve_manifest_program(program: &str) -> PathBuf {
+    if program == "puffer" {
+        if let Some(path) = puffer_binary_path() {
+            return path;
+        }
+    }
+    PathBuf::from(program)
+}
+
+fn puffer_binary_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PUFFER_BIN") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    let current = std::env::current_exe().ok()?;
+    if is_puffer_binary(&current) {
+        return Some(current);
+    }
+    puffer_sibling_for_test_binary(&current)
+}
+
+fn is_puffer_binary(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some(puffer_exe_name())
+}
+
+fn puffer_sibling_for_test_binary(current: &Path) -> Option<PathBuf> {
+    let parent = current.parent()?;
+    if parent.file_name().and_then(|name| name.to_str()) != Some("deps") {
+        return None;
+    }
+    let candidate = parent.parent()?.join(puffer_exe_name());
+    candidate.exists().then_some(candidate)
+}
+
+fn puffer_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "puffer.exe"
+    } else {
+        "puffer"
+    }
 }
 
 #[cfg(test)]
@@ -322,5 +371,22 @@ printf '%s\n' '{"topic":"test-topic","kind":"message","text":"ready"}'
         assert_eq!(envelope.event.text, "ready");
 
         handle.shutdown().await;
+    }
+
+    #[test]
+    fn leaves_non_puffer_manifest_programs_literal() {
+        assert_eq!(resolve_manifest_program("sh"), PathBuf::from("sh"));
+    }
+
+    #[test]
+    fn finds_puffer_binary_next_to_deps_test_binary() {
+        let temp = tempdir().unwrap();
+        let deps = temp.path().join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let sibling = temp.path().join(puffer_exe_name());
+        std::fs::write(&sibling, "").unwrap();
+        let current = deps.join("puffer_subscriber_runtime-abc123");
+
+        assert_eq!(puffer_sibling_for_test_binary(&current), Some(sibling));
     }
 }
