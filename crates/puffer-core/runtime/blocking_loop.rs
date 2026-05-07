@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 
-use super::agent_loop::{LoopInputs, TurnSession};
+use super::agent_loop::{maybe_microcompact, LoopInputs, TurnSession};
 use super::openai::conversation::{
     compact_conversation_with, inject_post_compact_context, transcript_to_items,
     ConversationItem, ToolOutputPayload,
@@ -121,6 +121,10 @@ pub(crate) fn run_blocking_loop(
     }
     session.notify_compacted();
 
+    // Pre-loop microcompact. Same idempotence and rationale as the
+    // streaming loop. Disabled unless `PUFFER_MICROCOMPACT=1`.
+    maybe_microcompact(inputs.state, &mut items, Some(&mut agent_span));
+
     let mut turn_index: u32 = 0;
     loop {
         if let Some(cancel) = inputs.cancel {
@@ -129,6 +133,8 @@ pub(crate) fn run_blocking_loop(
                 return Err(error);
             }
         }
+        // Per-iteration microcompact (idempotent — see streaming loop comment).
+        maybe_microcompact(inputs.state, &mut items, Some(&mut agent_span));
         let mut turn_span = puffer_observability::start_turn_span(
             inputs.observability.as_ref(),
             agent_span.context(),

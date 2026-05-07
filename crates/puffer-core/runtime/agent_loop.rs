@@ -30,6 +30,10 @@ use puffer_provider_registry::{AuthStore, ProviderDescriptor, ProviderRegistry};
 use puffer_resources::LoadedResources;
 use puffer_tools::ToolRegistry;
 
+use super::microcompact::{
+    microcompact_in_place, MicrocompactConfig, MicrocompactInputs, MicrocompactOutcome,
+    MicrocompactTrigger,
+};
 use super::openai::conversation::{
     compact_conversation_with, inject_post_compact_context, transcript_to_items, ConversationItem,
     ToolOutputPayload,
@@ -256,6 +260,14 @@ pub(crate) fn run_streaming_loop(
         session.notify_compacted();
     }
 
+    // Pre-loop microcompact (env-gated, off by default). Mirrors Claude
+    // Code's pre-request pruning at `query.ts:401`. The trigger conditions
+    // (time-gap / token-budget) and the `[Old tool result content cleared]`
+    // stub check make this idempotent — calling it again inside the loop
+    // (below, per iteration) only fires when there is something *new* to
+    // clear, so the boundary message isn't spammed.
+    maybe_microcompact(inputs.state, &mut items, Some(&mut agent_span));
+
     let mut turn_index: u32 = 0;
     loop {
         // Cancel boundary: check before each turn's provider round-trip.
@@ -267,6 +279,13 @@ pub(crate) fn run_streaming_loop(
                 return Err(error);
             }
         }
+
+        // Per-iteration microcompact. Mirrors Claude Code's
+        // `query.ts:401` placement INSIDE the loop. Idempotent because
+        // already-cleared FCOs equal CLEARED_STUB and are skipped, so
+        // this only fires when a NEW compactable tool result was
+        // appended since the previous pass.
+        maybe_microcompact(inputs.state, &mut items, Some(&mut agent_span));
 
         // Drain completed background tasks and inject as user messages.
         let completed = crate::runtime::claude_tools::workflow::drain_completed_shell_tasks(
@@ -938,6 +957,57 @@ pub(crate) fn run_streaming_loop(
 
 // `execute_tool_batch` lives in `runtime/tool_batch.rs`; the streaming
 // loop above and `blocking_loop::run_blocking_loop` call into it.
+
+/// Runs one microcompact pass and, on a successful clear, appends a
+/// boundary `<system-reminder>` user message describing what happened.
+/// Mirrors `services/compact/microCompact.ts:484` (boundary insertion).
+///
+/// Disabled by default — `MicrocompactConfig::from_env()` returns `None`
+/// unless `PUFFER_MICROCOMPACT=1` is set. See env var docs in
+/// `microcompact.rs`. When the trait grows a typed observability hook
+/// for context-edit operations, swap the println for that.
+pub(crate) fn maybe_microcompact(
+    state: &crate::AppState,
+    items: &mut Vec<ConversationItem>,
+    span: Option<&mut puffer_observability::SpanGuard>,
+) -> Option<MicrocompactOutcome> {
+    let config = MicrocompactConfig::from_env()?;
+    let inputs = MicrocompactInputs {
+        last_assistant_at: state.last_assistant_at,
+        last_input_tokens: state.last_input_tokens,
+        config: &config,
+    };
+    let outcome = microcompact_in_place(items.as_mut_slice(), &inputs)?;
+    let trigger_str = match outcome.trigger {
+        MicrocompactTrigger::TimeGap => "time_gap",
+        MicrocompactTrigger::TokenBudget => "token_budget",
+    };
+    let boundary = format!(
+        "<system-reminder>\n[microcompact] cleared {} stale tool result{} (~{} tokens reclaimed via {} trigger). \
+Their call ids remain in context — re-run the tool if you need the content again.\n</system-reminder>",
+        outcome.cleared_count,
+        if outcome.cleared_count == 1 { "" } else { "s" },
+        outcome.tokens_saved,
+        trigger_str,
+    );
+    items.push(ConversationItem::user_message(&boundary));
+    if let Some(span) = span {
+        span.set_str("puffer.microcompact.trigger", trigger_str);
+        span.set_str(
+            "puffer.microcompact.cleared_count",
+            outcome.cleared_count.to_string(),
+        );
+        span.set_str(
+            "puffer.microcompact.tokens_saved",
+            outcome.tokens_saved.to_string(),
+        );
+        span.set_str(
+            "puffer.microcompact.cleared_call_ids",
+            outcome.cleared_call_ids.join(","),
+        );
+    }
+    Some(outcome)
+}
 
 #[cfg(test)]
 mod cancel_token_tests {
