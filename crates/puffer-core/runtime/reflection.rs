@@ -124,6 +124,87 @@ impl Default for LlmJudgePromptCacheMode {
     }
 }
 
+/// Dispatch axis for the LLM judge — how it produces its verdict.
+///
+/// Mirrors the architectural choice in Claude Code's "Define Outcomes"
+/// (https://platform.claude.com/docs/en/managed-agents/define-outcomes):
+/// the grader runs in a "separate context window to avoid being
+/// influenced by the main agent's implementation choices." CC always
+/// dispatches the grader as a sub-agent; puffer offers both modes so
+/// the cheaper one-shot path stays available for transcript-only
+/// judgements that don't need filesystem evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmJudgeStrategy {
+    /// One LLM round-trip with the rendered conversation context as
+    /// the entire input. Fastest, cheapest, deterministic. Best when
+    /// the judgement is self-contained in the transcript (e.g. "did
+    /// the model converge?"). Default — preserves prior behavior.
+    SingleCall,
+    /// Spawn a sub-agent with read-only verification tools (Read,
+    /// Grep, Glob). The sub-agent iterates: opens the file the main
+    /// agent claimed to edit, greps for a referenced symbol, etc.
+    /// Returns the same `JudgeSignal` shape but with grounded
+    /// evidence. More expensive, more accurate for verification-heavy
+    /// judgements.
+    ///
+    /// CC v2.1.133 ships no client-side judge fork — `define_outcomes`
+    /// is a server-side SDK feature, present in the bundle only as
+    /// `claude-api` skill markdown. Among CC's nine actual fork
+    /// labels, the only one that does multi-turn tool use is
+    /// `extract_memories` (`maxTurns:5`); single-shot summarizers
+    /// (`compact`, `reactive-compact`, `away_summary`,
+    /// `side_question`) all use `maxTurns:1`. Our default of 3 sits
+    /// between the two and matches CC's pervasive tripwire constant
+    /// (`pd7=3` autocompact circuit breaker, `_d5=3`
+    /// max-output-tokens recovery, `xO6=3` rapid-refill, denial
+    /// `maxConsecutive:3`).
+    SubAgent {
+        /// Hard cap on the sub-agent's inner-loop turns. Threaded
+        /// into `TurnRequestOptions.max_turns` and enforced at the
+        /// top of `run_streaming_loop` / `run_blocking_loop`; the
+        /// prompt also advertises the budget so the model can wind
+        /// down on its own. Default 3.
+        max_iterations: u32,
+    },
+}
+
+impl Default for LlmJudgeStrategy {
+    fn default() -> Self {
+        Self::SingleCall
+    }
+}
+
+/// Default sub-agent iteration budget when the env var doesn't override.
+/// Matches Claude Code's `max_iterations: 3` default.
+pub const DEFAULT_LLM_JUDGE_SUBAGENT_ITERATIONS: u32 = 3;
+
+impl LlmJudgeStrategy {
+    /// Reads `PUFFER_REFLECTION_JUDGE_STRATEGY` and (when sub-agent)
+    /// `PUFFER_REFLECTION_JUDGE_MAX_ITERATIONS`. Returns `None` when
+    /// the env var is absent so callers can keep the configured /
+    /// default value.
+    ///
+    /// Accepted values for `PUFFER_REFLECTION_JUDGE_STRATEGY`
+    /// (case-insensitive):
+    /// - `single_call` / `single` / `inline` → `SingleCall`
+    /// - `sub_agent`   / `subagent` / `agent` → `SubAgent { … }`
+    pub fn from_env() -> Option<Self> {
+        let raw = std::env::var("PUFFER_REFLECTION_JUDGE_STRATEGY").ok()?;
+        let normalized = raw.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "single_call" | "single" | "inline" => Some(Self::SingleCall),
+            "sub_agent" | "subagent" | "agent" => {
+                let max_iterations = std::env::var("PUFFER_REFLECTION_JUDGE_MAX_ITERATIONS")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(DEFAULT_LLM_JUDGE_SUBAGENT_ITERATIONS);
+                Some(Self::SubAgent { max_iterations })
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Configures the optional LLM-based reflection judge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmJudgeConfig {
@@ -135,6 +216,9 @@ pub struct LlmJudgeConfig {
     pub recent_item_count: usize,
     pub max_context_chars: usize,
     pub max_tool_output_chars: usize,
+    /// Dispatch path: one-shot prompt vs evidence-gathering sub-agent.
+    /// See `LlmJudgeStrategy` for the design rationale.
+    pub strategy: LlmJudgeStrategy,
 }
 
 impl Default for LlmJudgeConfig {
@@ -148,6 +232,7 @@ impl Default for LlmJudgeConfig {
             recent_item_count: 12,
             max_context_chars: 12_000,
             max_tool_output_chars: 1_200,
+            strategy: LlmJudgeStrategy::from_env().unwrap_or_default(),
         }
     }
 }
@@ -241,6 +326,16 @@ pub(super) struct ReflectionObservation {
     pub(super) checkpoint: Option<ReflectionCheckpoint>,
 }
 
+/// Mirror of CC v2.1.133's `pd7=3` autocompact circuit breaker
+/// (claude-2.1.133 bundle:4885). After this many consecutive judge
+/// failures (HTTP error / parse_failed / invalid_decision), the
+/// tracker stops calling the LLM judge for the rest of the session
+/// instead of retrying every batch and burning tokens. CC's threshold
+/// is `3` — same constant family as `_d5=3` (max-output-tokens
+/// recovery), `xO6=3` (rapid-refill breaker), and denial
+/// `maxConsecutive:3`.
+pub(crate) const MAX_CONSECUTIVE_LLM_JUDGE_FAILURES: u32 = 3;
+
 #[derive(Debug, Clone)]
 pub(super) struct ReflectionTracker {
     config: ReflectionConfig,
@@ -254,6 +349,15 @@ pub(super) struct ReflectionTracker {
     last_progress_at_ms: u128,
     last_evaluation_batch: usize,
     last_validation: Option<ValidationSnapshot>,
+    /// Consecutive LLM-judge failures since last success. Reset on
+    /// any successful judge response (parsed JSON with a recognized
+    /// decision). At `MAX_CONSECUTIVE_LLM_JUDGE_FAILURES`, the
+    /// breaker is tripped and `llm_judge_signal` early-returns.
+    consecutive_llm_judge_failures: u32,
+    /// Set once when the breaker trips so we only emit the
+    /// `LlmJudgeCircuitBreakerTripped` trace event once per session
+    /// (subsequent batches just silently skip).
+    llm_judge_breaker_tripped: bool,
 }
 
 impl ReflectionTracker {
@@ -273,12 +377,26 @@ impl ReflectionTracker {
             last_progress_at_ms: now_ms,
             last_evaluation_batch: 0,
             last_validation: None,
+            consecutive_llm_judge_failures: 0,
+            llm_judge_breaker_tripped: false,
         }
     }
 
     #[cfg(test)]
     pub(super) fn relevant_paths_for_test(&self) -> &BTreeSet<String> {
         &self.relevant_paths
+    }
+
+    /// Test-only knob to pre-trip the LLM-judge circuit breaker so
+    /// the test doesn't have to drive 3 real HTTP failures.
+    #[cfg(test)]
+    pub(super) fn force_llm_judge_failures_for_test(&mut self, count: u32) {
+        self.consecutive_llm_judge_failures = count;
+    }
+
+    #[cfg(test)]
+    pub(super) fn llm_judge_breaker_tripped_for_test(&self) -> bool {
+        self.llm_judge_breaker_tripped
     }
 
     #[cfg(test)]
@@ -367,6 +485,7 @@ impl ReflectionTracker {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_batch_with_judge(
         &mut self,
         invocations: &[ToolInvocation],
@@ -375,6 +494,9 @@ impl ReflectionTracker {
         resources: &LoadedResources,
         providers: &ProviderRegistry,
         auth_store: &mut AuthStore,
+        // Parent loop's cancel token; threaded into the LLM judge
+        // sub-agent path so user Ctrl+C stops an in-flight grader.
+        cancel: Option<&super::CancelToken>,
     ) -> Option<ReflectionObservation> {
         let observation = self.observe_batch_internal(invocations, unix_time_ms())?;
         let mut trace_events = vec![batch_observed_event(
@@ -416,6 +538,7 @@ impl ReflectionTracker {
             providers,
             auth_store,
             &mut trace_events,
+            cancel,
         );
         let final_signal = select_final_signal(
             self.config.llm_judge.as_ref().map(|config| config.mode),
@@ -740,8 +863,9 @@ impl ReflectionTracker {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn llm_judge_signal(
-        &self,
+        &mut self,
         assessment: &BatchAssessment,
         code_signal: Option<&JudgeSignal>,
         items: &[ConversationItem],
@@ -750,6 +874,7 @@ impl ReflectionTracker {
         providers: &ProviderRegistry,
         auth_store: &mut AuthStore,
         trace_events: &mut Vec<ReflectionTraceEvent>,
+        cancel: Option<&super::CancelToken>,
     ) -> Option<Option<JudgeSignal>> {
         let Some(config) = self.config.llm_judge.as_ref() else {
             trace_events.push(llm_judge_disabled_event(
@@ -764,12 +889,31 @@ impl ReflectionTracker {
             ));
             return None;
         }
+        // Circuit breaker: after MAX_CONSECUTIVE_LLM_JUDGE_FAILURES
+        // (= 3, mirroring CC's `pd7=3` autocompact gate at
+        // claude-2.1.133 bundle:4885), suppress further judge calls
+        // for the rest of the session. Trips silently after the
+        // first emission so spammy batches don't flood the trace.
+        if self.consecutive_llm_judge_failures >= MAX_CONSECUTIVE_LLM_JUDGE_FAILURES {
+            if !self.llm_judge_breaker_tripped {
+                self.llm_judge_breaker_tripped = true;
+                trace_events.push(llm_judge_skipped_event(
+                    config.mode,
+                    format!(
+                        "llm judge circuit breaker tripped after {} consecutive failures (threshold {})",
+                        self.consecutive_llm_judge_failures, MAX_CONSECUTIVE_LLM_JUDGE_FAILURES
+                    ),
+                ));
+            }
+            return None;
+        }
 
+        let config_clone = config.clone();
         let attempt = judge::run_llm_judge(
             &self.goal,
             &self.relevant_paths,
             self.config.language,
-            config,
+            &config_clone,
             assessment,
             code_signal,
             items,
@@ -777,9 +921,12 @@ impl ReflectionTracker {
             resources,
             providers,
             auth_store,
+            cancel,
         );
-        trace_events.push(llm_judge_request_event(config, &attempt));
+        trace_events.push(llm_judge_request_event(&config_clone, &attempt));
         if let Some(error) = &attempt.error {
+            self.consecutive_llm_judge_failures =
+                self.consecutive_llm_judge_failures.saturating_add(1);
             trace_events.push(llm_judge_error_event(
                 "execution_failed",
                 error,
@@ -790,6 +937,8 @@ impl ReflectionTracker {
         }
         let raw_response_text = attempt.raw_response_text.clone().unwrap_or_default();
         let Some(response) = parse_llm_judge_response(&raw_response_text) else {
+            self.consecutive_llm_judge_failures =
+                self.consecutive_llm_judge_failures.saturating_add(1);
             trace_events.push(llm_judge_error_event(
                 "parse_failed",
                 "llm judge response did not contain a valid JSON object",
@@ -801,6 +950,8 @@ impl ReflectionTracker {
         let decision = match parse_llm_judge_decision(&response.decision) {
             Some(value) => value,
             None => {
+                self.consecutive_llm_judge_failures =
+                    self.consecutive_llm_judge_failures.saturating_add(1);
                 trace_events.push(llm_judge_error_event(
                     "invalid_decision",
                     format!("unsupported llm judge decision {:?}", response.decision),
@@ -810,6 +961,8 @@ impl ReflectionTracker {
                 return None;
             }
         };
+        // Reached a parsed decision → reset failure counter.
+        self.consecutive_llm_judge_failures = 0;
         trace_events.push(llm_judge_response_event(
             &attempt,
             &response.decision,
