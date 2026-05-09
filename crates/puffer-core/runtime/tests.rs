@@ -1121,3 +1121,92 @@ fn request_json_body(raw_request: &str) -> Value {
     let body = raw_request.split("\r\n\r\n").nth(1).unwrap_or_default();
     serde_json::from_str(body).unwrap()
 }
+
+mod persisted_output_preview {
+    //! Tests for `build_persisted_output_message` — the formatter
+    //! that produces the `<persisted-output>` message the model sees
+    //! when a tool result is too large to inline. As of 2026-05-08
+    //! long outputs render as head + tail (so terminal failure
+    //! messages survive); short / borderline outputs keep CC-parity
+    //! head-only wording.
+
+    use crate::runtime::{build_persisted_output_message, PREVIEW_SIZE_CHARS};
+
+    #[test]
+    fn long_output_shows_head_and_tail_blocks() {
+        let head_payload = "A".repeat(8_000);
+        let tail_payload = "Z".repeat(8_000);
+        let text = format!("{head_payload}\n{tail_payload}");
+
+        let message = build_persisted_output_message("/tmp/persist.txt", &text);
+
+        assert!(
+            message.contains("head + last"),
+            "head+tail format should advertise both blocks; got: {message}"
+        );
+        let marker_idx = message.find("truncated").expect("truncated marker present");
+        let (before_marker, after_marker) = message.split_at(marker_idx);
+        assert!(
+            before_marker.contains('A'),
+            "head should contain A's; before marker: {before_marker}"
+        );
+        assert!(
+            !before_marker.contains('Z'),
+            "head must not contain tail content; before marker has Z"
+        );
+        assert!(
+            after_marker.contains('Z'),
+            "tail should contain Z's; after marker: {after_marker}"
+        );
+    }
+
+    #[test]
+    fn borderline_output_keeps_head_only_wording_for_cc_parity() {
+        // 1.5x preview budget: tail too short to be useful, so keep
+        // CC-parity head-only wording.
+        let text = "x".repeat(PREVIEW_SIZE_CHARS + PREVIEW_SIZE_CHARS / 2);
+
+        let message = build_persisted_output_message("/tmp/persist.txt", &text);
+
+        assert!(
+            message.contains("Preview (first"),
+            "borderline output should use head-only wording; got: {message}"
+        );
+        assert!(
+            !message.contains("head + last"),
+            "borderline output should NOT use head+tail wording"
+        );
+        assert!(
+            !message.contains("chars truncated"),
+            "borderline output should NOT show a truncated-chars marker"
+        );
+    }
+
+    #[test]
+    fn long_output_truncated_count_is_within_slack_of_expected() {
+        let head = "h".repeat(2_000);
+        let mid = "m".repeat(10_000);
+        let tail = "t".repeat(2_000);
+        let text = format!("{head}{mid}{tail}");
+        let total = text.chars().count();
+
+        let message = build_persisted_output_message("/tmp/persist.txt", &text);
+
+        let marker = message
+            .lines()
+            .find(|line| line.contains("chars truncated"))
+            .expect("truncated marker line");
+        let n: usize = marker
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .expect("truncated count parses");
+        let expected = total - PREVIEW_SIZE_CHARS;
+        let slack = 8;
+        assert!(
+            n + slack >= expected && n <= expected + slack,
+            "truncated count {n} should be within ±{slack} of {expected}"
+        );
+    }
+}
