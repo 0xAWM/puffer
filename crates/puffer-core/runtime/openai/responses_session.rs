@@ -35,7 +35,7 @@ use super::{
     parse_openai_assistant_text, resolve_openai_execution_config, send_openai_request_with_refresh,
     send_openai_request_with_refresh_streaming, OpenAIExecutionConfig,
 };
-use crate::permissions::load_runtime_permission_context;
+use crate::permissions::{load_runtime_permission_context_with_inputs, RuntimePermissionInputs};
 use crate::runtime::agent_loop::{AssistantTurn, TurnSession};
 use crate::runtime::structured_output_support::StructuredOutputConfig;
 use crate::runtime::structured_output_support::{
@@ -56,6 +56,7 @@ pub(super) struct OpenAIResponsesTurnSession {
     pub execution: OpenAIExecutionConfig,
     pub instructions: String,
     pub managed_system_prompt_1: Option<String>,
+    pub lightweight_context: bool,
     pub tools: Vec<OpenAIResponsesTool>,
     pub text: Option<OpenAIResponsesTextConfig>,
     pub structured_output: Option<StructuredOutputConfig>,
@@ -372,6 +373,9 @@ impl TurnSession for OpenAIResponsesTurnSession {
     }
 
     fn pre_loop_inject(&mut self, items: &mut Vec<ConversationItem>) {
+        if self.lightweight_context {
+            return;
+        }
         // Pin per-turn dynamic context (currentDate + gitStatus) at
         // the front so every Responses request includes it. Static
         // instructions stay in `instructions` — only this dynamic part
@@ -405,14 +409,20 @@ pub(super) fn setup_responses_session(
     let execution = resolve_openai_execution_config(state, auth_store, provider)?;
     let registry =
         super::super::mcp_discovery::registry_with_mcp_tools(resources, state.tool_runner.as_ref());
-    let permission_context = load_runtime_permission_context(&state.cwd, resources, state)?;
+    let permission_context = load_runtime_permission_context_with_inputs(
+        &state.cwd,
+        resources,
+        state,
+        RuntimePermissionInputs {
+            request_tool_filter: options.tool_filter.cloned(),
+        },
+    )?;
     let text = openai_responses_text_config(options.structured_output, use_native);
     let tools = openai_tool_definitions_for_request(
         &registry,
         options.structured_output,
         use_native,
         Some(&permission_context),
-        options.tool_filter,
     )?;
     // Native server-side tools (e.g. `web_search`) serialize without a name,
     // so filter empty entries out of the system-prompt tool set.
@@ -421,9 +431,13 @@ pub(super) fn setup_responses_session(
         .map(|tool| tool.name.clone())
         .filter(|name| !name.is_empty())
         .collect::<std::collections::BTreeSet<_>>();
-    let system_prompt =
-        render_runtime_system_prompt(state, resources, &model_id, &enabled_tool_names)?;
-    let instructions = super::openai_request_instructions(state, resources, Some(&system_prompt))?;
+    let instructions = if options.lightweight_context {
+        "Reply directly and concisely.".to_string()
+    } else {
+        let system_prompt =
+            render_runtime_system_prompt(state, resources, &model_id, &enabled_tool_names)?;
+        super::openai_request_instructions(state, resources, Some(&system_prompt))?
+    };
     let model = provider.models.iter().find(|m| m.id == model_id);
     let supports_reasoning = openai_model_supports_reasoning(provider, &model_id);
     let supports_response_threading =
@@ -432,7 +446,12 @@ pub(super) fn setup_responses_session(
     Ok(OpenAIResponsesTurnSession {
         execution,
         instructions,
-        managed_system_prompt_1: managed_system_prompt_1_from_env(),
+        managed_system_prompt_1: if options.lightweight_context {
+            None
+        } else {
+            managed_system_prompt_1_from_env()
+        },
+        lightweight_context: options.lightweight_context,
         tools,
         text,
         structured_output: options.structured_output.cloned(),

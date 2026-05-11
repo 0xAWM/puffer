@@ -36,6 +36,7 @@ pub use model_preferences::{
     default_effort_level, effort_level_is_supported, normalized_effort_level,
     provider_preference_family, supported_effort_levels, ModelPreferenceFamily,
 };
+pub use permissions::SessionPermissionState;
 pub use runtime::background_tasks;
 pub use runtime::claude_tools::execute_workflow_tool;
 pub use runtime::execute_user_prompt as execute_user_turn;
