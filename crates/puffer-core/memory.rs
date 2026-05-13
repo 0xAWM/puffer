@@ -532,6 +532,8 @@ impl Drop for FileLockGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::profile::{EffectiveApprovalPolicy, EffectiveSandboxMode};
+    use crate::permissions::FilesystemPermissionPolicy;
     use crate::runtime::claude_tools::{execute_tool, ProviderToolContext};
     use puffer_config::MemoryConfig;
     use puffer_provider_registry::{AuthStore, ModelDescriptor, ProviderDescriptor};
@@ -547,6 +549,15 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
     use uuid::Uuid;
+
+    fn allow_all_filesystem_policy(root: &Path) -> FilesystemPermissionPolicy {
+        FilesystemPermissionPolicy {
+            approval: EffectiveApprovalPolicy::Allow,
+            sandbox_mode: EffectiveSandboxMode::DangerFullAccess,
+            workspace_roots: vec![root.to_path_buf()],
+            session_granted: true,
+        }
+    }
 
     #[test]
     fn add_replace_remove_round_trip() {
@@ -578,12 +589,14 @@ mod tests {
         let registry = ToolRegistry::from_resources(&resources);
         let definition = registry.definition("Memory").expect("memory tool");
 
+        let filesystem_policy = allow_all_filesystem_policy(temp.path());
         let result = execute_tool(
             &mut state,
             &resources,
             &registry,
             definition,
             temp.path(),
+            &filesystem_policy,
             json!({"action": "add", "content": "stable project rule"}),
             ProviderToolContext::None,
         )
@@ -766,6 +779,7 @@ mod tests {
             SessionMetadata {
                 id: Uuid::nil(),
                 display_name: None,
+                generated_title: None,
                 cwd: PathBuf::from("/workspace/demo"),
                 created_at_ms: 0,
                 updated_at_ms: 0,
@@ -793,6 +807,7 @@ mod tests {
             SessionMetadata {
                 id: Uuid::nil(),
                 display_name: None,
+                generated_title: None,
                 cwd: PathBuf::from("/workspace/demo"),
                 created_at_ms: 0,
                 updated_at_ms: 0,
@@ -822,6 +837,7 @@ mod tests {
             SessionMetadata {
                 id: Uuid::new_v4(),
                 display_name: None,
+                generated_title: None,
                 cwd: cwd.to_path_buf(),
                 created_at_ms: 0,
                 updated_at_ms: 0,
@@ -964,7 +980,11 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8_192,
                 supports_reasoning: true,
+                input: Vec::new(),
+                cost: None,
+                compat: None,
             }],
+            chat_completions_path: None,
         }
     }
 

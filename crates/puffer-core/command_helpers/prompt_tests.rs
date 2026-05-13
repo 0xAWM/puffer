@@ -707,7 +707,11 @@ fn local_provider(base_url: String) -> ProviderDescriptor {
             context_window: 200_000,
             max_output_tokens: 8_192,
             supports_reasoning: true,
+            input: Vec::new(),
+            cost: None,
+            compat: None,
         }],
+        chat_completions_path: None,
     }
 }
 
