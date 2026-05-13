@@ -75,9 +75,6 @@ fn openai_request_version(provider: &ProviderDescriptor, oauth: bool) -> String 
     }
 }
 
-    }
-}
-
 /// Legacy non-`agent_loop` streaming path. **Only reachable from
 /// `runtime/openai/websocket.rs`** (it falls back to this when
 /// websocket negotiation fails or the env-flag points at SSE).
